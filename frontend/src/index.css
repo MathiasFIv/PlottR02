@@ -1,0 +1,300 @@
+:root {
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+  color-scheme: light;
+  color: #1f2937;
+  background-color: #f3f4f6;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+/* ---------- Generic building blocks ---------- */
+
+.title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.heading {
+  font-size: 18px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.muted {
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.error-text {
+  color: #dc2626;
+  font-size: 14px;
+  margin-top: 12px;
+}
+
+.success-text {
+  color: #059669;
+  font-size: 14px;
+  margin-top: 12px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 24px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.field {
+  margin-bottom: 16px;
+}
+
+.field__label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+}
+
+.input {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: #111827;
+  background: #fff;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #059669;
+  box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.15);
+}
+
+.input::placeholder {
+  color: #9ca3af;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: #059669;
+  color: #fff;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: #047857;
+}
+
+.btn--secondary {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.btn--secondary:hover:not(:disabled) {
+  background: #d1d5db;
+}
+
+.w-full {
+  width: 100%;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: #059669;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.link-button:hover {
+  color: #047857;
+}
+
+/* ---------- Auth / login screen ---------- */
+
+.auth-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+}
+
+.auth-subtitle {
+  margin: 4px 0 20px;
+}
+
+.auth-note {
+  margin-top: 20px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.auth-divider {
+  margin: 20px 0 12px;
+  text-align: center;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+/* ---------- Modal ---------- */
+
+.modal {
+  border: none;
+  border-radius: 10px;
+  padding: 0;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+  max-width: 440px;
+  width: 100%;
+}
+
+.modal::backdrop {
+  background: rgba(17, 24, 39, 0.5);
+}
+
+.modal__panel {
+  padding: 24px;
+}
+
+.modal__title {
+  margin-bottom: 4px;
+}
+
+.modal__subtitle {
+  margin-bottom: 20px;
+}
+
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+/* ---------- Dashboard ---------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 12px 24px;
+}
+
+.topbar__brand {
+  font-weight: 700;
+  font-size: 18px;
+  color: #059669;
+}
+
+.topbar__user {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.topbar__identity {
+  font-size: 14px;
+  color: #374151;
+}
+
+.dashboard {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 32px 24px;
+  display: grid;
+  gap: 24px;
+}
+
+.user-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.user-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.user-list__item + .user-list__item {
+  border-top: 1px solid #e5e7eb;
+}
+
+.user-list__name {
+  font-weight: 500;
+  color: #111827;
+}
+
+.user-list__id {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}

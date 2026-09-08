@@ -1,0 +1,49 @@
+# ── .NET ──────────────────────────────────────────────
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.userprefs
+*.local
+.vs/
+.vscode/
+*.Code-workspace
+
+# ── IDE ───────────────────────────────────────────────
+.idea/
+*.swp
+*.swo
+
+# ── OS ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Env / secrets (keep committed .env, ignore local overrides) ─
+.env
+.env.local
+.env.*.local
+
+# ── ASP.NET dev server / launch profiles ──────────────
+**/Properties/launchSettings.json
+
+# ── User secrets ──────────────────────────────────────
+**/secrets.json
+**/.user-secrets*
+
+# ── Markdown (all docs/notes omitted per user instruction) ─
+*.md
+
+# ── Frontend (node_modules/dist handled here too) ─────
+node_modules/
+dist/
+dist-ssr/
+
+# ── Excel workbooks (semi-confidential trial data — never tracked) ─
+*.xlsx
+*.xlsm
+*.xlsb
+*.xls
+
+# App configuration & secrets — commit .example templates only
+**/appsettings.json
+**/appsettings.*.json

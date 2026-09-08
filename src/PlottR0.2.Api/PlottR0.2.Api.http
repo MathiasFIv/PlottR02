@@ -1,0 +1,6 @@
+@PlottR0._2.Api_HostAddress = http://localhost:5095
+
+GET {{PlottR0._2.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

@@ -1,0 +1,47 @@
+/**
+ * API contract types — mirror the ASP.NET Core WebAPI DTOs:
+ *
+ *   GET  /api/Users          -> User[]
+ *   GET  /api/Users/{id}     -> User | 404
+ *   POST /api/Users          -> 201 User     (body: CreateUserInput)
+ *   PUT  /api/Users/{id}     -> 200 User     (body: CreateUserInput)
+ *   DELETE /api/Users/{id}   -> 204
+ *   POST /api/Auth/login     -> 200 LoginResponse | 401 (body: LoginRequest)
+ */
+
+export type User = {
+  id: string;
+  name: string;
+  email: string;
+  role: string | null;
+};
+
+export type CreateUserInput = {
+  name: string;
+  email: string;
+  role?: string | null;
+  password: string;
+};
+
+export type LoginRequest = {
+  email: string;
+  password: string;
+};
+
+export type LoginResponse = {
+  user: User;
+  accessToken: string;
+  refreshToken: string;
+};
+
+export type RefreshResponse = {
+  accessToken: string;
+  refreshToken: string;
+};
+
+/**
+ * The authenticated user returned by the login endpoint. Login is now real:
+ * credentials are verified server-side against the stored BCrypt hash, and the
+ * returned profile is what the app treats as the current user.
+ */
+export type CurrentUser = User;

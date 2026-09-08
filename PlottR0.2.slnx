@@ -1,0 +1,27 @@
+<Solution>
+
+    <!-- Solution Items -->
+    <!--
+    <Folder Name="/Solution Items/">
+        <File Path="Directory.Packages.props" />
+    </Folder>
+    -->
+
+    <!-- List of Projects -->
+    <!--
+    <Project Path="ADD_PROJECT_FILE_1_RELATIVE_PATH_HERE" />
+    <Project Path="ADD_PROJECT_FILE_2_RELATIVE_PATH_HERE">
+        <Configuration />
+        <Deploy />
+    </Project>
+    -->
+  <Folder Name="/src/">
+    <Project Path="src/PlottR0.2.Api/PlottR0.2.Api.csproj" />
+    <Project Path="src/PlottR0.2.Contracts/PlottR0.2.Contracts.csproj" />
+    <Project Path="src/PlottR0.2.Domain/PlottR0.2.Domain.csproj" />
+    <Project Path="src/PlottR0.2.Repository/PlottR0.2.Repository.csproj" />
+    <Project Path="src/PlottR0.2.Services/PlottR0.2.Services.csproj" />
+    <Project Path="src/PlottR0.2.Tests/PlottR0.2.Tests.csproj" />
+  </Folder>
+
+</Solution>
