@@ -12,6 +12,7 @@ import { tokens } from './lib/tokens';
 import { currentUserAtom, isAuthenticatedAtom } from './store/atoms';
 import { LoginView } from './views/LoginView';
 import { DashboardView } from './views/DashboardView';
+import { RatingsView } from './views/RatingsView';
 
 // ---------------------------------------------------------------------------
 // Session restore — re-fetches the user profile from /api/Users/me when a
@@ -67,7 +68,7 @@ function RequireAuth({ children }: { children: ReactNode }) {
 function RedirectIfAuthed({ children }: { children: ReactNode }) {
   const isAuthenticated = useAtomValue(isAuthenticatedAtom);
   if (isAuthenticated) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/ratings" replace />;
   }
   return children;
 }
@@ -108,7 +109,16 @@ function App() {
             </RequireAuth>
           }
         />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route
+          path="/ratings"
+          element={
+            <RequireAuth>
+              <RatingsView />
+            </RequireAuth>
+          }
+        />
+        {/* Landing page TBD — everything currently funnels to the rating view. */}
+        <Route path="*" element={<Navigate to="/ratings" replace />} />
       </Routes>
     </BrowserRouter>
   );

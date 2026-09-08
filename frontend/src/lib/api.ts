@@ -2,7 +2,10 @@ import type {
   CreateUserInput,
   LoginRequest,
   LoginResponse,
+  RatingCell,
+  RecordSubsampleRatingsCommand,
   RefreshResponse,
+  SubsampleRatingResult,
   User,
 } from '../types';
 import { tokens } from './tokens';
@@ -197,4 +200,15 @@ export const api = {
 
   deleteUser: (id: string) =>
     noContentRequest(`/api/Users/${id}`, { method: 'DELETE' }),
+
+  // Ratings ---------------------------------------------------------------
+
+  recordRating: (input: RecordSubsampleRatingsCommand) =>
+    jsonRequest<SubsampleRatingResult>('/api/Ratings', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  readPlotColumn: (plot: number, traitOrdinal: number) =>
+    jsonRequest<RatingCell[]>(`/api/Ratings/${plot}/${traitOrdinal}`),
 };

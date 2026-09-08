@@ -40,7 +40,7 @@ export function LoginView() {
     try {
       const user = await loginRequest(email.trim(), password);
       login(user);
-      navigate('/', { replace: true });
+      navigate('/ratings', { replace: true });
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setError('Invalid email or password.');

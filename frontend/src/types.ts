@@ -45,3 +45,44 @@ export type RefreshResponse = {
  * returned profile is what the app treats as the current user.
  */
 export type CurrentUser = User;
+
+// ---------------------------------------------------------------------------
+// Rating types — mirror the ASP.NET Core WebAPI DTOs:
+//
+//   POST   /api/Ratings              -> SubsampleRatingResult
+//   GET    /api/Ratings/{plot}/{trait} -> RatingCell[]
+// ---------------------------------------------------------------------------
+
+/** Command to record a rating for one plot/trait combination. */
+export type RecordSubsampleRatingsCommand = {
+  plot: number;
+  traitOrdinal: number;
+  value: number;
+  subsampleIndices: number[];
+};
+
+/** A single written cell returned by the rating endpoint. */
+export type WrittenCellDto = {
+  subsample: number;
+  cellAddress: string;
+  value: number;
+};
+
+/** Result after successfully recording a rating. */
+export type SubsampleRatingResult = {
+  plot: number;
+  traitOrdinal: number;
+  value: number;
+  writtenCells: WrittenCellDto[];
+  untouchedSubsamples: number[];
+  emptyPreserved: boolean;
+};
+
+/** Current value of a single cell when reading a plot column. */
+export type RatingCell = {
+  plot: number;
+  subsample: number;
+  traitOrdinal: number;
+  value: number | null;
+  cellAddress: string;
+};

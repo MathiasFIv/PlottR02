@@ -170,10 +170,12 @@ public class RecordRatingsService : IRecordRatingsService
                     Value = c.Value ?? command.Value,
                 })
                 .ToList(),
-            // Any requested subsample we could not match against the workbook is reported
-            // as untouched and marks the write as not fully preserved (honest reporting).
+            // A write is fully preserved only when every requested subsample existed and was
+            // written; any unmatched request index makes EmptyPreserved false — honest
+            // reporting per the DTO contract (always true unless an indexed subsample does not
+            // exist). The untouched set above reports exactly which indices went unmatched.
             UntouchedSubsamples = subsamples.Except(written.Select(c => c.Subsample)).ToList(),
-            EmptyPreserved = true,
+            EmptyPreserved = written.Count == subsamples.Count,
         };
 
         return result;

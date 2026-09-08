@@ -1,17 +1,18 @@
 import { atom } from 'jotai';
-import type { CurrentUser, User } from '../types';
-import { tokens } from '../lib/tokens';
+import type { CurrentUser, RatingCell, SubsampleRatingResult, User } from '../types';
 
 /** The authenticated user profile (populated on login or session restore). */
 export const currentUserAtom = atom<CurrentUser | null>(null);
 
 /**
- * Derived atom: true when a persisted access token exists in localStorage.
- * Guards use this instead of currentUserAtom so the login page doesn't flash
- * on refresh while the session is being restored.
+ * Derived atom: true once the authenticated user profile is loaded. Dependency-less
+ * atoms that read localStorage/other external state are evaluated only once and never
+ * re-run (a stale-value footgun), so this derives from the reactive currentUserAtom
+ * instead. The "login page flashing on refresh" concern is already handled in App.tsx,
+ * which blocks the router behind a "Restoring session…" gate until restore completes.
  */
 export const isAuthenticatedAtom = atom<boolean>(
-  () => tokens.getAccessToken() !== null,
+  (get) => get(currentUserAtom) !== null,
 );
 
 /** All users currently loaded from GET /api/Users. */
@@ -22,3 +23,25 @@ export const loadingAtom = atom<boolean>(false);
 
 /** Last error message from a users API request, if any. */
 export const errorAtom = atom<string | null>(null);
+
+// ---------------------------------------------------------------------------
+// Rating atoms
+// ---------------------------------------------------------------------------
+
+/** Cells returned by GET /api/Ratings/{plot}/{trait}. */
+export const ratingCellsAtom = atom<RatingCell[]>([]);
+
+/** Whether a record-rating API request is in flight. */
+export const ratingRecordLoadingAtom = atom<boolean>(false);
+
+/** Last error message from a record-rating API request, if any. */
+export const ratingRecordErrorAtom = atom<string | null>(null);
+
+/** Whether a read-plot-column API request is in flight. */
+export const ratingReadLoadingAtom = atom<boolean>(false);
+
+/** Last error message from a read-plot-column API request, if any. */
+export const ratingReadErrorAtom = atom<string | null>(null);
+
+/** The most recently recorded rating result, or null. */
+export const lastRatingResultAtom = atom<SubsampleRatingResult | null>(null);

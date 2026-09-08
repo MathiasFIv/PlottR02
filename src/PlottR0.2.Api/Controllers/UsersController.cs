@@ -81,6 +81,7 @@ public class UsersController : ControllerBase
     /// <param name="ct">Cancellation token.</param>
     /// <returns>201 with the created user and a Location header to fetch it.</returns>
     [HttpPost]
+    [AllowAnonymous]
     public async Task<ActionResult<UserResponse>> Create([FromBody] CreateUserRequest request, CancellationToken ct = default)
     {
         var created = await _userService.CreateAsync(request, ct);

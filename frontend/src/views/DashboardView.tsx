@@ -1,7 +1,7 @@
 import { useAtomValue } from 'jotai';
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '../components/Button';
 import { FormField } from '../components/FormField';
 import { UserList } from '../components/UserList';
@@ -88,6 +88,9 @@ export function DashboardView() {
               {currentUser.role ? ` (${currentUser.role})` : ''}
             </span>
           )}
+          <Link className="link-button" to="/ratings">
+            Ratings
+          </Link>
           <Button variant="secondary" onClick={handleLogout}>
             Log out
           </Button>

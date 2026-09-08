@@ -61,6 +61,15 @@ p {
   margin-top: 12px;
 }
 
+.warning-text {
+  color: #b45309;
+  font-size: 14px;
+  background: #fef3c7;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-top: 12px;
+}
+
 .card {
   background: #fff;
   border: 1px solid #e5e7eb;
@@ -297,4 +306,91 @@ p {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;
   word-break: break-all;
+}
+
+/* ---------- Ratings ---------- */
+
+.ratings {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 32px 24px;
+  display: grid;
+  gap: 24px;
+}
+
+.rating-hint {
+  margin-top: -8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.rating-subsamples {
+  border: none;
+  padding: 0;
+  margin: 0 0 16px;
+}
+
+.rating-subsamples__legend {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+}
+
+.rating-subsample {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 16px;
+  font-size: 14px;
+  color: #374151;
+  cursor: pointer;
+}
+
+.rating-result {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.result-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.result-list__item {
+  font-size: 14px;
+  color: #111827;
+  padding: 4px 0;
+}
+
+.rating-column-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.rating-column-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 14px;
+}
+
+.rating-column-item + .rating-column-item {
+  border-top: 1px solid #e5e7eb;
+}
+
+.rating-column-value {
+  font-weight: 500;
+  color: #111827;
 }
