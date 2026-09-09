@@ -6,6 +6,7 @@ import type {
   RecordSubsampleRatingsCommand,
   RefreshResponse,
   SubsampleRatingResult,
+  TrialSummary,
   User,
 } from '../types';
 import { tokens } from './tokens';
@@ -84,15 +85,22 @@ function buildHeaders(
  * a single token-refresh is attempted (deduped across concurrent calls). The
  * original request is then retried with the new access token. If refresh fails
  * an `ApiError(401)` is thrown.
+ *
+ * When `applyDefaultHeaders` is false (default true), `buildHeaders` is
+ * skipped so that the browser can set its own Content-Type — required for
+ * multipart/form-data where the boundary must be auto-generated.
  */
 async function requestWithRetry(
   path: string,
   init: RequestInit | undefined,
   withAuth: boolean,
+  applyDefaultHeaders = true,
 ): Promise<Response> {
+  const headers = applyDefaultHeaders ? buildHeaders(init, withAuth) : undefined;
+
   let response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
-    headers: buildHeaders(init, withAuth),
+    headers,
   });
 
   if (response.status === 401 && withAuth && tokens.getAccessToken()) {
@@ -109,10 +117,12 @@ async function requestWithRetry(
       const newToken = await refreshPromise;
       response = await fetch(`${API_BASE_URL}${path}`, {
         ...init,
-        headers: {
-          ...buildHeaders(init, withAuth),
-          Authorization: `Bearer ${newToken}`,
-        },
+        headers: applyDefaultHeaders
+          ? {
+              ...buildHeaders(init, withAuth),
+              Authorization: `Bearer ${newToken}`,
+            }
+          : { Authorization: `Bearer ${newToken}` },
       });
 
       // If the retried request is still 401 the session has been revoked
@@ -156,6 +166,46 @@ async function noContentRequest(
       `API request failed (${response.status}): ${path}`,
     );
   }
+}
+
+/**
+ * Multipart form-data request. Skips the default `Content-Type: application/json`
+ * header so that the browser auto-generates `multipart/form-data; boundary=...`.
+ * Reuses the same auth header + 401-refresh-retry behaviour as `jsonRequest`.
+ */
+async function formRequest<T>(
+  path: string,
+  body: FormData,
+  withAuth = true,
+): Promise<T> {
+  const response = await requestWithRetry(
+    path,
+    { method: 'POST', body },
+    withAuth,
+    false, // applyDefaultHeaders — let the browser set Content-Type for FormData
+  );
+  if (!response.ok) {
+    let message = `API request failed (${response.status}): ${path}`;
+    try {
+      const text = await response.text();
+      if (text) {
+        // ASP.NET Core may serialize a plain-string error as a JSON string
+        // literal (e.g. `"File is too large"` including the surrounding
+        // quotes).  Try to parse so the user sees a clean message.
+        try {
+          const parsed = JSON.parse(text) as unknown;
+          message = typeof parsed === 'string' ? parsed : text;
+        } catch {
+          // Not valid JSON (plain text) — use the raw body.
+          message = text;
+        }
+      }
+    } catch {
+      // response body not readable — keep default message
+    }
+    throw new ApiError(response.status, message);
+  }
+  return (await response.json()) as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,4 +261,14 @@ export const api = {
 
   readPlotColumn: (plot: number, traitOrdinal: number) =>
     jsonRequest<RatingCell[]>(`/api/Ratings/${plot}/${traitOrdinal}`),
+
+  // Trials ---------------------------------------------------------------
+
+  listTrials: () => jsonRequest<TrialSummary[]>('/api/Trials'),
+
+  createTrial: (file: File) => {
+    const body = new FormData();
+    body.append('file', file);
+    return formRequest<TrialSummary>('/api/Trials', body);
+  },
 };

@@ -43,6 +43,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IRatingRepository, ClosedXmlRatingRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
         services.AddScoped<IAuditLogRepository, AuditLogRepository>();
+        services.AddScoped<ITrialRepository, TrialRepository>();
+        services.AddScoped<ITrialWorkbookStore, TrialWorkbookStore>();
 
         return services;
     }

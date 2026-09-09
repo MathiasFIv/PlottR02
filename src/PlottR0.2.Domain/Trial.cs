@@ -10,6 +10,8 @@ public class Trial : AuditableEntity
     public Guid Id { get; set; }
     public string ExternalId { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
+    public string Status { get; set; } = "Created";
+    public string? SourceWorkbookPath { get; set; }
     public List<Plot> Plots { get; set; } = [];
 
     /// <summary>

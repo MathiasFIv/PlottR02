@@ -1,5 +1,11 @@
 import { atom } from 'jotai';
-import type { CurrentUser, RatingCell, SubsampleRatingResult, User } from '../types';
+import type {
+  CurrentUser,
+  RatingCell,
+  SubsampleRatingResult,
+  TrialSummary,
+  User,
+} from '../types';
 
 /** The authenticated user profile (populated on login or session restore). */
 export const currentUserAtom = atom<CurrentUser | null>(null);
@@ -45,3 +51,22 @@ export const ratingReadErrorAtom = atom<string | null>(null);
 
 /** The most recently recorded rating result, or null. */
 export const lastRatingResultAtom = atom<SubsampleRatingResult | null>(null);
+
+// ---------------------------------------------------------------------------
+// Trial atoms
+// ---------------------------------------------------------------------------
+
+/** All trials currently loaded from GET /api/Trials. */
+export const trialsAtom = atom<TrialSummary[]>([]);
+
+/** Whether a trials list API request is in flight. */
+export const trialsLoadingAtom = atom<boolean>(false);
+
+/** Last error message from a trials list API request, if any. */
+export const trialsErrorAtom = atom<string | null>(null);
+
+/** Whether a trial upload (POST /api/Trials) is in flight. */
+export const trialsUploadingAtom = atom<boolean>(false);
+
+/** Last error message from a trial upload request, if any. */
+export const trialsUploadErrorAtom = atom<string | null>(null);

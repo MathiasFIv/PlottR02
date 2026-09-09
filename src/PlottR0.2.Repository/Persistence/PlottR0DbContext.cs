@@ -54,6 +54,12 @@ public class PlottR0DbContext : DbContext
             entity.Property(t => t.FileName)
                 .IsRequired()
                 .HasMaxLength(500);
+            entity.Property(t => t.Status)
+                .IsRequired()
+                .HasMaxLength(20)
+                .HasDefaultValue(TrialStatus.Created);
+            entity.Property(t => t.SourceWorkbookPath)
+                .HasMaxLength(500);
 
             // Trial 1 -> N Plot. Plot has no TrialId property, so EF materializes
             // a shadow FK (TrialId) GUID column on the Plots table.

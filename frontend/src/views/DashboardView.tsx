@@ -1,12 +1,14 @@
 import { useAtomValue } from 'jotai';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '../components/Button';
 import { FormField } from '../components/FormField';
+import { TrialList } from '../components/TrialList';
 import { UserList } from '../components/UserList';
 import { currentUserAtom } from '../store/atoms';
 import { useAuth } from '../hooks/useAuth';
+import { useTrials } from '../hooks/useTrials';
 import { useUsers } from '../hooks/useUsers';
 
 /**
@@ -18,6 +20,15 @@ export function DashboardView() {
   const navigate = useNavigate();
   const { logout } = useAuth();
   const { users, loading, error, fetchUsers, createUser } = useUsers();
+  const {
+    trials,
+    loading: trialsLoading,
+    error: trialsError,
+    uploading,
+    uploadError,
+    fetchTrials,
+    createTrial,
+  } = useTrials();
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -26,6 +37,11 @@ export function DashboardView() {
   const [validationError, setValidationError] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Trial upload state
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -75,6 +91,27 @@ export function DashboardView() {
   function handleLogout() {
     logout();
     navigate('/login', { replace: true });
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    setSelectedFile(file);
+    setUploadedFileName(null);
+  }
+
+  async function handleUpload(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedFile || uploading) return;
+
+    const result = await createTrial(selectedFile);
+    if (result) {
+      setUploadedFileName(result.fileName);
+      setSelectedFile(null);
+      // Reset the native file input so it shows the empty state
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
   }
 
   return (
@@ -173,6 +210,54 @@ export function DashboardView() {
             </button>
           </div>
           <UserList users={users} loading={loading} error={error} />
+        </section>
+
+        <section className="card">
+          <div className="card__header">
+            <h2 className="heading">Trials</h2>
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => void fetchTrials()}
+            >
+              Refresh
+            </button>
+          </div>
+
+          <form onSubmit={handleUpload}>
+            <div className="field">
+              <label htmlFor="trial-file" className="field__label">
+                Upload .xlsx workbook
+              </label>
+              <input
+                ref={fileInputRef}
+                id="trial-file"
+                type="file"
+                accept=".xlsx"
+                className="input"
+                onChange={handleFileChange}
+              />
+            </div>
+            <Button
+              type="submit"
+              disabled={!selectedFile || uploading}
+            >
+              {uploading ? 'Uploading…' : 'Upload trial'}
+            </Button>
+          </form>
+
+          {uploadError && <p className="error-text">{uploadError}</p>}
+          {uploadedFileName && (
+            <p className="success-text" role="status">
+              Uploaded "{uploadedFileName}" — the list below has been refreshed.
+            </p>
+          )}
+
+          <TrialList
+            trials={trials}
+            loading={trialsLoading}
+            error={trialsError}
+          />
         </section>
       </main>
     </div>

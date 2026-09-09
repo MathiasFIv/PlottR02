@@ -86,3 +86,20 @@ export type RatingCell = {
   value: number | null;
   cellAddress: string;
 };
+
+// ---------------------------------------------------------------------------
+// Trial types — mirror the ASP.NET Core WebAPI DTOs:
+//
+//   GET  /api/Trials          -> TrialSummary[]
+//   POST /api/Trials          -> 201 TrialSummary  (multipart/form-data, field: file)
+// ---------------------------------------------------------------------------
+
+/** Summary of a trial workbook uploaded to the backend. */
+export type TrialSummary = {
+  trialId: string;
+  externalId: string;
+  fileName: string;
+  status: string;
+  createdAt: string;
+  createdBy: string | null;
+};
