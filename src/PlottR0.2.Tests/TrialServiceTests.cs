@@ -208,28 +208,32 @@ public sealed class TrialServiceTests : IAsyncLifetime
         var filePath = Path.Combine(serviceDir, relativePath);
         File.Exists(filePath).Should().BeTrue("the workbook file should exist after SaveAsync");
 
+        // Snapshot the Working/ directory state BEFORE the service call so we can
+        // do a delta assertion (order-independent, no absolute count).
+        var workingBase = Path.Combine(serviceDir, "Working");
+        var dirsBefore = Directory.Exists(workingBase)
+            ? new HashSet<string>(Directory.GetDirectories(workingBase))
+            : new HashSet<string>();
+
         // Act & Assert — CreateTrialAsync will fail because the repo throws,
         // and the service should clean up the file.
-        // Note: we can't call service.CreateTrialAsync because it generates its own trialId.
-        // Instead, exercise the cleanup path directly by verifying the store's DeleteAsync works.
-        // But to test the full service flow, we construct a service that uses our faulting repo
-        // AND the real store. The service will save the file, fail on DB insert, and clean up.
-
-        // Actually, we CAN test via the service — the store.SaveAsync will succeed (it doesn't
-        // need a DB), and then the repo.CreateAsync will throw. The service catches and deletes.
         using var freshStream = TrialWorkbookFactory.CreateStream();
         var act = () => service.CreateTrialAsync(fileName, freshStream);
         await act.Should().ThrowAsync<InvalidOperationException>();
 
-        // Assert — the file from the SERVICE call should be cleaned up.
-        // The service generates its own trialId, so we need to find the file.
-        // Since we can't predict the service's trialId, check that NO new Working dirs remain
-        // beyond what we created manually.
-        var workingBase = Path.Combine(serviceDir, "Working");
+        // Assert — delta: no NEW Working/ dirs remain after the service call.
+        // The service creates a dir then cleans it up on failure, so the set after
+        // must be a subset of what existed before.
         var dirsAfter = Directory.Exists(workingBase)
-            ? Directory.GetDirectories(workingBase).Length
-            : 0;
-        dirsAfter.Should().Be(1, "only our manually-created Working dir should remain; the service should have cleaned up its own");
+            ? new HashSet<string>(Directory.GetDirectories(workingBase))
+            : new HashSet<string>();
+
+        dirsAfter.Should().BeSubsetOf(dirsBefore,
+            "the service should have cleaned up its own Working/<id>/ dir, leaving no new dirs behind");
+
+        // Our manually-created dir should still be present (we clean it up ourselves below).
+        var manualDir = Path.Combine(workingBase, trialId.ToString());
+        Directory.Exists(manualDir).Should().BeTrue("our manually-created dir still exists");
 
         // Cleanup our manual file
         await store.DeleteAsync(relativePath);

@@ -91,7 +91,10 @@ public class TokenService : ITokenService
     public int RefreshTokenLifetimeDays => _options.RefreshTokenExpirationDays;
 
     /// <summary>
-    /// Builds the claim set the access token carries.
+    /// Builds the claim set the access token carries. Uses the short JWT
+    /// claim names (<c>sub</c>, <c>email</c>, <c>name</c>, <c>role</c>)
+    /// so the token payload is directly readable by callers that use
+    /// <c>MapInboundClaims = false</c>.
     /// </summary>
     /// <param name="user">The authenticated user profile.</param>
     /// <returns>The populated claim list.</returns>
@@ -99,16 +102,16 @@ public class TokenService : ITokenService
     {
         var claims = new List<Claim>
         {
-            new(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new(ClaimTypes.Email, user.Email),
-            new(ClaimTypes.Name, user.Name),
+            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            new(JwtRegisteredClaimNames.Email, user.Email),
+            new(JwtRegisteredClaimNames.Name, user.Name),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
         };
 
         // Role is optional — only emit the claim when the user has one assigned.
         if (!string.IsNullOrEmpty(user.Role))
         {
-            claims.Add(new Claim(ClaimTypes.Role, user.Role));
+            claims.Add(new Claim("role", user.Role));
         }
 
         return claims;

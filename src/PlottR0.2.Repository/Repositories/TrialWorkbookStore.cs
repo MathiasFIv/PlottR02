@@ -5,11 +5,29 @@ namespace PlottR0._2.Repository.Repositories;
 
 /// <summary>
 /// File-system implementation of <see cref="ITrialWorkbookStore"/>.
-/// Stores uploaded trial workbooks under the repo-root Service/Working/ directory.
+/// Stores uploaded trial workbooks under the repo-root Service/Working/ directory
+/// (or an overridden root supplied via the constructor).
 /// Uses ClosedXML to validate that uploaded content is a real xlsx workbook before persisting.
 /// </summary>
 public sealed class TrialWorkbookStore : ITrialWorkbookStore
 {
+    private readonly string? _baseDir;
+
+    /// <summary>
+    /// Creates a store that uses the default repo-root <c>Service/</c> directory.
+    /// </summary>
+    public TrialWorkbookStore() : this(null) { }
+
+    /// <summary>
+    /// Creates a store rooted at <paramref name="baseDir"/> (used by tests to
+    /// avoid touching the shared workspace).
+    /// </summary>
+    /// <param name="baseDir">
+    /// The root directory under which <c>Working/</c> is created.
+    /// Pass <c>null</c> to fall back to <see cref="ResolveServiceDirectory"/>.
+    /// </param>
+    public TrialWorkbookStore(string? baseDir) => _baseDir = baseDir;
+
     /// <inheritdoc />
     public async Task<string> SaveAsync(Guid trialId, string fileName, Stream content, CancellationToken ct = default)
     {
@@ -48,8 +66,8 @@ public sealed class TrialWorkbookStore : ITrialWorkbookStore
             throw new InvalidDataException("Not a valid xlsx workbook.", ex);
         }
 
-        // Resolve the Service/ directory using the same walk-up logic as ClosedXmlRatingRepository.
-        var serviceDir = ResolveServiceDirectory();
+        // Resolve the Service/ directory — either the injected test root or the real one.
+        var serviceDir = _baseDir ?? ResolveServiceDirectory();
         var targetDir = Path.Combine(serviceDir, "Working", trialId.ToString());
         Directory.CreateDirectory(targetDir);
 
@@ -69,7 +87,7 @@ public sealed class TrialWorkbookStore : ITrialWorkbookStore
     {
         try
         {
-            var serviceDir = ResolveServiceDirectory();
+            var serviceDir = _baseDir ?? ResolveServiceDirectory();
             var absolutePath = Path.Combine(serviceDir, relativePath);
 
             if (File.Exists(absolutePath))

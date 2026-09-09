@@ -6,24 +6,32 @@ namespace PlottR0._2.Tests;
 /// <summary>
 /// Pure unit tests for <see cref="TrialWorkbookStore"/>.
 /// Tests file I/O and workbook validation without touching Postgres.
+/// Uses a per-test isolated temp directory to avoid interfering with
+/// concurrent tests that share the repo-root Service/Working/ root.
 /// </summary>
 public sealed class TrialWorkbookStoreTests : IAsyncLifetime
 {
+    private readonly string _tempRoot;
     private readonly List<(Guid TrialId, string RelativePath)> _createdFiles = [];
+
+    public TrialWorkbookStoreTests()
+    {
+        _tempRoot = Path.Combine(Path.GetTempPath(), "PlottrTests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_tempRoot);
+    }
 
     public Task InitializeAsync() => Task.CompletedTask;
 
     public async Task DisposeAsync()
     {
         // Clean up every file (and its parent Working/<id> dir) created by the store.
-        var serviceDir = TrialWorkbookStore.ResolveServiceDirectory();
         var cleanedDirs = new HashSet<string>();
 
         foreach (var (_, relativePath) in _createdFiles)
         {
             try
             {
-                var absolutePath = Path.Combine(serviceDir, relativePath);
+                var absolutePath = Path.Combine(_tempRoot, relativePath);
                 if (File.Exists(absolutePath))
                     File.Delete(absolutePath);
 
@@ -52,14 +60,27 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
             }
         }
 
+        // Remove the temp root itself if it's empty.
+        try
+        {
+            if (Directory.Exists(_tempRoot) && !Directory.EnumerateFileSystemEntries(_tempRoot).Any())
+                Directory.Delete(_tempRoot);
+        }
+        catch
+        {
+            // Best-effort cleanup.
+        }
+
         await Task.CompletedTask;
     }
+
+    private TrialWorkbookStore CreateStore() => new(_tempRoot);
 
     [Fact]
     public async Task SaveAsync_ValidXlsx_SavesFileAndReturnsRelativePath()
     {
         // Arrange
-        var store = new TrialWorkbookStore();
+        var store = CreateStore();
         var trialId = Guid.NewGuid();
         var fileName = "valid trial.xlsx";
         using var stream = TrialWorkbookFactory.CreateStream();
@@ -74,8 +95,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         relativePath.Should().EndWith("valid trial.xlsx");
 
         // Verify file exists on disk
-        var serviceDir = TrialWorkbookStore.ResolveServiceDirectory();
-        var expectedPath = Path.Combine(serviceDir, relativePath);
+        var expectedPath = Path.Combine(_tempRoot, relativePath);
         File.Exists(expectedPath).Should().BeTrue("the workbook file should exist on disk");
     }
 
@@ -83,7 +103,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
     public async Task SaveAsync_InvalidContent_ThrowsInvalidDataException()
     {
         // Arrange
-        var store = new TrialWorkbookStore();
+        var store = CreateStore();
         var trialId = Guid.NewGuid();
         var fileName = "garbage.xlsx";
         var garbageBytes = "this is not a workbook"u8.ToArray();
@@ -98,7 +118,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
     public async Task SaveAsync_WrongExtension_ThrowsArgumentException()
     {
         // Arrange
-        var store = new TrialWorkbookStore();
+        var store = CreateStore();
         var trialId = Guid.NewGuid();
         var fileName = "document.txt";
         using var stream = TrialWorkbookFactory.CreateStream();
@@ -113,7 +133,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
     public async Task SaveAsync_EmptyFileName_ThrowsArgumentException()
     {
         // Arrange
-        var store = new TrialWorkbookStore();
+        var store = CreateStore();
         var trialId = Guid.NewGuid();
         using var stream = TrialWorkbookFactory.CreateStream();
 
@@ -126,7 +146,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
     public async Task SaveAsync_NullStream_ThrowsArgumentNull()
     {
         // Arrange
-        var store = new TrialWorkbookStore();
+        var store = CreateStore();
         var trialId = Guid.NewGuid();
 
         // Act & Assert
@@ -138,7 +158,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
     public async Task SaveAsync_EmptyStream_ThrowsArgumentException()
     {
         // Arrange
-        var store = new TrialWorkbookStore();
+        var store = CreateStore();
         var trialId = Guid.NewGuid();
         using var stream = new MemoryStream();
 
@@ -151,13 +171,12 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
     public async Task DeleteAsync_ExistingFile_RemovesIt()
     {
         // Arrange
-        var store = new TrialWorkbookStore();
+        var store = CreateStore();
         var trialId = Guid.NewGuid();
         using var stream = TrialWorkbookFactory.CreateStream();
         var relativePath = await store.SaveAsync(trialId, "delete me.xlsx", stream);
 
-        var serviceDir = TrialWorkbookStore.ResolveServiceDirectory();
-        var absolutePath = Path.Combine(serviceDir, relativePath);
+        var absolutePath = Path.Combine(_tempRoot, relativePath);
         File.Exists(absolutePath).Should().BeTrue("file should exist after save");
 
         // Act
@@ -171,7 +190,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
     public async Task DeleteAsync_NonExistentFile_DoesNotThrow()
     {
         // Arrange
-        var store = new TrialWorkbookStore();
+        var store = CreateStore();
         var fakePath = Path.Combine("Working", Guid.NewGuid().ToString(), "nope.xlsx");
 
         // Act & Assert — should not throw
