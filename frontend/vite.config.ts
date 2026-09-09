@@ -64,4 +64,22 @@ export default defineConfig({
       },
     },
   },
+  preview: {
+    // `vite preview` serves the production build (this is what you run for
+    // PWA testing at http://localhost:4173). It does NOT inherit server.proxy,
+    // so define the same /api forward here or every API call would 404 on the
+    // preview server. Same origin + same backend as dev.
+    //
+    // Bind IPv4 explicitly: on Windows, Vite's default 'localhost' resolves to
+    // IPv6 ::1 only, and `adb reverse` (for testing the PWA in the Android
+    // emulator) connects to 127.0.0.1 on the host. IPv6-only binding makes the
+    // tunnel accept but never get a response back ("Empty reply from server").
+    host: '127.0.0.1',
+    proxy: {
+      '/api': {
+        target: 'http://localhost:5095',
+        changeOrigin: true,
+      },
+    },
+  },
 })

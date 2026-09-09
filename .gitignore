@@ -50,3 +50,6 @@ dist-ssr/
 
 # ── Code coverage (generated HTML/Cobertura — local-only, never commit) ──
 coverage/
+
+# ── Local dev tools (machine-specific — keep out of the repo) ──
+scripts/dev/android-preview.ps1
