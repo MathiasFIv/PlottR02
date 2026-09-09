@@ -53,7 +53,7 @@ jobs:
           dotnet reportgenerator
           -reports:"./coverage/results/**/coverage.cobertura.xml"
           -targetdir:./coverage/report
-          -reporttypes:HtmlInline_AzurePipelines_Dark;Cobertura;TextSummary
+          -reporttypes:'HtmlInline_AzurePipelines_Dark;Cobertura;TextSummary'
           -verbosity:Info
 
       - name: Upload coverage report
