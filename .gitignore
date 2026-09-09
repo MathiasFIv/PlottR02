@@ -47,3 +47,6 @@ dist-ssr/
 # App configuration & secrets — commit .example templates only
 **/appsettings.json
 **/appsettings.*.json
+
+# ── Code coverage (generated HTML/Cobertura — local-only, never commit) ──
+coverage/

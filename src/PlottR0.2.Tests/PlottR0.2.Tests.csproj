@@ -35,6 +35,12 @@
 
     <!-- FluentAssertions — expressive assertions (optional but recommended) -->
     <PackageReference Include="FluentAssertions" Version="7.1.0" />
+
+    <!-- Coverlet — code coverage collection via the "XPlat Code Coverage" data collector -->
+    <PackageReference Include="coverlet.collector" Version="10.0.1">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
   </ItemGroup>
 
 </Project>
