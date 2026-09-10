@@ -125,6 +125,9 @@ export function DashboardView() {
               {currentUser.role ? ` (${currentUser.role})` : ''}
             </span>
           )}
+          <Link className="link-button" to="/record">
+            Record
+          </Link>
           <Link className="link-button" to="/ratings">
             Ratings
           </Link>

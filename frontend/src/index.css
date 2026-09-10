@@ -447,3 +447,193 @@ p {
   font-weight: 500;
   color: #111827;
 }
+
+/* ---------- Voice recorder ---------- */
+
+.record-screen {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 24px 16px;
+  display: grid;
+  gap: 16px;
+}
+
+.record-trial-field {
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+.record-no-trials {
+  padding: 12px 16px;
+  background: #fff;
+  border: 1px dashed #d1d5db;
+  border-radius: 8px;
+}
+
+.record-mic-card {
+  display: grid;
+  gap: 16px;
+}
+
+.record-mic-area {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 12px 0 4px;
+}
+
+.mic-button {
+  width: 88px;
+  height: 88px;
+  border: none;
+  border-radius: 50%;
+  background: #059669;
+  color: #fff;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 12px rgba(5, 150, 105, 0.35);
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.mic-button:hover:not(:disabled) {
+  background: #047857;
+}
+
+.mic-button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.mic-button:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.mic-button__glyph {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 4px solid currentColor;
+}
+
+.mic-button--recording {
+  background: #dc2626;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.4);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.mic-button--recording .mic-button__glyph {
+  border-radius: 4px;
+  border-width: 0;
+  background: #fff;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 14px rgba(220, 38, 38, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
+  }
+}
+
+.record-duration {
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #111827;
+}
+
+.record-status {
+  display: grid;
+  justify-items: center;
+}
+
+.record-saved {
+  margin-top: 0;
+}
+
+.record-unsupported {
+  text-align: center;
+  max-width: 32ch;
+}
+
+.record-error {
+  text-align: center;
+  margin-top: 0;
+}
+
+.pending-badge {
+  display: inline-block;
+  justify-self: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 9999px;
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+/* ---------- PWA update / offline toast ---------- */
+
+.pwa-toast {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: calc(100vw - 32px);
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: #111827;
+  color: #fff;
+  font-size: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.pwa-toast__message {
+  flex: 1;
+}
+
+.pwa-toast__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pwa-toast__refresh {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: #059669;
+  color: #fff;
+}
+
+.pwa-toast__refresh:hover {
+  background: #047857;
+}
+
+.pwa-toast__dismiss {
+  border: 1px solid #4b5563;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: #d1d5db;
+}
+
+.pwa-toast__dismiss:hover {
+  background: #1f2937;
+}

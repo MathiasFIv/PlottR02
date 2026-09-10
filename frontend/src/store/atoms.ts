@@ -70,3 +70,13 @@ export const trialsUploadingAtom = atom<boolean>(false);
 
 /** Last error message from a trial upload request, if any. */
 export const trialsUploadErrorAtom = atom<string | null>(null);
+
+// ---------------------------------------------------------------------------
+// Voice recording atoms
+// ---------------------------------------------------------------------------
+
+/** How many recordings are queued in IndexedDB waiting to sync ('pending'). */
+export const pendingRecordingsCountAtom = atom<number>(0);
+
+/** The trial currently selected on the voice-record screen. */
+export const activeTrialIdAtom = atom<string | null>(null);

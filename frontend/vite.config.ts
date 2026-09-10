@@ -7,9 +7,12 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      // 'prompt' so we can surface an update prompt later via virtual:pwa-register
-      // (no autoUpdate — we want to control when the new version applies).
-      registerType: 'prompt',
+      // autoUpdate during iteration: every rebuild ships a new service worker
+      // that takes over on the next page load, so stale-shell testing bugs
+      // (old topbar / no Record link after a rebuild) cannot happen again.
+      // Switch back to 'prompt' + the PwaUpdateToast "Refresh" prompt once we
+      // gate updates for production (D5).
+      registerType: 'autoUpdate',
       manifest: {
         name: 'PlottR',
         short_name: 'PlottR',
@@ -19,7 +22,7 @@ export default defineConfig({
         display: 'standalone',
         orientation: 'portrait',
         lang: 'en',
-        start_url: '/',
+        start_url: '/record',
         icons: [
           { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
           { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
@@ -49,8 +52,10 @@ export default defineConfig({
       },
       // injectManifest omitted -> default generateSW mode (no custom
       // service-worker source file; the tooling generates sw.js).
-      // Keep the dev workflow unchanged — no PWA in `npm run dev`.
-      devOptions: { enabled: false },
+      // Enable the PWA in dev too, so recording features and the offline
+      // shell (autoUpdate mode — new builds apply on the next page load)
+      // can be exercised during development.
+      devOptions: { enabled: true },
     }),
   ],
   server: {

@@ -162,6 +162,9 @@ export function RatingsView() {
                 {currentUser.role ? ` (${currentUser.role})` : ''}
               </span>
             )}
+            <Link className="link-button" to="/record">
+              Record
+            </Link>
             <Link className="link-button" to="/">
               Dashboard
             </Link>
