@@ -1,0 +1,9 @@
+# PlottR0.2 STT Sidecar
+# =====================
+# Minimal dependencies — faster-whisper pulls CTranslate2, PyAV (bundled
+# ffmpeg), and NumPy transitively.  Do NOT add extra audio libs.
+
+fastapi>=0.100.0
+uvicorn>=0.20.0
+faster-whisper>=1.0.0
+python-multipart>=0.0.9
