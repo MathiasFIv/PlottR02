@@ -4,10 +4,20 @@ type TrialListProps = {
   trials: TrialSummary[];
   loading: boolean;
   error: string | null;
+  /** Optional per-row handler for downloading the trial's current workbook. */
+  onDownload?: (trial: TrialSummary) => void;
+  /** Trial whose workbook download is currently in flight (disables its row button). */
+  downloadingTrialId?: string | null;
 };
 
 /** Presentational list of trials fetched from GET /api/Trials. */
-export function TrialList({ trials, loading, error }: TrialListProps) {
+export function TrialList({
+  trials,
+  loading,
+  error,
+  onDownload,
+  downloadingTrialId,
+}: TrialListProps) {
   if (loading && trials.length === 0) {
     return <p className="muted">Loading trials…</p>;
   }
@@ -34,6 +44,16 @@ export function TrialList({ trials, loading, error }: TrialListProps) {
               </span>
               {trial.createdBy && (
                 <span className="muted">by {trial.createdBy}</span>
+              )}
+              {onDownload && (
+                <button
+                  type="button"
+                  className="link-button"
+                  disabled={downloadingTrialId === trial.trialId}
+                  onClick={() => onDownload(trial)}
+                >
+                  Download
+                </button>
               )}
             </div>
           </div>

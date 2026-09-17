@@ -1,3 +1,4 @@
+using System.Globalization;
 using ClosedXML.Excel;
 using PlottR0._2.Contracts.Repositories;
 
@@ -108,6 +109,82 @@ public sealed class TrialWorkbookStore : ITrialWorkbookStore
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public string? ResolveExportPath(Guid trialId, string sourceRelativePath)
+    {
+        var serviceDir = _baseDir ?? ResolveServiceDirectory();
+        var workingDir = Path.Combine(serviceDir, "Working", trialId.ToString());
+
+        // Prefer the newest accumulated sync output (if any): successive syncs chain on
+        // earlier copies, so the newest *_out_*.xlsx is the most complete representation.
+        var outputCopy = TryGetNewestOutputCopy(workingDir);
+        if (outputCopy is not null)
+        {
+            return outputCopy;
+        }
+
+        // No sync output yet — fall back to the pristine uploaded workbook.
+        if (string.IsNullOrWhiteSpace(sourceRelativePath))
+        {
+            return null;
+        }
+
+        // Defense-in-depth: the persisted relative path must stay inside the Service/ root,
+        // even if a crafted SourceWorkbookPath ever reaches this store.
+        var fullSource = Path.GetFullPath(Path.Combine(serviceDir, sourceRelativePath));
+        var fullBase = Path.GetFullPath(serviceDir);
+        if (!fullSource.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return File.Exists(fullSource) ? fullSource : null;
+    }
+
+    /// <summary>
+    /// Returns the newest existing output copy in the trial's working directory — the file
+    /// whose name contains <c>_out_yyyyMMdd_HHmmss.xlsx</c> with the greatest timestamp — or
+    /// <see langword="null"/> when no copy exists yet. The <see langword="last"/> <c>_out_</c>
+    /// marker is used, so a chained copy (one created from another output copy) parses to its
+    /// own newest stamp. Ported from <c>RecordingSyncService.TryGetNewestOutputCopy</c> so the
+    /// exported workbook matches the copy a subsequent sync would read from.
+    /// </summary>
+    private static string? TryGetNewestOutputCopy(string outputDirectory)
+    {
+        if (!Directory.Exists(outputDirectory))
+        {
+            return null;
+        }
+
+        string? newestPath = null;
+        DateTime newestStamp = default;
+        const string marker = "_out_";
+        foreach (var file in Directory.GetFiles(outputDirectory, "*.xlsx"))
+        {
+            var name = Path.GetFileNameWithoutExtension(file);
+            var markerIndex = name.LastIndexOf(marker, StringComparison.Ordinal);
+            if (markerIndex < 0)
+            {
+                continue;
+            }
+
+            var stamp = name[(markerIndex + marker.Length)..];
+            if (DateTime.TryParseExact(
+                    stamp,
+                    "yyyyMMdd_HHmmss",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out var parsedStamp)
+                && (newestPath is null || parsedStamp > newestStamp))
+            {
+                newestStamp = parsedStamp;
+                newestPath = file;
+            }
+        }
+
+        return newestPath;
     }
 
     /// <summary>

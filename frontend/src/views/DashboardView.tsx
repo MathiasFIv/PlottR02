@@ -6,10 +6,12 @@ import { Button } from '../components/Button';
 import { FormField } from '../components/FormField';
 import { TrialList } from '../components/TrialList';
 import { UserList } from '../components/UserList';
+import { api } from '../lib/api';
 import { currentUserAtom } from '../store/atoms';
 import { useAuth } from '../hooks/useAuth';
 import { useTrials } from '../hooks/useTrials';
 import { useUsers } from '../hooks/useUsers';
+import type { TrialSummary } from '../types';
 
 /**
  * Logged-in dashboard: a "create user" form (POST /api/Users) plus the live
@@ -42,6 +44,15 @@ export function DashboardView() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+
+  // Trial workbook download state
+  const [downloadingTrialId, setDownloadingTrialId] = useState<string | null>(
+    null,
+  );
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadedFileName, setDownloadedFileName] = useState<string | null>(
+    null,
+  );
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -111,6 +122,22 @@ export function DashboardView() {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+    }
+  }
+
+  async function handleDownload(trial: TrialSummary) {
+    setDownloadingTrialId(trial.trialId);
+    setDownloadError(null);
+    setDownloadedFileName(null);
+    try {
+      const name = await api.downloadWorkbook(trial.trialId);
+      setDownloadedFileName(name);
+    } catch (err) {
+      setDownloadError(
+        err instanceof Error ? err.message : 'Could not download the workbook.',
+      );
+    } finally {
+      setDownloadingTrialId(null);
     }
   }
 
@@ -260,7 +287,21 @@ export function DashboardView() {
             trials={trials}
             loading={trialsLoading}
             error={trialsError}
+            onDownload={handleDownload}
+            downloadingTrialId={downloadingTrialId}
           />
+
+          {downloadingTrialId && (
+            <p className="muted" role="status">
+              Downloading workbook…
+            </p>
+          )}
+          {downloadError && <p className="error-text">{downloadError}</p>}
+          {downloadedFileName && (
+            <p className="success-text" role="status">
+              Downloaded "{downloadedFileName}"
+            </p>
+          )}
         </section>
       </main>
     </div>

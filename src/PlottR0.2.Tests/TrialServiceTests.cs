@@ -281,6 +281,118 @@ public sealed class TrialServiceTests : IAsyncLifetime
         });
     }
 
+    [Fact]
+    public async Task GetWorkbookExportAsync_UnknownTrial_ThrowsKeyNotFound()
+    {
+        // Arrange
+        using var scope = _fixture.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+
+        // Act & Assert
+        var act = () => service.GetWorkbookExportAsync(Guid.NewGuid());
+        await act.Should().ThrowAsync<KeyNotFoundException>();
+    }
+
+    [Fact]
+    public async Task GetWorkbookExportAsync_ExistingTrialNoOutputs_ReturnsPristine()
+    {
+        // Arrange — create a trial (DB row + source workbook written to Service/Working/).
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = TrialWorkbookFactory.CreateStream();
+        TrialSummary summary;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            summary = await service.CreateTrialAsync(fileName, stream);
+        }
+        var trialId = Guid.Parse(summary.TrialId);
+        _createdTrialIds.Add(trialId);
+
+        // Act
+        WorkbookExport export;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            export = await service.GetWorkbookExportAsync(trialId);
+        }
+
+        // Assert — no sync outputs exist, so the uploaded original is served by name.
+        export.FileName.Should().Be(fileName);
+        export.FilePath.Should().NotBeNullOrWhiteSpace();
+        export.FilePath.Should().EndWith(fileName);
+        File.Exists(export.FilePath).Should().BeTrue("the exported workbook should exist on disk");
+    }
+
+    [Fact]
+    public async Task GetWorkbookExportAsync_ExistingTrialWithNewestOutput_ReturnsOutputCopy()
+    {
+        // Arrange — create a trial, then write two accumulated sync copies directly into
+        // Service/Working/<trialId>/ (mirroring what RecordingSyncService produces).
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = TrialWorkbookFactory.CreateStream();
+        TrialSummary summary;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            summary = await service.CreateTrialAsync(fileName, stream);
+        }
+        var trialId = Guid.Parse(summary.TrialId);
+        _createdTrialIds.Add(trialId);
+
+        var serviceDir = TrialWorkbookStore.ResolveServiceDirectory();
+        var workingDir = Path.Combine(serviceDir, "Working", trialId.ToString());
+        var sourceBase = Path.GetFileNameWithoutExtension(fileName);
+        var older = TrialWorkbookFactory.Create(
+            Path.Combine(workingDir, $"{sourceBase}_out_20260101_000001.xlsx"));
+        var newer = TrialWorkbookFactory.Create(
+            Path.Combine(workingDir, $"{sourceBase}_out_20260102_000002.xlsx"));
+
+        // Act
+        WorkbookExport export;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            export = await service.GetWorkbookExportAsync(trialId);
+        }
+
+        // Assert — the newest output copy replaces the pristine upload.
+        export.FilePath.Should().Be(newer);
+        export.FileName.Should().Be(Path.GetFileName(newer));
+        File.Exists(export.FilePath).Should().BeTrue("the served output copy should exist on disk");
+    }
+
+    [Fact]
+    public async Task GetWorkbookExportAsync_ExistingTrialAndSourceDeletedFromDisk_ThrowsFileNotFound()
+    {
+        // Arrange — create a trial, then remove its workbook file from disk so neither
+        // an output copy nor the pristine source exists.
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = TrialWorkbookFactory.CreateStream();
+        TrialSummary summary;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            summary = await service.CreateTrialAsync(fileName, stream);
+        }
+        var trialId = Guid.Parse(summary.TrialId);
+        _createdTrialIds.Add(trialId);
+
+        var serviceDir = TrialWorkbookStore.ResolveServiceDirectory();
+        var workingDir = Path.Combine(serviceDir, "Working", trialId.ToString());
+        foreach (var file in Directory.GetFiles(workingDir, "*.xlsx"))
+        {
+            File.Delete(file);
+        }
+
+        // Act & Assert — the DB row survives, but nothing is left to serve on disk.
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            var act = () => service.GetWorkbookExportAsync(trialId);
+            await act.Should().ThrowAsync<FileNotFoundException>();
+        }
+    }
+
     /// <summary>
     /// Ensures a User row with the <see cref="DefaultActorUserId"/> exists in the database
     /// so the FKCreatedBy constraint on Trials is satisfied.

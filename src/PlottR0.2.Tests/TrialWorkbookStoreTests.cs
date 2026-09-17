@@ -197,4 +197,167 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         var act = () => store.DeleteAsync(fakePath);
         await act.Should().NotThrowAsync();
     }
+
+    [Fact]
+    public async Task ResolveExportPath_NoOutputCopy_ReturnsPristineSource()
+    {
+        // Arrange — save a trial workbook but write no *_out_*.xlsx copies.
+        var store = CreateStore();
+        var trialId = Guid.NewGuid();
+        var fileName = "pristine source.xlsx";
+        using var stream = TrialWorkbookFactory.CreateStream();
+        var relativePath = await store.SaveAsync(trialId, fileName, stream);
+        _createdFiles.Add((trialId, relativePath));
+
+        // Act
+        var resolved = store.ResolveExportPath(trialId, relativePath);
+
+        // Assert — the pristine uploaded source is served as the absolute path
+        resolved.Should().Be(
+            Path.Combine(_tempRoot, relativePath),
+            "with no _out_ copies the pristine uploaded source should be resolved");
+        Path.GetFileName(resolved!).Should().Be(fileName);
+        File.Exists(resolved!).Should().BeTrue("the resolved export path should exist on disk");
+    }
+
+    [Fact]
+    public async Task ResolveExportPath_WithOutputCopies_ReturnsNewest()
+    {
+        // Arrange — trial source plus two sync output copies; the newer stamp must win.
+        var store = CreateStore();
+        var trialId = Guid.NewGuid();
+        var fileName = "trial source.xlsx";
+        using var stream = TrialWorkbookFactory.CreateStream();
+        var relativePath = await store.SaveAsync(trialId, fileName, stream);
+        _createdFiles.Add((trialId, relativePath));
+
+        var workingDir = Path.Combine(_tempRoot, "Working", trialId.ToString());
+        var older = TrialWorkbookFactory.Create(
+            Path.Combine(workingDir, "trial source_out_20260101_000001.xlsx"));
+        var newer = TrialWorkbookFactory.Create(
+            Path.Combine(workingDir, "trial source_out_20260102_000002.xlsx"));
+        TrackDirectFile(trialId, older);
+        TrackDirectFile(trialId, newer);
+
+        // Act
+        var resolved = store.ResolveExportPath(trialId, relativePath);
+
+        // Assert — the copy with the greatest _out_ timestamp is served
+        resolved.Should().Be(newer, "the copy with the greatest _out_ timestamp should win");
+    }
+
+    [Fact]
+    public void ResolveExportPath_MissingDirAndSource_ReturnsNull()
+    {
+        // Arrange — a random trial with no working dir and a source path that never existed.
+        var store = CreateStore();
+        var trialId = Guid.NewGuid();
+        var bogusRelativePath = Path.Combine("Working", trialId.ToString(), "never uploaded.xlsx");
+
+        // Act
+        var resolved = store.ResolveExportPath(trialId, bogusRelativePath);
+
+        // Assert
+        resolved.Should().BeNull("neither an output copy nor the source workbook exists");
+    }
+
+    [Fact]
+    public void ResolveExportPath_ChainedOutputCopy_UsesLastMarker()
+    {
+        // Arrange — a copy created from another output copy carries TWO _out_ markers.
+        // The LAST marker must be parsed, so the chained copy beats its own parent.
+        var store = CreateStore();
+        var trialId = Guid.NewGuid();
+        var workingDir = Path.Combine(_tempRoot, "Working", trialId.ToString());
+        var first = TrialWorkbookFactory.Create(
+            Path.Combine(workingDir, "chain_out_20260101_010203.xlsx"));
+        var chained = TrialWorkbookFactory.Create(
+            Path.Combine(workingDir, "chain_out_20260101_010203_out_20260102_020304.xlsx"));
+        TrackDirectFile(trialId, first);
+        TrackDirectFile(trialId, chained);
+
+        // Act
+        var resolved = store.ResolveExportPath(
+            trialId, Path.Combine("Working", trialId.ToString(), "chain.xlsx"));
+
+        // Assert — the last `_out_` marker is authoritative when names are chained
+        resolved.Should().Be(chained, "the last _out_ marker should be authoritative for chained copies");
+    }
+
+    [Fact]
+    public async Task ResolveExportPath_OutputCopyWithUnparseableStamp_IsIgnored()
+    {
+        // Arrange — an _out_ name whose trailing stamp cannot parse as yyyyMMdd_HHmmss
+        // must be silently ignored, so resolution falls back to the pristine source.
+        var store = CreateStore();
+        var trialId = Guid.NewGuid();
+        var fileName = "unparseable source.xlsx";
+        using var stream = TrialWorkbookFactory.CreateStream();
+        var relativePath = await store.SaveAsync(trialId, fileName, stream);
+        _createdFiles.Add((trialId, relativePath));
+
+        var workingDir = Path.Combine(_tempRoot, "Working", trialId.ToString());
+        var unparseable = TrialWorkbookFactory.Create(
+            Path.Combine(workingDir, "unparseable source_out_soon.xlsx"));
+        TrackDirectFile(trialId, unparseable);
+
+        // Act
+        var resolved = store.ResolveExportPath(trialId, relativePath);
+
+        // Assert — the garbage stamp does not match, so the pristine upload is served.
+        resolved.Should().Be(
+            Path.Combine(_tempRoot, relativePath),
+            "copies with unparseable stamps should be silently ignored");
+    }
+
+    [Fact]
+    public async Task ResolveExportPath_WorkingDirExistsButEmpty_ReturnsPristineSource()
+    {
+        // Arrange — SaveAsync creates the working directory; it holds no _out_ copies.
+        var store = CreateStore();
+        var trialId = Guid.NewGuid();
+        var fileName = "empty working dir source.xlsx";
+        using var stream = TrialWorkbookFactory.CreateStream();
+        var relativePath = await store.SaveAsync(trialId, fileName, stream);
+        _createdFiles.Add((trialId, relativePath));
+
+        Directory.Exists(Path.Combine(_tempRoot, "Working", trialId.ToString()))
+            .Should().BeTrue("SaveAsync should create the trial working directory");
+
+        // Act
+        var resolved = store.ResolveExportPath(trialId, relativePath);
+
+        // Assert — empty working dir is not an error; the pristine source wins.
+        resolved.Should().Be(Path.Combine(_tempRoot, relativePath));
+    }
+
+    [Fact]
+    public void ResolveExportPath_SourceEscapingServiceRoot_ReturnsNull()
+    {
+        // Arrange — a source relative path that climbs out of the Service/ root via `..`.
+        // The anchor file EXISTS outside the root, so a null result can only come from
+        // the containment guard, not from File.Exists failing.
+        var store = CreateStore();
+        var trialId = Guid.NewGuid();
+        var escapeName = "PlottrTests_escape_" + Guid.NewGuid().ToString("N") + ".xlsx";
+        var escapeFile = TrialWorkbookFactory.Create(Path.Combine(Path.GetTempPath(), escapeName));
+        TrackDirectFile(trialId, escapeFile);
+
+        var escapingRelativePath = Path.Combine("..", escapeName);
+
+        // Act
+        var resolved = store.ResolveExportPath(trialId, escapingRelativePath);
+
+        // Assert — resolved path escapes the Service/ root and must yield null.
+        resolved.Should().BeNull("relative source paths must not escape the Service/ directory");
+    }
+
+    /// <summary>
+    /// Registers a file written directly into the temp root (not via <see cref="SaveAsync"/>)
+    /// so <see cref="DisposeAsync"/> removes it and any now-empty parent directories.
+    /// </summary>
+    private void TrackDirectFile(Guid trialId, string absolutePath)
+    {
+        _createdFiles.Add((trialId, Path.GetRelativePath(_tempRoot, absolutePath)));
+    }
 }

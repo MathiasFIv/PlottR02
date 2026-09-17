@@ -209,6 +209,39 @@ async function formRequest<T>(
 }
 
 // ---------------------------------------------------------------------------
+// Workbook download helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts the file name from a `Content-Disposition` header. Prefers the
+ * RFC 5987 `filename*=UTF-8''...` (URL-encoded) form, falls back to the plain
+ * `filename="..."` / `filename=...` form, and finally to `fallback`.
+ */
+function fileNameFromContentDisposition(
+  contentDisposition: string | null,
+  fallback: string,
+): string {
+  if (!contentDisposition) return fallback;
+
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition);
+  if (encoded?.[1]) {
+    try {
+      return decodeURIComponent(encoded[1].trim().replace(/^"+|"+$/g, ''));
+    } catch {
+      // Malformed URL-encoding — fall through to the plain form below.
+    }
+  }
+
+  const quoted = /filename="([^"]+)"/i.exec(contentDisposition);
+  if (quoted?.[1]) return quoted[1].trim();
+
+  const plain = /filename=([^;\s]+)/i.exec(contentDisposition);
+  if (plain?.[1]) return plain[1].trim();
+
+  return fallback;
+}
+
+// ---------------------------------------------------------------------------
 // Public API surface
 // ---------------------------------------------------------------------------
 
@@ -270,5 +303,56 @@ export const api = {
     const body = new FormData();
     body.append('file', file);
     return formRequest<TrialSummary>('/api/Trials', body);
+  },
+
+  /**
+   * Downloads the trial's current workbook (newest accumulated export copy, or
+   * the uploaded original) and saves it via the browser download. Returns the
+   * file name used. Reuses the same auth header + 401 handling as the other calls.
+   */
+  downloadWorkbook: async (trialId: string): Promise<string> => {
+    const path = `/api/Trials/${trialId}/workbook`;
+    const response = await requestWithRetry(path, undefined, true);
+
+    if (!response.ok) {
+      // Mirror the existing helpers: surface a plain-text (or JSON-string
+      // literal) body message when present, else a generic status message.
+      let message = `API request failed (${response.status}): ${path}`;
+      try {
+        const text = await response.text();
+        if (text) {
+          try {
+            const parsed = JSON.parse(text) as unknown;
+            message = typeof parsed === 'string' ? parsed : text;
+          } catch {
+            // Not valid JSON (plain text) — use the raw body.
+            message = text;
+          }
+        }
+      } catch {
+        // response body not readable — keep default message
+      }
+      throw new ApiError(response.status, message);
+    }
+
+    const blob = await response.blob();
+
+    const fileName = fileNameFromContentDisposition(
+      response.headers.get('Content-Disposition'),
+      `trial-${trialId}.xlsx`,
+    );
+
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // Defer the revoke to a macrotask: calling it synchronously right after
+    // click() has a documented history of aborting the download in Safari.
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+
+    return fileName;
   },
 };

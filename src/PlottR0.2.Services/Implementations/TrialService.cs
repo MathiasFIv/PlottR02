@@ -101,4 +101,18 @@ public class TrialService : ITrialService
         var trials = await _trialRepository.GetAllAsync(ct: ct);
         return TrialMapper.ToSummaries(trials);
     }
+
+    /// <inheritdoc />
+    public async Task<WorkbookExport> GetWorkbookExportAsync(Guid trialId, CancellationToken ct = default)
+    {
+        var trial = await _trialRepository.GetByIdAsync(trialId, ct);
+        if (trial is null)
+            throw new KeyNotFoundException($"Trial '{trialId}' was not found.");
+
+        var path = _workbookStore.ResolveExportPath(trial.Id, trial.SourceWorkbookPath ?? string.Empty);
+        if (path is null)
+            throw new FileNotFoundException($"Workbook for trial '{trialId}' was not found on disk.");
+
+        return new WorkbookExport(path, Path.GetFileName(path));
+    }
 }

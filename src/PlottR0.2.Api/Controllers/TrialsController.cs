@@ -75,4 +75,27 @@ public class TrialsController : ControllerBase
         var trials = await _trialService.ListTrialsAsync(ct);
         return Ok(trials);
     }
+
+    /// <summary>Downloads the trial's current workbook — the newest accumulated
+    /// export copy if any syncs have happened, otherwise the uploaded original.</summary>
+    [HttpGet("{trialId:guid}/workbook")]
+    [ProducesResponseType(typeof(FileResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> DownloadWorkbook(Guid trialId, CancellationToken ct = default)
+    {
+        // The 404 catches cover only the resolve step: PhysicalFile streams the bytes after
+        // this action has returned, so a workbook deleted between resolve and send surfaces
+        // as a 500. That narrow TOCTOU race is accepted, consistent with the codebase.
+        try
+        {
+            var export = await _trialService.GetWorkbookExportAsync(trialId, ct);
+            return PhysicalFile(
+                export.FilePath,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                export.FileName,
+                enableRangeProcessing: true);
+        }
+        catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+        catch (FileNotFoundException ex) { return NotFound(ex.Message); }
+    }
 }

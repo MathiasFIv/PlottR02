@@ -22,4 +22,14 @@ public interface ITrialWorkbookStore
     /// <param name="relativePath">The relative path returned by <see cref="SaveAsync"/>.</param>
     /// <param name="ct">Cancellation token.</param>
     Task DeleteAsync(string relativePath, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the ABSOLUTE path of the workbook to serve for a trial export: the
+    /// newest "*_out_*.xlsx" output copy in the trial's working directory if one exists
+    /// (accumulated sync state), otherwise the trial's pristine source workbook.
+    /// Returns null when the working directory exists but contains no xlsx and the
+    /// source workbook no longer exists on disk, or when the resolved source path
+    /// escapes the Service/ directory.
+    /// </summary>
+    string? ResolveExportPath(Guid trialId, string sourceRelativePath);
 }
