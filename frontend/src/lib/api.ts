@@ -9,6 +9,7 @@ import type {
   TrialSummary,
   User,
 } from '../types';
+import type { AudioRecording } from './audioDb';
 import { tokens } from './tokens';
 
 /**
@@ -209,6 +210,71 @@ async function formRequest<T>(
 }
 
 // ---------------------------------------------------------------------------
+// Voice-to-Excel sync (POST /api/Recordings/sync)
+// ---------------------------------------------------------------------------
+
+/** Result of a "Send now" sync or a correction of one voice recording. */
+export interface SyncRecordingResponse {
+  clientRecordingId: string;
+  trialId: string;
+  status: 'Received' | 'Written' | 'SkippedPresent' | 'Flagged' | 'Replay';
+  plot: number | null;
+  subsample: number | null;
+  value: number | null;
+  parsedPlot: number | null;
+  parsedSubsample: number | null;
+  parsedValue: number | null;
+  plotExists: boolean;
+  traitOrdinal: number;
+  needsReview: boolean;
+  replayed: boolean;
+  /** True when the write ran on the transcript alone because the client sent
+   *  no confirmed fields (corrections never set it; only transcript-only syncs). */
+  wasTranscriptOnly: boolean;
+  submittedAt: string;
+  transcript: string;
+  confidence: number | null;
+  writtenCells: {
+    plot: number;
+    subsample: number;
+    traitOrdinal: number;
+    value: number | null;
+    cellAddress: string;
+  }[];
+  skippedPresentCells: {
+    plot: number;
+    subsample: number;
+    traitOrdinal: number;
+    value: number | null;
+    cellAddress: string;
+  }[];
+  missingSubsampleIndices: number[];
+}
+
+/**
+ * Body for POST /api/Recordings/{id}/correct — the human-confirmed correction
+ * applied to a recording that came back `needs-attention` (or a `failed` one
+ * with enough confident data to salvage). Because a plot without subsamples
+ * legitimately has subsample === null, every field is nullable: the server
+ * treats `null` as "keep the value already confirmed."
+ */
+export interface CorrectRecordingRequest {
+  plot: number | null;
+  subsample: number | null;
+  value: number | null;
+  /** Trait ordinal (workbook column) — required by the server (binds to 0 when omitted). */
+  traitOrdinal: number;
+}
+
+/** Maps a recorded container mime type to a file extension (default webm). */
+function extensionForMimeType(mimeType: string): string {
+  const normalized = mimeType.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (normalized === 'audio/mp4' || normalized === 'audio/m4a') return 'mp4';
+  if (normalized === 'audio/ogg' || normalized === 'audio/opus') return 'ogg';
+  return 'webm';
+}
+
+// ---------------------------------------------------------------------------
 // Workbook download helpers
 // ---------------------------------------------------------------------------
 
@@ -355,4 +421,45 @@ export const api = {
 
     return fileName;
   },
+
+  // Recordings (V2E — "Send now") ---------------------------------------
+
+  /**
+   * Sends one confirmed voice recording to the backend for transcription +
+   * workbook writing. Multipart — the browser sets Content-Type (boundary)
+   * automatically, exactly as createTrial does.
+   */
+  syncRecording: (rec: AudioRecording) => {
+    const body = new FormData();
+    body.append('clientRecordingId', rec.id);
+    body.append('trialId', rec.trialId ?? '');
+    body.append('traitOrdinal', String(rec.traitOrdinal));
+    body.append('plot', String(rec.plot ?? ''));
+    body.append('subsample', String(rec.subsample ?? ''));
+    body.append('value', String(rec.value ?? ''));
+    body.append('createdAt', rec.createdAt); // already ISO-8601 (stored via toISOString() at save)
+    body.append('file', rec.blob, `rec.${extensionForMimeType(rec.mimeType)}`);
+    return formRequest<SyncRecordingResponse>('/api/Recordings/sync', body);
+  },
+
+  /**
+   * Applies a confirmed correction to a recording that came back
+   * `needs-review` (or was transcript-only). Uses the JSON `correct` endpoint
+   * so the client sends only the confirmed fields + trait ordinaal — never a
+   * transcript.
+   *
+   * Correction is inherently a "confirmed send": the client explicitly chose
+   * plot/subsample/value, so the returned `SyncRecordingResponse` always has
+   * `wasTranscriptOnly === false`. A 409 (already written by another client or
+   * a prior correction) surfaces as `ApiError` with `status 409` — the queue
+   * treats that as "already synced, nothing to correct."
+   */
+  correctRecording: (clientRecordingId: string, fields: CorrectRecordingRequest) =>
+    jsonRequest<SyncRecordingResponse>(
+      `/api/Recordings/${encodeURIComponent(clientRecordingId)}/correct`,
+      {
+        method: 'POST',
+        body: JSON.stringify(fields),
+      },
+    ),
 };

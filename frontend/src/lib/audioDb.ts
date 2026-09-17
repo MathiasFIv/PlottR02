@@ -9,7 +9,26 @@
  * recordings survive page refreshes and are available offline.
  */
 
-export type RecordingStatus = 'pending' | 'ready' | 'synced' | 'failed';
+import type { SyncRecordingResponse } from './api';
+
+/**
+ * Lifecycle of a captured clip (doc PLAN §6.1):
+ * - `pending`            saved, auto-send scheduled (transient)
+ * - `ready`              LEGACY — old confirmed-but-unsent rows; swept
+ *                        (auto-sent) on startup, never newly written
+ * - `syncing`            upload in flight
+ * - `synced`             server returned Written / SkippedPresent / Replay
+ *                        with needsReview false
+ * - `needs-attention`    server returned needsReview → correction surface
+ * - `failed`             network/server error → retry affordance
+ */
+export type RecordingStatus =
+  | 'pending'
+  | 'ready'
+  | 'syncing'
+  | 'synced'
+  | 'needs-attention'
+  | 'failed';
 
 export interface AudioRecording {
   id: string; // crypto.randomUUID()
@@ -18,12 +37,15 @@ export interface AudioRecording {
   createdAt: string; // ISO string
   trialId: string | null;
   traitOrdinal: number; // hardcoded 1 for MVP
-  plot: number | null; // null until confirm-card (P1)
-  subsample: number | null; // null until confirm-card (P1)
-  value: number | null; // null until confirm-card (P1)
+  plot: number | null; // confirmed by a correction (or legacy 'ready'); null = transcript-authoritative
+  subsample: number | null; // ditto
+  value: number | null; // ditto
   status: RecordingStatus;
   syncAttempts: number;
   lastError?: string;
+  /** Last /sync or /correct response — persists the outcome across reloads so
+   *  the correction surface reappears. Type-only import: no runtime cycle. */
+  lastResult?: SyncRecordingResponse;
 }
 
 const DB_NAME = 'plottR-audio';
@@ -124,7 +146,8 @@ function transactionDone(tx: IDBTransaction): Promise<void> {
 /**
  * Factory for a fresh recording. Generates the id + createdAt and applies the
  * start-of-life defaults (status 'pending', syncAttempts 0, null override
- * fields — plot/subsample/value are filled in by the confirm card in P1).
+ * fields — plot/subsample/value are transcript-authoritative until a human
+ * correction on the needs-attention card).
  */
 export function newRecording(input: {
   blob: Blob;
@@ -193,11 +216,13 @@ export async function deleteRecording(id: string): Promise<void> {
   await transactionDone(tx);
 }
 
-/** Number of recordings waiting to sync (status 'pending'). */
-export async function getPendingCount(): Promise<number> {
+/** Number of recordings currently in the given status. */
+export async function getCountByStatus(
+  status: RecordingStatus,
+): Promise<number> {
   const db = await openDb();
   const tx = db.transaction(STORE_NAME, 'readonly');
   const index = tx.objectStore(STORE_NAME).index(STATUS_INDEX_NAME);
-  const count = await requestResult(index.count('pending'));
+  const count = await requestResult(index.count(status));
   return count;
 }

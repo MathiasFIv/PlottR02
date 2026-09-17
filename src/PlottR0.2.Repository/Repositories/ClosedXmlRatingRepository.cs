@@ -83,6 +83,70 @@ public class ClosedXmlRatingRepository : IRatingRepository
         return written;
     }
 
+    /// <inheritdoc />
+    public PolicyWritePlotColumnResult WritePlotColumnPreserving(
+        string workbookPath,
+        string outputDirectory,
+        int plot,
+        int traitOrdinal,
+        int value,
+        IReadOnlySet<int> subsampleIndices)
+    {
+        using var wb = OpenWorkbook(workbookPath);
+        var sheet = wb.Worksheet(SheetName);
+        var column = TraitColumn(traitOrdinal);
+        var rows = FindSubsampleRows(sheet, plot).ToDictionary(kv => kv.Value.subsample, kv => kv.Value.row);
+
+        var written = new List<RatingCell>();
+        var skipped = new List<RatingCell>();
+        var missing = new List<int>();
+
+        foreach (var subsample in subsampleIndices.OrderBy(i => i))
+        {
+            if (!rows.TryGetValue(subsample, out var row))
+            {
+                _logger.LogDebug("Plot {Plot} has no subsample {Subsample}; skipping.", plot, subsample);
+                missing.Add(subsample);
+                continue;
+            }
+
+            var cell = sheet.Cell(row, column);
+            var isEmpty = cell.IsEmpty();
+            var textIsMissing = !isEmpty
+                && cell.GetValue<string>().Trim().Equals("missing", StringComparison.OrdinalIgnoreCase);
+
+            if (isEmpty || textIsMissing)
+            {
+                // Locked-overwrite policy: only empty / "missing" cells accept a value (0 is valid).
+                cell.Value = value;
+                written.Add(new RatingCell(plot, subsample, traitOrdinal, value, cell.Address.ToString() ?? string.Empty));
+            }
+            else
+            {
+                // Already present (0 counts as a value): report the current content, walk away.
+                skipped.Add(new RatingCell(
+                    plot,
+                    subsample,
+                    traitOrdinal,
+                    ReadIntSafe(cell),
+                    cell.Address.ToString() ?? string.Empty));
+            }
+        }
+
+        if (written.Count > 0)
+        {
+            SaveCopyTo(wb, outputDirectory, workbookPath);
+        }
+
+        return new PolicyWritePlotColumnResult
+        {
+            PlotExists = rows.Count > 0,
+            WrittenCells = written,
+            SkippedPresentCells = skipped,
+            MissingSubsampleIndices = missing,
+        };
+    }
+
     // ----- Generic entity-style methods: NOT supported by the workbook store -----
 
     public Task<Rating?> GetByIdAsync(Guid id, CancellationToken ct = default)
@@ -207,5 +271,47 @@ public class ClosedXmlRatingRepository : IRatingRepository
 
         // Fallback: resolve relative to the current working directory.
         return Directory.GetCurrentDirectory();
+    }
+
+    /// <summary>
+    /// Opens the workbook at the given ABSOLUTE path, validating that it exists first (same
+    /// not-found style as <see cref="OpenInput"/>). Consumers pass an explicit path — e.g. a
+    /// trial's workbook — rather than the configured input.
+    /// </summary>
+    private static IXLWorkbook OpenWorkbook(string workbookPath)
+    {
+        if (!File.Exists(workbookPath))
+        {
+            throw new FileNotFoundException(
+                $"Excel input workbook not found at '{workbookPath}'.", workbookPath);
+        }
+
+        return new XLWorkbook(workbookPath);
+    }
+
+    /// <summary>
+    /// Unwraps a cell value as an integer without throwing on non-numeric content:
+    /// <see langword="null"/> for empty cells and text cells, the numeric value otherwise.
+    /// Unlike <see cref="ReadInt"/>, it never calls <c>GetDouble()</c> on text (which ClosedXML
+    /// throws on) — needed because a skipped cell may legally hold legacy text.
+    /// </summary>
+    private static int? ReadIntSafe(IXLCell cell)
+        => cell.IsEmpty() || cell.DataType != XLDataType.Number ? null : (int)cell.GetDouble();
+
+    /// <summary>
+    /// Saves the (possibly written) workbook as a fresh output copy into the given ABSOLUTE
+    /// directory — the input workbook at <paramref name="workbookPath"/> is never overwritten.
+    /// </summary>
+    private void SaveCopyTo(IXLWorkbook wb, string outputDirectory, string workbookPath)
+    {
+        Directory.CreateDirectory(outputDirectory);
+
+        var sourceName = Path.GetFileNameWithoutExtension(workbookPath);
+        var outputPath = Path.Combine(
+            outputDirectory,
+            $"{sourceName}_out_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx");
+
+        wb.SaveAs(outputPath);
+        _logger.LogInformation("Exported output copy to {OutputPath}", outputPath);
     }
 }

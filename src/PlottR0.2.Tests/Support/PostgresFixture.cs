@@ -67,7 +67,7 @@ public sealed class PostgresFixture : IAsyncLifetime
         using var scope = Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PlottR0DbContext>();
         await db.Database.ExecuteSqlRawAsync(
-            "TRUNCATE TABLE \"RefreshTokens\", \"AuditLogs\", \"Ratings\", \"Subsamples\", \"Plots\", \"Trials\", \"Users\" RESTART IDENTITY CASCADE;");
+            "TRUNCATE TABLE \"RefreshTokens\", \"AuditLogs\", \"Ratings\", \"Subsamples\", \"Plots\", \"Trials\", \"VoiceRecordings\", \"Users\" RESTART IDENTITY CASCADE;");
     }
 
     public async Task InitializeAsync()

@@ -45,6 +45,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAuditLogRepository, AuditLogRepository>();
         services.AddScoped<ITrialRepository, TrialRepository>();
         services.AddScoped<ITrialWorkbookStore, TrialWorkbookStore>();
+        services.AddScoped<IVoiceRecordingRepository, VoiceRecordingRepository>();
+        services.AddScoped<IVoiceBlobStore, VoiceBlobStore>();
 
         return services;
     }

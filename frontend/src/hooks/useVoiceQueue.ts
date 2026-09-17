@@ -1,36 +1,41 @@
-import { useAtom } from 'jotai';
-import { useCallback, useState } from 'react';
+import { useAtomValue } from 'jotai';
+import { useCallback, useRef, useState } from 'react';
 import {
-  getPendingCount,
+  deleteRecording,
   newRecording,
   saveRecording as persistRecording,
 } from '../lib/audioDb';
 import type { AudioRecording } from '../lib/audioDb';
-import { pendingRecordingsCountAtom } from '../store/atoms';
+import {
+  autoSync,
+  refreshAttentionCount,
+  sweepPendingSyncs,
+} from '../lib/syncQueue';
+import { recordingsNeedingAttentionCountAtom } from '../store/atoms';
 
 /**
- * Local-first queue for voice recordings. New clips are persisted to
- * IndexedDB with status 'pending' (the P1 sync worker picks them up) and the
- * pending-count atom is refreshed so any screen shows a live queue size.
+ * Local-first queue for voice recordings. A captured clip is persisted to
+ * IndexedDB as 'pending' and auto-synced immediately via `autoSync` — there is
+ * no Confirm & queue step any more. The held row (`pendingRec`) tracks the
+ * live status (syncing / synced / needs-attention / failed) so RecordView can
+ * render inline states; the attention badge counts recordings that need a
+ * human (needs-attention + failed), refreshed by the engine after every
+ * send/correction outcome.
  */
 export function useVoiceQueue() {
-  const [pendingCount, setPendingCount] = useAtom(pendingRecordingsCountAtom);
+  const attentionCount = useAtomValue(
+    recordingsNeedingAttentionCountAtom,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  /** Re-syncs the pending count from IndexedDB (call after saves/migrations). */
-  const refreshPendingCount = useCallback(async () => {
-    try {
-      const count = await getPendingCount();
-      setPendingCount(count);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Could not read the pending recording queue.',
-      );
-    }
-  }, [setPendingCount]);
+  /** The clip most recently saved from the mic — drives the inline sync states. */
+  const [pendingRec, setPendingRec] = useState<AudioRecording | null>(null);
+  /**
+   * Synchronous re-entrancy guard for discard. `saving` state commits one
+   * render later, so two rapid taps within the same tick could both pass the
+   * UI disable — this ref closes that gap (early-return false).
+   */
+  const opInFlightRef = useRef(false);
 
   /** Persists a finished clip to IndexedDB as a 'pending' recording. */
   const saveRecording = useCallback(
@@ -44,7 +49,6 @@ export function useVoiceQueue() {
       try {
         const rec = newRecording({ blob, mimeType, trialId, traitOrdinal: 1 });
         await persistRecording(rec);
-        await refreshPendingCount();
         return rec;
       } catch {
         // Raw IndexedDB errors (e.g. "Transaction failed") mean nothing to the
@@ -55,14 +59,43 @@ export function useVoiceQueue() {
         setSaving(false);
       }
     },
-    [refreshPendingCount],
+    [],
+  );
+
+  /** Deletes a captured clip (Re-record / start-over). */
+  const discardRecording = useCallback(
+    async (id: string): Promise<boolean> => {
+      if (opInFlightRef.current) return false;
+      opInFlightRef.current = true;
+      setSaving(true);
+      setError(null);
+      try {
+        await deleteRecording(id);
+        // A discarded row may have been 'failed' (counted) — keep the badge honest.
+        await refreshAttentionCount();
+        return true;
+      } catch {
+        setError('Could not discard the recording. Please try again.');
+        return false;
+      } finally {
+        opInFlightRef.current = false;
+        setSaving(false);
+      }
+    },
+    [],
   );
 
   return {
-    pendingCount,
+    attentionCount,
     saving,
     error,
+    pendingRec,
+    setPendingRec,
     saveRecording,
-    refreshPendingCount,
+    discardRecording,
+    // Engine functions are module-stable identities — no useCallback needed.
+    autoSync,
+    sweepPendingSyncs,
+    refreshAttentionCount,
   };
 }

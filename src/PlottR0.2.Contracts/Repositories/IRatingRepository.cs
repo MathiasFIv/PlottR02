@@ -32,4 +32,27 @@ public interface IRatingRepository : IRepository<Rating, Guid>
     /// <param name="subsampleIndices">The 1-indexed subsample indices to write.</param>
     /// <returns>The rating cells that were written (for reporting).</returns>
     IReadOnlyList<RatingCell> WritePlotColumn(int plot, int traitOrdinal, int value, IReadOnlySet<int> subsampleIndices);
+
+    /// <summary>
+    /// Writes <paramref name="value"/> to the given subsample cells of one plot in one trait
+    /// column of the workbook at <paramref name="workbookPath"/>, applying the locked-overwrite
+    /// policy: only EMPTY or "missing" cells accept a value (0 is a legal write); any cell that
+    /// already holds a value — including 0 or non-"missing" text — is left untouched and
+    /// reported as skipped. The result is exported as a fresh copy into
+    /// <paramref name="outputDirectory"/>; the input workbook is never mutated.
+    /// </summary>
+    /// <param name="workbookPath">ABSOLUTE path to the workbook to write (e.g. a trial's workbook).</param>
+    /// <param name="outputDirectory">ABSOLUTE directory for the exported copy.</param>
+    /// <param name="plot">The plot number.</param>
+    /// <param name="traitOrdinal">1-indexed trait ordinal (1..9).</param>
+    /// <param name="value">Rating value, validated 0..10 by the service.</param>
+    /// <param name="subsampleIndices">The 1-indexed subsample indices to consider.</param>
+    /// <returns>The cells written, the cells skipped as already present, and the missing subsamples.</returns>
+    PolicyWritePlotColumnResult WritePlotColumnPreserving(
+        string workbookPath,
+        string outputDirectory,
+        int plot,
+        int traitOrdinal,
+        int value,
+        IReadOnlySet<int> subsampleIndices);
 }

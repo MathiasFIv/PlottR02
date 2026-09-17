@@ -75,8 +75,15 @@ export const trialsUploadErrorAtom = atom<string | null>(null);
 // Voice recording atoms
 // ---------------------------------------------------------------------------
 
-/** How many recordings are queued in IndexedDB waiting to sync ('pending'). */
-export const pendingRecordingsCountAtom = atom<number>(0);
+/**
+ * How many CONFIRMED recordings need attention before/while they sync: status
+ * 'needs-attention' (correction surface open) or 'failed' (sync failed and
+ * must be retried). Legacy 'ready' recordings are folded into this count only
+ * until the startup sweep has synced them. The count seen while the confirm
+ * card is open reflects recordings that were already fixed before this
+ * session's clip.
+ */
+export const recordingsNeedingAttentionCountAtom = atom<number>(0);
 
 /** The trial currently selected on the voice-record screen. */
 export const activeTrialIdAtom = atom<string | null>(null);

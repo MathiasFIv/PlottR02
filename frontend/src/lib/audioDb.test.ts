@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   deleteRecording,
-  getPendingCount,
+  getCountByStatus,
   getRecordingById,
   getRecordingsByStatus,
   newRecording,
@@ -11,6 +11,7 @@ import {
   updateRecording,
 } from './audioDb';
 import type { AudioRecording } from './audioDb';
+import type { SyncRecordingResponse } from './api';
 
 /** Deterministic fixture — explicit id, tiny fake audio blob. */
 function makeRec(overrides: Partial<AudioRecording> = {}): AudioRecording {
@@ -23,6 +24,32 @@ function makeRec(overrides: Partial<AudioRecording> = {}): AudioRecording {
     }),
     id: 'rec-' + Math.random().toString(36).slice(2),
     ...overrides,
+  };
+}
+
+/** A full SyncVoiceRecordingResult so lastResult round-trips under strict typing. */
+function syncResponse(): SyncRecordingResponse {
+  return {
+    clientRecordingId: 'rec-x',
+    trialId: 'trial-1',
+    status: 'Written',
+    plot: 101,
+    subsample: 3,
+    value: 7,
+    parsedPlot: 101,
+    parsedSubsample: 3,
+    parsedValue: 7,
+    plotExists: true,
+    traitOrdinal: 1,
+    needsReview: false,
+    replayed: false,
+    wasTranscriptOnly: true,
+    submittedAt: '2026-09-16T12:00:00Z',
+    transcript: 'plot 101 subsample 3 value 7',
+    confidence: 0.9,
+    writtenCells: [{ plot: 101, subsample: 3, traitOrdinal: 1, value: 7, cellAddress: 'C24' }],
+    skippedPresentCells: [],
+    missingSubsampleIndices: [],
   };
 }
 
@@ -97,16 +124,17 @@ describe('audioDb', () => {
     await deleteRecording(rec.id);
 
     expect(await getRecordingById(rec.id)).toBeNull();
-    expect(await getPendingCount()).toBe(0);
+    expect(await getCountByStatus('pending')).toBe(0);
   });
 
-  it('getPendingCount only counts pending records across mixed statuses', async () => {
+  it('getCountByStatus counts records in the given status across mixed statuses', async () => {
     await saveRecording(makeRec());
     await saveRecording(makeRec());
     await saveRecording(makeRec({ status: 'synced' }));
     await saveRecording(makeRec({ status: 'failed' }));
 
-    expect(await getPendingCount()).toBe(2);
+    expect(await getCountByStatus('pending')).toBe(2);
+    expect(await getCountByStatus('ready')).toBe(0);
   });
 
   it('getRecordingsByStatus returns only records in that status', async () => {
@@ -120,5 +148,42 @@ describe('audioDb', () => {
 
     const failed = await getRecordingsByStatus('failed');
     expect(failed.map((r) => r.id)).toEqual(['failed-1']);
+  });
+
+  it('V2E: sync lifecycle pending → syncing → synced moves the row across indexes', async () => {
+    const rec = makeRec();
+    await saveRecording(rec);
+
+    expect(await getRecordingsByStatus('pending')).toHaveLength(1);
+
+    // The engine marks the row syncing before the request, then synced after.
+    await updateRecording({ ...rec, status: 'syncing' });
+    expect(await getRecordingsByStatus('pending')).toHaveLength(0);
+    expect(await getRecordingsByStatus('syncing')).toHaveLength(1);
+
+    await updateRecording({ ...rec, status: 'synced', syncAttempts: 1 });
+    expect(await getRecordingsByStatus('syncing')).toHaveLength(0);
+    expect(await getRecordingsByStatus('synced')).toHaveLength(1);
+    expect(await getCountByStatus('pending')).toBe(0);
+  });
+
+  it('round-trips lastResult (SyncRecordingResponse) and needs-attention counts', async () => {
+    const result = syncResponse();
+    const rec = makeRec({
+      status: 'needs-attention',
+      lastResult: result,
+      syncAttempts: 1,
+    });
+    await saveRecording(rec);
+
+    const found = await getRecordingById(rec.id);
+    expect(found?.status).toBe('needs-attention');
+    expect(found?.lastResult?.status).toBe('Written');
+    expect(found?.lastResult?.writtenCells?.[0]?.cellAddress).toBe('C24');
+    expect(await getCountByStatus('needs-attention')).toBe(1);
+
+    // Pretend a correction succeeded: row → synced, result stays intact.
+    await updateRecording({ ...rec, status: 'synced' });
+    expect(await getCountByStatus('needs-attention')).toBe(0);
   });
 });

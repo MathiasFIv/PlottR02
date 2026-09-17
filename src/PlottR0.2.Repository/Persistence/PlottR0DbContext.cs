@@ -17,6 +17,7 @@ public class PlottR0DbContext : DbContext
     public DbSet<Rating> Ratings => Set<Rating>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<VoiceRecording> VoiceRecordings => Set<VoiceRecording>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -26,6 +27,7 @@ public class PlottR0DbContext : DbContext
         ConfigureAuditableEntity<Plot>(modelBuilder);
         ConfigureAuditableEntity<Subsample>(modelBuilder);
         ConfigureAuditableEntity<Rating>(modelBuilder);
+        ConfigureAuditableEntity<VoiceRecording>(modelBuilder);
 
         modelBuilder.Entity<User>(entity =>
         {
@@ -172,6 +174,41 @@ public class PlottR0DbContext : DbContext
 
             entity.HasIndex(a => a.Timestamp);
             entity.HasIndex(a => new { a.EntityType, a.EntityId });
+        });
+
+        // ── VoiceRecording (Voice-to-Excel) ─────────────────────────────────
+        modelBuilder.Entity<VoiceRecording>(entity =>
+        {
+            entity.HasKey(v => v.Id);
+
+            // ClientRecordingId is the PWA-emitted idempotency key
+            // (crypto.randomUUID); unique so a duplicate upload replays the
+            // existing row instead of creating a duplicate.
+            entity.Property(v => v.ClientRecordingId)
+                .IsRequired()
+                .HasMaxLength(100);
+            entity.HasIndex(v => v.ClientRecordingId)
+                .IsUnique();
+
+            // TrialId FK → Trial. SetNull on delete so recordings survive a
+            // trial deletion (audit evidence is preserved). Nullable for the
+            // same reason — recordings may be orphaned intentionally.
+            entity.HasOne<Trial>()
+                .WithMany()
+                .HasForeignKey(v => v.TrialId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            entity.Property(v => v.BlobPath)
+                .IsRequired()
+                .HasMaxLength(500);
+            entity.Property(v => v.MimeType)
+                .IsRequired()
+                .HasMaxLength(100);
+
+            entity.Property(v => v.Status)
+                .IsRequired()
+                .HasMaxLength(20)
+                .HasDefaultValue(VoiceRecordingStatus.Received);
         });
     }
 
