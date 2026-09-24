@@ -140,14 +140,31 @@ export function summarizeSync(res: SyncRecordingResponse): SyncSummary {
     case 'SkippedPresent': {
       const first = res.skippedPresentCells[0]?.cellAddress ?? 'cell';
       lines.push(`Already filled — not overwritten (${first})`);
+      if (res.needsReview) {
+        lines.push('Recording still needs review — nothing was overwritten.');
+      }
       break;
     }
     case 'Flagged': {
       const reasons: string[] = [];
       if (!res.plotExists) reasons.push('plot not found');
       if (res.missingSubsampleIndices.length > 0) reasons.push('subsample missing');
-      if (res.writtenCells.length === 0 && res.skippedPresentCells.length === 0) reasons.push('value out of range');
-      lines.push(`Not written — ${reasons.join(' / ') || 'unknown reason'}`);
+      if (res.outOfTraitRangeValueCount > 0) {
+        reasons.push(
+          `${res.outOfTraitRangeValueCount} value${res.outOfTraitRangeValueCount === 1 ? '' : 's'} didn't fit`,
+        );
+      }
+      if (res.writtenCells.length > 0) {
+        const cells = res.writtenCells.map((c) => c.cellAddress).join(', ');
+        lines.push(
+          `Saved ${res.writtenCells.length} of ${res.writtenCells.length + res.outOfTraitRangeValueCount} (${cells})`,
+        );
+        if (reasons.length > 0) {
+          lines.push(`Partially written — ${reasons.join(' / ')}`);
+        }
+      } else {
+        lines.push(`Not written — ${reasons.join(' / ') || 'unknown reason'}`);
+      }
       break;
     }
     case 'Replay':

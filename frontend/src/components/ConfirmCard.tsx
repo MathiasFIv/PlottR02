@@ -118,7 +118,6 @@ export function ConfirmCard({
         plot: plotNumber,
         subsample: subsampleNumber,
         value,
-        traitOrdinal: rec.traitOrdinal,
       });
       if (outcome.kind === 'success') {
         setResult(outcome.result);

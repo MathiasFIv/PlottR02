@@ -34,4 +34,13 @@ public sealed class PolicyWritePlotColumnResult
     /// the plot. No write and no skip decision was made for these.
     /// </summary>
     public IReadOnlyList<int> MissingSubsampleIndices { get; init; } = [];
+
+    /// <summary>
+    /// Number of values that could NOT be written at all in the chosen mode. Fixed-column
+    /// mode: a value whose column would exceed trait 9 (<c>traitOrdinal + i &gt; 9</c>).
+    /// Append mode: a value that had no free cell left inside the CURRENT category block — or
+    /// a region with no free cell at all. These values were NOT written and should trigger
+    /// review (an utterance never spans category blocks; it is dropped and flagged instead).
+    /// </summary>
+    public int OutOfTraitRangeValueCount { get; init; }
 }

@@ -47,7 +47,7 @@ export function useVoiceQueue() {
       setSaving(true);
       setError(null);
       try {
-        const rec = newRecording({ blob, mimeType, trialId, traitOrdinal: 1 });
+        const rec = newRecording({ blob, mimeType, trialId });
         await persistRecording(rec);
         return rec;
       } catch {

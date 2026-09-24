@@ -28,10 +28,14 @@ namespace PlottR0._2.Services.Implementations;
 ///   <item><description>Parse the transcript via <see cref="TranscriptParser"/>.</description></item>
 ///   <item><description>Value gate (B) — when NO legal value can be resolved (confirmed or
 ///   parsed), the recording is flagged for review and never written.</description></item>
-///   <item><description>Single-cell locked-overwrite policy write of the RESOLVED
-///   plot/subsample/value into a workbook copy. The read source chains: the newest existing
-///   <c>*_out_*.xlsx</c> copy in the trial's working directory is the input for the next
-///   sync; falls back to the pristine <c>SourceWorkbookPath</c> when no copy exists yet.</description></item>
+///   <item><description>Locked-overwrite policy write of the RESOLVED values into a workbook
+///   copy in CATEGORY-BLOCK APPEND mode: the values land in the row's next free cells inside
+///   the Part Rated category block (row-8 metadata LEAF1/LEAF2/LEAF3) so successive voices
+///   on one plot accumulate leaf by leaf, never overwriting present cells (a correction
+///   later re-runs the same category-block append scan on the stored row instead). The read
+///   source chains: the newest existing <c>*_out_*.xlsx</c> copy in the trial's working
+///   directory is the input for the next sync; falls back to the pristine
+///   <c>SourceWorkbookPath</c> when no copy exists yet.</description></item>
 ///   <item><description>Commit decision: <c>Written</c> / <c>SkippedPresent</c> / <c>Flagged</c>.</description></item>
 ///   <item><description>Contract update — persist status, parsed fields, transcript, confidence.</description></item>
 ///   <item><description>Build and return the <see cref="SyncVoiceRecordingResult"/>.</description></item>
@@ -218,30 +222,32 @@ public sealed class RecordingSyncService : IRecordingSyncService
         var parsed = TranscriptParser.Parse(transcript);
 
         // Step 9 — Resolution (design.md §3): the confirmed field wins per field; a missing
-        // or non-positive confirmed field falls back to the parsed transcript value.
+        // or non-positive confirmed field falls back to the parsed transcript value. Values
+        // resolve as a LIST: a confirmed value is a single-cell correction (one entry), while
+        // an unconfirmed value resolves to the transcript's multi-value list ("values 3 6 1").
         var plot = cPlot ?? parsed.Plot;
         var subsample = cSubsample ?? parsed.Subsample;
-        var value = cValue ?? parsed.Value;
+        IReadOnlyList<int> values = cValue is int cv ? new[] { cv } : parsed.Values;
 
         // Step 10 — Value gate B: when NO legal value can be resolved (no confirmed value
-        // and the transcript stated none, or an out-of-range parsed value), the recording is
-        // flagged for review and NEVER written — a rating sheet must not receive an invalid
-        // or guessed value.
-        if (value is null or < MinRating or > MaxRating)
+        // and the transcript stated none, or ANY resolved value is out of range), the
+        // recording is flagged for review and NEVER written — a rating sheet must not receive
+        // an invalid or guessed value.
+        if (values.Count == 0 || values.Any(v => v is < MinRating or > MaxRating))
         {
             recording.Status = VoiceRecordingStatus.Flagged;
             recording.Transcript = transcript;
             recording.ParsedPlot = parsed.Plot;
             recording.ParsedSubsample = parsed.Subsample;
-            recording.ParsedValue = parsed.Value;
+            recording.ParsedValue = parsed.FirstValue;
             recording.Confidence = parsed.Confidence;
             recording.UpdatedAt = DateTime.UtcNow;
             await _voiceRecordings.UpdateAsync(recording, ct);
 
             _logger.LogWarning(
                 "Voice recording {ClientRecordingId} resolved to no legal value " +
-                "(confirmed {ConfirmedValue}, parsed {ParsedValue}); flagged without writing.",
-                clientId, cValue, parsed.Value);
+                "(confirmed {ConfirmedValue}, parsed values {ParsedValues}); flagged without writing.",
+                clientId, cValue, parsed.Values);
 
             return BuildResult(
                 command,
@@ -254,15 +260,50 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 submittedAt: DateTimeOffset.UtcNow);
         }
 
-        // Step 11 — Single-cell policy write (design.md §3): the sync offers exactly the
-        // RESOLVED subsample. An unconfirmed-and-unparsed plot or subsample leaves nothing
-        // addressable, so the write attempt is skipped and the outcome is Flagged.
+        // Step 10b — TraitOrdinal gate (defense in depth): traitOrdinal spans 1..9; the
+        // voice client may omit it (binds to 0), which the server interprets as 1 — the
+        // append scan then starts at column C and walks the Part Rated category blocks
+        // (row 8). Only an explicit traitOrdinal above 9 is invalid and flagged.
+        var traitOrdinal = command.TraitOrdinal < 1 ? 1 : command.TraitOrdinal;
+        if (traitOrdinal > 9)
+        {
+            recording.Status = VoiceRecordingStatus.Flagged;
+            recording.Transcript = transcript;
+            recording.ParsedPlot = parsed.Plot;
+            recording.ParsedSubsample = parsed.Subsample;
+            recording.ParsedValue = parsed.FirstValue;
+            recording.Confidence = parsed.Confidence;
+            recording.UpdatedAt = DateTime.UtcNow;
+            await _voiceRecordings.UpdateAsync(recording, ct);
+
+            _logger.LogWarning(
+                "Voice recording {ClientRecordingId} carries traitOrdinal {TraitOrdinal} outside 1..9; flagged without writing.",
+                clientId, command.TraitOrdinal);
+
+            return BuildResult(
+                command,
+                cPlot, cSubsample, cValue,
+                VoiceRecordingStatus.Flagged,
+                needsReview: true,
+                transcript,
+                parsed,
+                policy: null,
+                submittedAt: DateTimeOffset.UtcNow);
+        }
+
+        // Step 11 — Policy write (design.md §3): the sync offers exactly the RESOLVED
+        // subsample with the resolved VALUES list in CATEGORY-BLOCK APPEND mode
+        // (scanForFreeCells): the values are written into the row's next free cells inside
+        // the Part Rated category block containing them (row-8 metadata: LEAF1/LEAF2/LEAF3),
+        // never overwriting present cells and never spilling across a category boundary. An
+        // unconfirmed-and-unparsed plot or subsample leaves nothing addressable, so the
+        // write attempt is skipped and the outcome is Flagged.
         var subsampleSet = subsample is int s && s > 0
             ? (IReadOnlySet<int>)new HashSet<int> { s }
             : EmptySubsampleSet;
 
         PolicyWritePlotColumnResult? policy = null;
-        if (plot is int resolvedPlot && value is int resolvedValue && subsampleSet.Count > 0)
+        if (plot is int resolvedPlot && values.Count > 0 && subsampleSet.Count > 0)
         {
             try
             {
@@ -279,9 +320,10 @@ public sealed class RecordingSyncService : IRecordingSyncService
                     workbookPath,
                     outputDirectory,
                     resolvedPlot,
-                    command.TraitOrdinal,
-                    resolvedValue,
-                    subsampleSet);
+                    traitOrdinal,
+                    values,
+                    subsampleSet,
+                    scanForFreeCells: true);
             }
             catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
             {
@@ -301,7 +343,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         recording.Transcript = transcript;
         recording.ParsedPlot = parsed.Plot;
         recording.ParsedSubsample = parsed.Subsample;
-        recording.ParsedValue = parsed.Value;
+        recording.ParsedValue = parsed.FirstValue;
         recording.Confidence = parsed.Confidence;
         recording.UpdatedAt = DateTime.UtcNow;
         await _voiceRecordings.UpdateAsync(recording, ct);
@@ -327,7 +369,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
             transcript,
             parsed,
             policy,
-            submittedAt: DateTimeOffset.UtcNow);
+            submittedAt: DateTimeOffset.UtcNow,
+            traitOrdinal);
     }
 
     /// <inheritdoc />
@@ -353,6 +396,12 @@ public sealed class RecordingSyncService : IRecordingSyncService
         }
 
         var cValue = value;
+
+        // TraitOrdinal normalization (mirrors the sync path): the voice client may omit
+        // traitOrdinal (binds to 0), which the server interprets as 1 — the correction's
+        // append scan then starts at column C and walks the Part Rated category blocks.
+        // Only an explicit traitOrdinal above 9 remains invalid and is flagged below.
+        traitOrdinal = traitOrdinal < 1 ? 1 : traitOrdinal;
 
         var recording = await _voiceRecordings.GetByClientRecordingIdAsync(clientRecordingId, ct);
         if (recording is null)
@@ -394,15 +443,43 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 submittedAt: DateTimeOffset.UtcNow);
         }
 
+        // TraitOrdinal gate (mirrors the sync path): only an explicit traitOrdinal ABOVE 9 is
+        // invalid — it cannot address a cell, so the correction is flagged without writing.
+        // A missing/zero ordinal was already normalized to 1 above.
+        if (traitOrdinal > 9)
+        {
+            recording.ConfirmedPlot = cPlot;
+            recording.ConfirmedSubsample = cSubsample;
+            recording.ConfirmedValue = cValue;
+            recording.Status = VoiceRecordingStatus.Flagged;
+            recording.UpdatedAt = DateTime.UtcNow;
+            await _voiceRecordings.UpdateAsync(recording, ct);
+
+            _logger.LogWarning(
+                "Correction for voice recording {ClientRecordingId} carries traitOrdinal {TraitOrdinal} outside 1..9; flagged without writing.",
+                clientRecordingId, traitOrdinal);
+
+            return BuildResult(
+                BuildCorrectionCommand(clientRecordingId, recording, traitOrdinal),
+                cPlot, cSubsample, cValue,
+                VoiceRecordingStatus.Flagged,
+                needsReview: true,
+                recording.Transcript ?? string.Empty,
+                ReconstructParsed(recording),
+                policy: null,
+                submittedAt: DateTimeOffset.UtcNow);
+        }
+
         var trial = await _trials.GetByIdAsync(recording.TrialId ?? Guid.Empty, ct);
         if (trial is null)
         {
             throw new KeyNotFoundException($"Trial '{recording.TrialId}' was not found.");
         }
 
-        // Single-cell policy write at the reviewer-confirmed target (the correction offers
-        // only the confirmed subsample, exactly like the transcript-authoritative sync).
-        // The stored blob and transcript are reused — no re-upload, no re-transcription.
+        // Correction re-runs the same category-block append scan the voice sync uses (single
+        // confirmed value → first free cell of the row's Part Rated categories, strict block
+        // rule, skipped occupied cells silently). The stored blob + transcript are reused —
+        // no re-upload, no re-transcription.
         PolicyWritePlotColumnResult? policy = null;
         if (cPlot is int confirmedPlot && cSubsample is int confirmedSubsample)
         {
@@ -419,8 +496,9 @@ public sealed class RecordingSyncService : IRecordingSyncService
                     outputDirectory,
                     confirmedPlot,
                     traitOrdinal,
-                    cValue,
-                    new HashSet<int> { confirmedSubsample });
+                    new[] { cValue },
+                    new HashSet<int> { confirmedSubsample },
+                    scanForFreeCells: true);
             }
             catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
             {
@@ -555,13 +633,22 @@ public sealed class RecordingSyncService : IRecordingSyncService
 
     /// <summary>
     /// Applies the commit flowchart: write what was free, skip what was already present,
-    /// flag anything that could not be written (missing workbook, unknown plot or a
-    /// subsample with no workbook row).
+    /// flag anything that could not be written (missing workbook, unknown plot, a subsample
+    /// with no workbook row, or values dropped past trait 9 / past the current Part Rated
+    /// category block).
     /// </summary>
     private static string SelectStatus(PolicyWritePlotColumnResult? policy)
     {
         if (policy is null || !policy.PlotExists || policy.MissingSubsampleIndices.Count > 0)
         {
+            return VoiceRecordingStatus.Flagged;
+        }
+
+        if (policy.OutOfTraitRangeValueCount > 0)
+        {
+            // A spoken rating was lost (no column beyond trait 9 in fixed-column mode, or no
+            // free cell left in the current Part Rated category block in append mode): flag
+            // even when other cells were written — the human review must see the dropped values.
             return VoiceRecordingStatus.Flagged;
         }
 
@@ -588,7 +675,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         int? cValue)
         => (cPlot is int cp && parsed.Plot is int pp && cp != pp)
         || (cSubsample is int cs && parsed.Subsample is int ps && cs != ps)
-        || (cValue is int cv && parsed.Value is int pv && cv != pv);
+        || (cValue is int cv && parsed.FirstValue is int pv && cv != pv);
 
     /// <summary>
     /// Assembles the result DTO, honouring a <see langword="null"/> parse and a
@@ -611,6 +698,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         TranscriptParseResult? parsed,
         PolicyWritePlotColumnResult? policy,
         DateTimeOffset submittedAt,
+        int? traitOrdinal = null,
         bool replayed = false)
         => new()
         {
@@ -619,12 +707,12 @@ public sealed class RecordingSyncService : IRecordingSyncService
             Status = status,
             Plot = cPlot ?? parsed?.Plot,
             Subsample = cSubsample ?? parsed?.Subsample,
-            Value = cValue ?? parsed?.Value,
+            Value = cValue ?? parsed?.FirstValue,
             ParsedPlot = parsed?.Plot,
             ParsedSubsample = parsed?.Subsample,
-            ParsedValue = parsed?.Value,
+            ParsedValue = parsed?.FirstValue,
             PlotExists = policy?.PlotExists ?? false,
-            TraitOrdinal = command.TraitOrdinal,
+            TraitOrdinal = traitOrdinal ?? command.TraitOrdinal,
             NeedsReview = needsReview,
             Replayed = replayed,
             WasTranscriptOnly = cPlot is null && cSubsample is null && cValue is null,
@@ -634,6 +722,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
             WrittenCells = policy?.WrittenCells ?? [],
             SkippedPresentCells = policy?.SkippedPresentCells ?? [],
             MissingSubsampleIndices = policy?.MissingSubsampleIndices ?? [],
+            OutOfTraitRangeValueCount = policy?.OutOfTraitRangeValueCount ?? 0,
         };
 
     /// <summary>
@@ -661,7 +750,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         {
             Plot = recording.ParsedPlot,
             Subsample = recording.ParsedSubsample,
-            Value = recording.ParsedValue,
+            Values = recording.ParsedValue is int v ? new[] { v } : Array.Empty<int>(),
             Confidence = recording.Confidence ?? 0,
         };
 

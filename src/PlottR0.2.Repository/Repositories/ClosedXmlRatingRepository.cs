@@ -22,6 +22,13 @@ public class ClosedXmlRatingRepository : IRatingRepository
     private const string SheetName = "Subsample Plot Data";
     private const int FirstDataRow = 22;     // region start (C22:K245)
 
+    /// <summary>
+    /// Row 8 of "Subsample Plot Data" carries the Part Rated category metadata used by the
+    /// scan-for-free-cells append (design.md §5): B8 = "Part Rated" header, then contiguous
+    /// label runs over the nine trait columns, e.g. C:E "LEAF1", F:H "LEAF2", I:K "LEAF3".
+    /// </summary>
+    private const int PartRatedHeaderRow = 8;
+
     private readonly ExcelWorkbookOptions _options;
     private readonly ILogger<ClosedXmlRatingRepository> _logger;
 
@@ -89,17 +96,27 @@ public class ClosedXmlRatingRepository : IRatingRepository
         string outputDirectory,
         int plot,
         int traitOrdinal,
-        int value,
-        IReadOnlySet<int> subsampleIndices)
+        IReadOnlyList<int> values,
+        IReadOnlySet<int> subsampleIndices,
+        bool scanForFreeCells)
     {
+        // Defense in depth: the rating region has exactly nine trait columns (C..K) and
+        // traitOrdinal 0 would address column B — the row-key column. No caller may ever
+        // write there or into an invalid column (the sync service catches this and flags).
+        if (traitOrdinal is < 1 or > 9)
+        {
+            throw new InvalidDataException(
+                $"traitOrdinal must be within 1..9 (one column per write), got {traitOrdinal}.");
+        }
+
         using var wb = OpenWorkbook(workbookPath);
         var sheet = wb.Worksheet(SheetName);
-        var column = TraitColumn(traitOrdinal);
         var rows = FindSubsampleRows(sheet, plot).ToDictionary(kv => kv.Value.subsample, kv => kv.Value.row);
 
         var written = new List<RatingCell>();
         var skipped = new List<RatingCell>();
         var missing = new List<int>();
+        var outOfTraitRange = 0;
 
         foreach (var subsample in subsampleIndices.OrderBy(i => i))
         {
@@ -110,26 +127,62 @@ public class ClosedXmlRatingRepository : IRatingRepository
                 continue;
             }
 
-            var cell = sheet.Cell(row, column);
-            var isEmpty = cell.IsEmpty();
-            var textIsMissing = !isEmpty
-                && cell.GetValue<string>().Trim().Equals("missing", StringComparison.OrdinalIgnoreCase);
-
-            if (isEmpty || textIsMissing)
+            if (scanForFreeCells)
             {
-                // Locked-overwrite policy: only empty / "missing" cells accept a value (0 is valid).
-                cell.Value = value;
-                written.Add(new RatingCell(plot, subsample, traitOrdinal, value, cell.Address.ToString() ?? string.Empty));
+                // Category-block append (design.md §5): the recording's values fill the row's
+                // NEXT FREE cells inside the Part Rated category block the first free cell
+                // belongs to (row-8 metadata). An utterance NEVER spans category blocks —
+                // values that cannot fit the current block are counted as out-of-trait-range
+                // and flagged; progression to the next category happens on later utterances
+                // once the block holds no free cells. Already-present cells are left untouched
+                // and — unlike the fixed-column mode — never reported skipped (nothing is
+                // "skipped" in an append; the cursor simply moves past it).
+                outOfTraitRange += AppendToCategoryBlock(
+                    sheet, row, plot, subsample, traitOrdinal, values, written);
+                continue;
             }
-            else
+
+            // Multi-value write: values fill the row's trait cells left-to-right, starting at
+            // the recording's traitOrdinal (traitOrdinal 1 → column C, 2 → D, … 9 → K).
+            for (var i = 0; i < values.Count; i++)
             {
-                // Already present (0 counts as a value): report the current content, walk away.
-                skipped.Add(new RatingCell(
-                    plot,
-                    subsample,
-                    traitOrdinal,
-                    ReadIntSafe(cell),
-                    cell.Address.ToString() ?? string.Empty));
+                var targetTraitOrdinal = traitOrdinal + i;
+                if (targetTraitOrdinal > 9)
+                {
+                    // Beyond the region's last trait column (K): neither written nor reported
+                    // as skipped — COUNTED so the sync flags the recording for review (a
+                    // spoken rating was lost); log the drop and continue.
+                    _logger.LogDebug(
+                        "Value {Value} for plot {Plot} subsample {Subsample} would land beyond trait 9 " +
+                        "(traitOrdinal {TraitOrdinal} + index {Index}); ignored.",
+                        values[i], plot, subsample, traitOrdinal, i);
+                    outOfTraitRange++;
+                    continue;
+                }
+
+                var cell = sheet.Cell(row, TraitColumn(targetTraitOrdinal));
+                var isEmpty = cell.IsEmpty();
+                var textIsMissing = !isEmpty
+                    && cell.GetValue<string>().Trim().Equals("missing", StringComparison.OrdinalIgnoreCase);
+
+                if (isEmpty || textIsMissing)
+                {
+                    // Locked-overwrite policy: only empty / "missing" cells accept a value (0 is valid).
+                    cell.Value = values[i];
+                    written.Add(new RatingCell(
+                        plot, subsample, targetTraitOrdinal, values[i],
+                        cell.Address.ToString() ?? string.Empty));
+                }
+                else
+                {
+                    // Already present (0 counts as a value): report the current content, walk away.
+                    skipped.Add(new RatingCell(
+                        plot,
+                        subsample,
+                        targetTraitOrdinal,
+                        ReadIntSafe(cell),
+                        cell.Address.ToString() ?? string.Empty));
+                }
             }
         }
 
@@ -144,6 +197,7 @@ public class ClosedXmlRatingRepository : IRatingRepository
             WrittenCells = written,
             SkippedPresentCells = skipped,
             MissingSubsampleIndices = missing,
+            OutOfTraitRangeValueCount = outOfTraitRange,
         };
     }
 
@@ -165,6 +219,197 @@ public class ClosedXmlRatingRepository : IRatingRepository
 
     private static int TraitColumn(int traitOrdinal)
         => traitOrdinal + 2; // column C(3)..K(11) => trait ordinal 1..9 (design.md §5)
+
+    /// <summary>
+    /// Category-block append for ONE subsample row (scan mode): locates the row's first
+    /// WRITABLE trait cell at or after the recording's <paramref name="traitOrdinal"/>
+    /// (empty or "missing"), then writes <paramref name="values"/> one per column from there,
+    /// honouring the Part Rated category blocks read from row 8 — STRICTLY inside the block
+    /// that first free cell belongs to: an utterance never spans category blocks. Values that
+    /// cannot fit the current block are dropped and counted (their drops must surface for
+    /// review, mirroring the fixed-column trait-9 overflow count); progression to the next
+    /// category happens on later utterances once the block holds no free cells.
+    /// </summary>
+    private int AppendToCategoryBlock(
+        IXLWorksheet sheet,
+        int row,
+        int plot,
+        int subsample,
+        int traitOrdinal,
+        IReadOnlyList<int> values,
+        List<RatingCell> written)
+    {
+        var regionStart = TraitColumn(traitOrdinal);
+        var regionEnd = TraitColumn(9);
+
+        // First writable cell of the row — the cursor starts here; everything before it is
+        // already occupied, and an entirely occupied row has no legal column at all.
+        var firstFree = 0;
+        for (var col = regionStart; col <= regionEnd; col++)
+        {
+            if (IsWritableCell(sheet.Cell(row, col)))
+            {
+                firstFree = col;
+                break;
+            }
+        }
+
+        if (firstFree == 0)
+        {
+            _logger.LogDebug(
+                "Plot {Plot} subsample {Subsample} has no free trait cell from column {Start} to {End}; " +
+                "{Count} value(s) dropped.",
+                plot, subsample, regionStart, regionEnd, values.Count);
+            return values.Count;
+        }
+
+        // The append stays inside the category block (row-8 label run) that CONTAINS the
+        // first free cell — a value may NOT spill into the NEXT leaf's columns, ever.
+        var blocks = BuildCategoryBlocks(sheet, TraitColumn(1), TraitColumn(9));
+        var targetBlock = blocks.First(b => firstFree >= b.StartColumn && firstFree <= b.EndColumn);
+
+        _logger.LogDebug(
+            "Category append for plot {Plot} subsample {Subsample}: first free cell {Address}, " +
+            "category block '{Label}' (columns {Start}..{End}).",
+            plot, subsample, sheet.Cell(row, firstFree).Address,
+            targetBlock.Label, targetBlock.StartColumn, targetBlock.EndColumn);
+
+        var pointer = firstFree;
+        var dropped = 0;
+        for (var i = 0; i < values.Count; i++)
+        {
+            // STRICT category rule: the cursor never leaves the block the first free cell
+            // belongs to — one utterance = one Part Rated category. When the next value's
+            // write would land at or past the block boundary, the value in hand and every
+            // remaining value of the utterance have NO home in this category: they are
+            // dropped and COUNTED (never silently lost, never spilled into the next leaf).
+            // Progression to the next category happens on LATER utterances, once this block
+            // holds no free cells at all (the cursor always targets the first free cell).
+            if (pointer > targetBlock.EndColumn)
+            {
+                _logger.LogDebug(
+                    "Value {Value} for plot {Plot} subsample {Subsample} has no free cell left " +
+                    "in category block '{Label}' (columns {Start}..{End}); {Count} value(s) " +
+                    "dropped — an utterance never spans category blocks.",
+                    values[i], plot, subsample, targetBlock.Label,
+                    targetBlock.StartColumn, targetBlock.EndColumn, values.Count - i);
+                dropped = values.Count - i;
+                break;
+            }
+
+            var cell = sheet.Cell(row, pointer);
+            cell.Value = values[i];
+            written.Add(new RatingCell(
+                plot, subsample, pointer - 2 /* column C(3) → trait ordinal 1 */, values[i],
+                cell.Address.ToString() ?? string.Empty));
+
+            // Advance the cursor to the row's next writable cell INSIDE the same block
+            // (skipping occupied holes); blockEnd + 1 signals "no writable cell left in this
+            // category" and the guard above drops the remaining values of the utterance.
+            pointer = AdvancePointer(sheet, row, pointer, targetBlock.EndColumn);
+        }
+
+        return dropped;
+    }
+
+    /// <summary>
+    /// True when a cell may legally accept a value under the locked-overwrite policy: it is
+    /// EMPTY, or its text is exactly "missing" (case-insensitive). Numeric content — 0
+    /// included — and any other text count as "present" and are never overwritten.
+    /// </summary>
+    private static bool IsWritableCell(IXLCell cell)
+        => cell.IsEmpty()
+        || cell.GetValue<string>().Trim().Equals("missing", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Advances the append cursor to the row's next writable cell after
+    /// <paramref name="fromColumn"/>, scanning ONLY inside the current category block (up to
+    /// <paramref name="blockEnd"/>); occupied holes inside the block are skipped. Returns
+    /// <paramref name="blockEnd"/> + 1 when no writable cell remains IN THE BLOCK — the
+    /// caller then drops the remaining values of the utterance (strict rule: an utterance
+    /// never spans category blocks).
+    /// </summary>
+    private static int AdvancePointer(
+        IXLWorksheet sheet, int row, int fromColumn, int blockEnd)
+    {
+        for (var col = fromColumn + 1; col <= blockEnd; col++)
+        {
+            if (IsWritableCell(sheet.Cell(row, col)))
+            {
+                return col;
+            }
+        }
+
+        return blockEnd + 1;
+    }
+
+    /// <summary>
+    /// Reads the Part Rated category metadata from <see cref="PartRatedHeaderRow"/> and groups
+    /// the trait columns <paramref name="startColumn"/>..<paramref name="endColumn"/> into
+    /// contiguous blocks of EQUAL labels (compared case-insensitively, e.g. C:E "LEAF1",
+    /// F:H "LEAF2", I:K "LEAF3"). An EMPTY label cell inherits the last non-empty label to
+    /// its LEFT — the ARM header row is decoration, not a category change. When the LEADING
+    /// label(s) of the region are empty but a later column is labelled, they inherit the NEXT
+    /// non-empty label instead, so the region effectively starts as that category (a
+    /// multi-value utterance whose first free cell is a leading column must not be forced
+    /// into a singleton anonymous block). A region with NO non-empty label at all acts as ONE
+    /// block so workbooks manufactured without the metadata still append sanely.
+    /// </summary>
+    private static List<(int StartColumn, int EndColumn, string Label)> BuildCategoryBlocks(
+        IXLWorksheet sheet, int startColumn, int endColumn)
+    {
+        var normalized = new List<string>(endColumn - startColumn + 1);
+        var lastNonEmpty = string.Empty;
+        var anyNonEmpty = false;
+        for (var col = startColumn; col <= endColumn; col++)
+        {
+            var raw = sheet.Cell(PartRatedHeaderRow, col).GetValue<string>().Trim();
+            if (raw.Length == 0)
+            {
+                normalized.Add(lastNonEmpty);
+            }
+            else
+            {
+                anyNonEmpty = true;
+                lastNonEmpty = raw;
+                normalized.Add(raw);
+            }
+        }
+
+        if (!anyNonEmpty)
+        {
+            return new List<(int, int, string)> { (startColumn, endColumn, string.Empty) };
+        }
+
+        // Leading EMPTY labels (nothing non-empty before them) inherit the NEXT non-empty
+        // label, so the region starts as that category instead of declaring an anonymous
+        // single-column block that would drop every multi-value utterance starting at it.
+        if (normalized[0].Length == 0)
+        {
+            var firstNonEmptyIndex = normalized.FindIndex(label => label.Length > 0);
+            for (var i = 0; i < firstNonEmptyIndex; i++)
+            {
+                normalized[i] = normalized[firstNonEmptyIndex];
+            }
+        }
+
+        var blocks = new List<(int StartColumn, int EndColumn, string Label)>();
+        for (var col = startColumn; col <= endColumn;)
+        {
+            var label = normalized[col - startColumn];
+            var runEnd = col;
+            while (runEnd + 1 <= endColumn
+                && string.Equals(normalized[(runEnd + 1) - startColumn], label, StringComparison.OrdinalIgnoreCase))
+            {
+                runEnd++;
+            }
+
+            blocks.Add((col, runEnd, label));
+            col = runEnd + 1;
+        }
+
+        return blocks;
+    }
 
     /// <summary>
     /// Builds a map of <c>(plot, subsample) → row</c> for the given plot by parsing the

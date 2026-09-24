@@ -13,6 +13,14 @@ public interface IRefreshTokenRepository
     Task<RefreshToken?> GetByHashedTokenAsync(string hashedToken, CancellationToken ct = default);
 
     /// <summary>
+    /// Returns the newest ACTIVE (non-revoked, non-expired) refresh token for the
+    /// given user, or <c>null</c> when none exists. Used by the reuse-grace path to
+    /// locate the live successor of a just-consumed token so a concurrent refresh
+    /// race can be serviced without revoking the whole family.
+    /// </summary>
+    Task<RefreshToken?> GetLatestActiveAsync(Guid userId, CancellationToken ct = default);
+
+    /// <summary>
     /// Atomically revokes the active token with the given <paramref name="tokenId"/>,
     /// returning the number of rows actually revoked (1 = revoked now, 0 = the token
     /// was already revoked/used, i.e. a replay). The transition only happens when the

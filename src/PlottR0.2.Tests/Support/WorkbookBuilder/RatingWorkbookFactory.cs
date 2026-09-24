@@ -15,6 +15,12 @@ public static class RatingWorkbookFactory
     public const int HeaderRow = 21;
     public const int SubsamplesPerPlot = 4;
 
+    /// <summary>
+    /// Row 8 carries the Part Rated category metadata the repository's category-block append
+    /// reads: B8 "Part Rated", C8:E8 "LEAF1", F8:H8 "LEAF2", I8:K8 "LEAF3".
+    /// </summary>
+    public const int PartRatedHeaderRow = 8;
+
     /// <summary>Plots covered by the default layout (101..104). Single source of truth for "which plots exist".</summary>
     public static readonly int[] Plots = [101, 102, 103, 104];
 
@@ -29,10 +35,15 @@ public static class RatingWorkbookFactory
     /// Optional dictionary of <c>(plot, subsample, traitOrdinal) → value</c> to pre-fill
     /// specific cells. Cells not listed here remain empty.
     /// </param>
+    /// <param name="writePartRatedMetadata">
+    /// When <see langword="false"/> the row-8 Part Rated labels are NOT emitted (see
+    /// <see cref="CreateWithoutPartRated"/> for the dedicated convenience overload).
+    /// </param>
     /// <returns>The absolute path of the created workbook.</returns>
     public static string Create(
         string outputPath,
-        IReadOnlyDictionary<(int plot, int subsample, int traitOrdinal), int>? prefilledCells = null)
+        IReadOnlyDictionary<(int plot, int subsample, int traitOrdinal), int>? prefilledCells = null,
+        bool writePartRatedMetadata = true)
     {
         var dir = Path.GetDirectoryName(outputPath);
         if (!string.IsNullOrEmpty(dir))
@@ -41,6 +52,10 @@ public static class RatingWorkbookFactory
         using var wb = new XLWorkbook();
         var ws = wb.Worksheets.Add(SheetName);
         WriteHeaders(ws);
+        if (writePartRatedMetadata)
+        {
+            WritePartRatedMetadata(ws);
+        }
 
         // From row 22: column B = "{plot} {subsample}"
         // Plots 101..104 × subsamples 1..4 → rows 22..37
@@ -70,6 +85,18 @@ public static class RatingWorkbookFactory
     }
 
     /// <summary>
+    /// <see cref="Create"/> without the row-8 Part Rated metadata — used by category-block
+    /// tests that verify the unlabelled fallback (the whole trait region acts as ONE block).
+    /// </summary>
+    /// <param name="outputPath">Absolute path where the workbook will be saved.</param>
+    /// <param name="prefilledCells">Optional <c>(plot, subsample, traitOrdinal) → value</c> pre-fills.</param>
+    /// <returns>The absolute path of the created workbook.</returns>
+    public static string CreateWithoutPartRated(
+        string outputPath,
+        IReadOnlyDictionary<(int plot, int subsample, int traitOrdinal), int>? prefilledCells = null)
+        => Create(outputPath, prefilledCells, writePartRatedMetadata: false);
+
+    /// <summary>
     /// Creates a self-contained pristine workbook whose subsample set includes a multi-digit
     /// index (&gt; 9) so the key parser's <c>Split(' ')</c>/<c>int.TryParse</c> path can be
     /// proven end-to-end (e.g. key <c>"101 10"</c>). Rows are emitted contiguously from
@@ -95,6 +122,7 @@ public static class RatingWorkbookFactory
         using var wb = new XLWorkbook();
         var ws = wb.Worksheets.Add(SheetName);
         WriteHeaders(ws);
+        WritePartRatedMetadata(ws);
 
         var rowBySubsample = new Dictionary<int, int>();
         var row = FirstDataRow;
@@ -132,5 +160,18 @@ public static class RatingWorkbookFactory
         ws.Cell(HeaderRow, 2).Value = "Subsample Key";
         for (var t = 1; t <= 9; t++)
             ws.Cell(HeaderRow, t + 2).Value = $"Trait {t}";
+    }
+
+    /// <summary>
+    /// Writes the Part Rated category metadata on row 8 — the ARM row the repository's
+    /// category-block append derives its leaf runs from: B8 "Part Rated" header, then
+    /// C:E "LEAF1", F:H "LEAF2", I:K "LEAF3" over the nine trait columns.
+    /// </summary>
+    private static void WritePartRatedMetadata(IXLWorksheet ws)
+    {
+        ws.Cell(PartRatedHeaderRow, 2).Value = "Part Rated";
+        ws.Cell(PartRatedHeaderRow, 3).Value = "LEAF1"; // C:E
+        ws.Cell(PartRatedHeaderRow, 6).Value = "LEAF2"; // F:H
+        ws.Cell(PartRatedHeaderRow, 9).Value = "LEAF3"; // I:K
     }
 }

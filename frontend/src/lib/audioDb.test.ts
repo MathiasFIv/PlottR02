@@ -20,7 +20,6 @@ function makeRec(overrides: Partial<AudioRecording> = {}): AudioRecording {
       blob: new Blob(['fake-audio-bytes'], { type: 'audio/webm' }),
       mimeType: 'audio/webm',
       trialId: 'trial-1',
-      traitOrdinal: 1,
     }),
     id: 'rec-' + Math.random().toString(36).slice(2),
     ...overrides,
@@ -50,6 +49,7 @@ function syncResponse(): SyncRecordingResponse {
     writtenCells: [{ plot: 101, subsample: 3, traitOrdinal: 1, value: 7, cellAddress: 'C24' }],
     skippedPresentCells: [],
     missingSubsampleIndices: [],
+    outOfTraitRangeValueCount: 0,
   };
 }
 
@@ -71,14 +71,12 @@ describe('audioDb', () => {
       blob: new Blob(['x'], { type: 'audio/mp4' }),
       mimeType: 'audio/mp4',
       trialId: 'trial-9',
-      traitOrdinal: 1,
     });
 
     expect(rec.id).toBeTruthy();
     expect(rec.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(rec.mimeType).toBe('audio/mp4');
     expect(rec.trialId).toBe('trial-9');
-    expect(rec.traitOrdinal).toBe(1);
     expect(rec.status).toBe('pending');
     expect(rec.syncAttempts).toBe(0);
     expect(rec.plot).toBeNull();

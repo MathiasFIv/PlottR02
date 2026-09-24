@@ -123,4 +123,11 @@ public sealed class SyncVoiceRecordingResult
 
     /// <summary>The requested subsample indices that had no row in the workbook.</summary>
     public IReadOnlyList<int> MissingSubsampleIndices { get; init; } = [];
+
+    /// <summary>
+    /// Number of spoken values of the utterance that could not be written at all
+    /// (fixed-column mode: past trait 9; category-block append mode: past the current
+    /// Part Rated category's cells or a full region). Only &gt; 0 when the recording is flagged.
+    /// </summary>
+    public int OutOfTraitRangeValueCount { get; init; } = 0;
 }

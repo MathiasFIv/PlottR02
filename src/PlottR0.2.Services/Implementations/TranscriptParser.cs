@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using PlottR0._2.Contracts.Transcription;
 
 namespace PlottR0._2.Services.Implementations;
@@ -12,12 +13,19 @@ namespace PlottR0._2.Services.Implementations;
 /// <para>
 /// Supported grammar (design.md, locked plan):
 /// <list type="bullet">
-///   <item><description>Labeled digits — <c>"plot 101 subsample 3 value 7"</c>.</description></item>
+///   <item><description>Labeled digits — <c>"plot 101 subsample 3 value 7"</c>, and the
+///   multi-value form <c>"plot 101 subsample 1 values 3 6 1"</c> where the contiguous run
+///   of numbers after <c>values</c> is collected (the first fills the recording's
+///   traitOrdinal column, the rest fill the succeeding trait columns left-to-right).</description></item>
 ///   <item><description>Bare digits — <c>"101 3 7"</c>.</description></item>
 ///   <item><description>Word digits — <c>"one oh one, three, seven"</c>.</description></item>
 ///   <item><description>Labeled word digits — <c>"plot one oh one, subsample three, value seven"</c>.</description></item>
 /// </list>
-/// <c>subsample</c> accepts the alias <c>sub</c> (as in <c>"plot 5 sub 2 value 10"</c>).
+/// <c>subsample</c> accepts the aliases <c>sub</c>, <c>subsymbol</c> and close spellings;
+/// <c>plot</c> accepts <c>plut</c> and <c>plus</c> (<c>"plot 5 sub 2 value 10"</c>, the
+/// observed <c>"PLUT-104-subsymbol-1-value-6."</c> and <c>"Sub 7104, plus 203, value 6."</c>).
+/// Separators beyond whitespace are supported: hyphens/periods/commas split and a
+/// letter↔digit transition splits <c>"plot104"</c>.
 /// Parsing is FORMAT-ONLY: there is no trait parsing (exactly one trait per MVP) and no
 /// value-range validation — the sync service validates plot existence and value range
 /// against the workbook afterwards.
@@ -51,6 +59,34 @@ public static class TranscriptParser
     }
 
     /// <summary>
+    /// Accepted spellings for the three keywords, including the phonetic variants Whisper
+    /// actually emits with the MVP speakers: "plut" for "plot" and "subsymbol" for
+    /// "subsample" were both observed in the field, and so was "plus" for "plot"
+    /// (<c>"Sub 7104, plus 203, value 6."</c> — first observed in the 9712ac34 trial
+    /// recordings, where the intended utterance was "plot 203"). The short forms ("sub")
+    /// come from the original grammar. Lookups are ordinal (tokens are already lower-cased).
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, TokenKind> KeywordAliases =
+        new Dictionary<string, TokenKind>(StringComparer.Ordinal)
+        {
+            // plot
+            ["plot"] = TokenKind.Plot,
+            ["plut"] = TokenKind.Plot,
+            ["plod"] = TokenKind.Plot,
+            ["plus"] = TokenKind.Plot,
+            // subsample
+            ["subsample"] = TokenKind.Subsample,
+            ["subsymbol"] = TokenKind.Subsample,
+            ["subsampel"] = TokenKind.Subsample,
+            ["subsamble"] = TokenKind.Subsample,
+            ["sub"] = TokenKind.Subsample,
+            // value
+            ["value"] = TokenKind.Value,
+            ["values"] = TokenKind.Value,
+            ["valeu"] = TokenKind.Value,
+        };
+
+    /// <summary>
     /// Parses one transcript against the constrained MVP grammar.
     /// </summary>
     /// <param name="transcript">The raw transcription text (may be empty).</param>
@@ -64,12 +100,18 @@ public static class TranscriptParser
 
         int? plot = null;
         int? subsample = null;
-        int? value = null;
+        var values = new List<int>();
+        var valuesTaken = false;
         var hasKeywords = sequence.Any(t => t.Kind is not TokenKind.Number);
 
         if (hasKeywords)
         {
-            // Labeled form: each keyword takes the next numeric token after it.
+            // Labeled form: each keyword takes the next numeric token after it. The FIRST
+            // value-kind keyword ("value"/"values") collects the CONTIGUOUS numeric run after
+            // it — the multi-value form "plot 101 subsample 1 values 3 6 1"; the run STOPS at
+            // the next keyword, so a second take in the same transcript ("... values 3 6 1
+            // plot 5 subsample 2 values 4") never bleeds its numbers into the first row. A
+            // repeated value keyword is ignored (one-shot like the other fields).
             for (var i = 0; i < sequence.Count; i++)
             {
                 if (sequence[i].Kind == TokenKind.Plot && plot is null)
@@ -80,22 +122,30 @@ public static class TranscriptParser
                 {
                     subsample = NextNumberAfter(sequence, i);
                 }
-                else if (sequence[i].Kind == TokenKind.Value && value is null)
+                else if (sequence[i].Kind == TokenKind.Value && !valuesTaken)
                 {
-                    value = NextNumberAfter(sequence, i);
+                    values.AddRange(
+                        sequence.Skip(i + 1)
+                            .TakeWhile(t => t.Kind == TokenKind.Number)
+                            .Select(t => t.Value));
+                    valuesTaken = true;
                 }
             }
         }
         else
         {
-            // Bare form: the first up-to-3 numeric tokens in order are plot, subsample, value.
+            // Bare form: numbers[0] = plot, numbers[1] = subsample, numbers[2..end] = Values.
+            // "101 3 7 6 1" → plot 101, subsample 3, values [7, 6, 1].
             var numbers = sequence.Where(t => t.Kind == TokenKind.Number).ToList();
             if (numbers.Count > 0) plot = numbers[0].Value;
             if (numbers.Count > 1) subsample = numbers[1].Value;
-            if (numbers.Count > 2) value = numbers[2].Value;
+            if (numbers.Count > 2)
+            {
+                values.AddRange(numbers.Skip(2).Select(n => n.Value));
+            }
         }
 
-        var complete = plot.HasValue && subsample.HasValue && value.HasValue;
+        var complete = plot.HasValue && subsample.HasValue && values.Count > 0;
         var anyWordForm = sequence.Any(t => t.Kind == TokenKind.Number && t.WasWord);
 
         double confidence;
@@ -103,7 +153,7 @@ public static class TranscriptParser
         {
             confidence = anyWordForm ? 0.75 : (hasKeywords ? 0.95 : 0.85);
         }
-        else if (plot.HasValue || subsample.HasValue || value.HasValue)
+        else if (plot.HasValue || subsample.HasValue || values.Count > 0)
         {
             confidence = 0.5;
         }
@@ -116,18 +166,26 @@ public static class TranscriptParser
         {
             Plot = plot,
             Subsample = subsample,
-            Value = value,
+            Values = values,
             Confidence = confidence,
         };
     }
 
     /// <summary>
-    /// Lower-cases, strips commas (treated as plain separators) and splits on whitespace.
+    /// Lower-cases and splits the raw transcript into candidate tokens. Every run of
+    /// non-alphanumeric characters is a separator (whitespace, commas, hyphens, periods,
+    /// slashes, backslashes…), and a letter↔digit transition also splits — so Whisper's
+    /// hyphen-joined utterances ("plot-101-subsample-3-value-7") and glued
+    /// keyword+number ("plot104") both tokenize cleanly. Without this, a hyphen-joined
+    /// phrase survives as ONE token that matches nothing and is dropped as noise.
     /// </summary>
+    private static readonly Regex TokenSplitRegex = new(
+        @"[^a-z0-9]+|(?<=[a-z])(?=[0-9])|(?<=[0-9])(?=[a-z])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static List<string> Tokenize(string transcript) =>
-        transcript.ToLowerInvariant()
-            .Replace(',', ' ')
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+        TokenSplitRegex.Split(transcript.ToLowerInvariant())
+            .Where(t => t.Length > 0)
             .ToList();
 
     /// <summary>
@@ -174,17 +232,9 @@ public static class TranscriptParser
                 continue;
             }
 
-            if (token == "plot")
+            if (KeywordAliases.TryGetValue(token, out var kind))
             {
-                result.Add((TokenKind.Plot, 0, false));
-            }
-            else if (token is "subsample" or "sub")
-            {
-                result.Add((TokenKind.Subsample, 0, false));
-            }
-            else if (token == "value")
-            {
-                result.Add((TokenKind.Value, 0, false));
+                result.Add((kind, 0, false));
             }
             else if (int.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out var number))
             {

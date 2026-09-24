@@ -47,7 +47,6 @@ function makeRec(overrides: Partial<AudioRecording> = {}): AudioRecording {
       blob: new Blob(['fake-audio-bytes'], { type: 'audio/webm' }),
       mimeType: 'audio/webm',
       trialId: 'trial-1',
-      traitOrdinal: 1,
     }),
     id: 'rec-' + Math.random().toString(36).slice(2),
     ...overrides,
@@ -81,6 +80,7 @@ function syncResponse(
     ],
     skippedPresentCells: [],
     missingSubsampleIndices: [],
+    outOfTraitRangeValueCount: 0,
     ...overrides,
   };
 }
@@ -269,7 +269,6 @@ describe('applyCorrection', () => {
       plot: 12,
       subsample: 1,
       value: 8,
-      traitOrdinal: 1,
     });
 
     expect(outcome.kind).toBe('success');
@@ -279,7 +278,6 @@ describe('applyCorrection', () => {
       plot: 12,
       subsample: 1,
       value: 8,
-      traitOrdinal: 1,
     });
 
     const found = await getRecordingById(rec.id);
@@ -298,7 +296,6 @@ describe('applyCorrection', () => {
       plot: 101,
       subsample: 3,
       value: 7,
-      traitOrdinal: 1,
     });
 
     expect(outcome.kind).toBe('already-saved');
@@ -319,7 +316,6 @@ describe('applyCorrection', () => {
       plot: 12,
       subsample: 1,
       value: 8,
-      traitOrdinal: 1,
     });
 
     expect(outcome.kind).toBe('failed');
@@ -394,6 +390,64 @@ describe('summarizeSync', () => {
     );
     expect(lines.join(' ')).toContain('Already filled — not overwritten (C24)');
     expect(variant).toBe('success');
+  });
+
+  it('adds a still-needs-review line when SkippedPresent has needsReview', () => {
+    const { lines, variant } = summarizeSync(
+      syncResponse({
+        status: 'SkippedPresent',
+        needsReview: true,
+        transcript: '',
+        writtenCells: [],
+        skippedPresentCells: [
+          { plot: 101, subsample: 3, traitOrdinal: 1, value: 7, cellAddress: 'C22' },
+        ],
+      }),
+    );
+    const text = lines.join(' ');
+    expect(text).toContain('Already filled — not overwritten (C22)');
+    expect(text).toContain('Recording still needs review — nothing was overwritten.');
+    expect(variant).toBe('success');
+  });
+
+  it('reports a partial write when Flagged with some cells written and some dropped', () => {
+    const { lines, variant } = summarizeSync(
+      syncResponse({
+        status: 'Flagged',
+        needsReview: true,
+        transcript: '',
+        writtenCells: [
+          { plot: 22, subsample: 1, traitOrdinal: 1, value: 7, cellAddress: 'F22' },
+          { plot: 22, subsample: 2, traitOrdinal: 1, value: 8, cellAddress: 'G22' },
+          { plot: 22, subsample: 3, traitOrdinal: 1, value: 9, cellAddress: 'H22' },
+        ],
+        skippedPresentCells: [],
+        missingSubsampleIndices: [],
+        outOfTraitRangeValueCount: 1,
+      }),
+    );
+    const text = lines.join(' ');
+    expect(text).toContain('Saved 3 of 4 (F22, G22, H22)');
+    expect(text).toContain('1 value didn\'t fit');
+    expect(variant).toBe('error');
+  });
+
+  it('keeps "Not written" with reason text when Flagged writes nothing and drops values', () => {
+    const { lines, variant } = summarizeSync(
+      syncResponse({
+        status: 'Flagged',
+        needsReview: true,
+        transcript: '',
+        writtenCells: [],
+        skippedPresentCells: [],
+        missingSubsampleIndices: [],
+        outOfTraitRangeValueCount: 2,
+      }),
+    );
+    const text = lines.join(' ');
+    expect(text).toContain('Not written');
+    expect(text).toContain('2 values didn\'t fit');
+    expect(variant).toBe('error');
   });
 
   it('notes the replay for a Replay response', () => {

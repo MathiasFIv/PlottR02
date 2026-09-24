@@ -39,6 +39,17 @@ public sealed class RefreshTokenRepository : IRefreshTokenRepository
             .FirstOrDefaultAsync(rt => rt.Token == hashedToken, ct);
     }
 
+    /// <inheritdoc />
+    public async Task<RefreshToken?> GetLatestActiveAsync(Guid userId, CancellationToken ct = default)
+    {
+        var now = DateTime.UtcNow;
+
+        return await _db.RefreshTokens
+            .Where(rt => rt.UserId == userId && !rt.IsRevoked && rt.ExpiresAt > now)
+            .OrderByDescending(rt => rt.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+    }
+
     /// <summary>
     /// Atomically revokes the token identified by <paramref name="tokenId"/>,
     /// but ONLY if it is not already revoked. Executed as a single database

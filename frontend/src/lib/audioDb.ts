@@ -36,7 +36,6 @@ export interface AudioRecording {
   mimeType: string;
   createdAt: string; // ISO string
   trialId: string | null;
-  traitOrdinal: number; // hardcoded 1 for MVP
   plot: number | null; // confirmed by a correction (or legacy 'ready'); null = transcript-authoritative
   subsample: number | null; // ditto
   value: number | null; // ditto
@@ -153,7 +152,6 @@ export function newRecording(input: {
   blob: Blob;
   mimeType: string;
   trialId: string | null;
-  traitOrdinal: number;
 }): AudioRecording {
   return {
     id: crypto.randomUUID(),
@@ -161,7 +159,6 @@ export function newRecording(input: {
     mimeType: input.mimeType,
     createdAt: new Date().toISOString(),
     trialId: input.trialId,
-    traitOrdinal: input.traitOrdinal,
     plot: null,
     subsample: null,
     value: null,

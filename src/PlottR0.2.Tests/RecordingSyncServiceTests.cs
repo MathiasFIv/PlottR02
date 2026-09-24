@@ -264,6 +264,264 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
         });
     }
 
+    [Fact]
+    public async Task SyncAsync_TranscriptOnly_MultiValue_ValuesFillTraitColumnsHorizontally()
+    {
+        // Arrange — the transcript states THREE values after the plural keyword; no field confirmed
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 values 3, 6, 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null));
+
+        // Assert — all three values are written into ONE row's trait cells (C22/D22/E22 for
+        // plot 101 subsample 1 at traitOrdinal 1), so WrittenCells holds three cells
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("a complete, confident, uncontested parse needs no review");
+        result.WasTranscriptOnly.Should().BeTrue();
+        result.Value.Should().Be(3, "the first value resolves as the single-value contract");
+        result.ParsedValue.Should().Be(3);
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => c.Subsample).Should().AllBeEquivalentTo(1);
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 6, 1);
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C22", "D22", "E22");
+        result.SkippedPresentCells.Should().BeEmpty();
+        result.MissingSubsampleIndices.Should().BeEmpty();
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        // The stored single-value column carries the FIRST parsed value
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Written);
+            row.ParsedPlot.Should().Be(101);
+            row.ParsedSubsample.Should().Be(1);
+            row.ParsedValue.Should().Be(3);
+        });
+    }
+
+    // ── Category-block append: the sync fills the next free cells of the Part Rated
+    //    block (row-8 metadata), and successive syncs accumulate leaf by leaf ────
+
+    [Fact]
+    public async Task SyncAsync_TranscriptOnly_ScanForFreeCells_WritesIntoPartRatedBlock()
+    {
+        // Arrange — transcript-only multi-value sync against a workbook carrying the row-8
+        // Part Rated metadata; the sync writes in scan-for-free-cells mode, so the values
+        // fill the first category block of row 22 (LEAF1 = C22:D22:E22).
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 values 3, 6, 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null));
+
+        // Assert — the values land in LEAF1 (C22/D22/E22) and the sync commits as Written
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("a complete, confident, uncontested parse needs no review");
+        result.WasTranscriptOnly.Should().BeTrue();
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C22", "D22", "E22");
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 6, 1);
+        result.SkippedPresentCells.Should().BeEmpty("append mode never reports occupied cells as skipped");
+        OutputCopies(trialId).Should().ContainSingle();
+        BlobFiles(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
+    }
+
+    [Fact]
+    public async Task SyncAsync_TranscriptOnly_ScanForFreeCells_SecondSyncAppendsNextLeaf()
+    {
+        // Arrange — TWO transcript-only syncs with DIFFERENT client ids against ONE trial:
+        // the second chained sync reads the FIRST output copy as its input, so its values
+        // append into the NEXT free category block (LEAF2 = F22:G22:H22) — LEAF1 stays
+        // untouched and no recording is dropped or marked skipped.
+        var trialId = await CreateTrialAsync();
+        var clientId1 = Guid.NewGuid().ToString();
+        var clientId2 = Guid.NewGuid().ToString();
+        // One scripted transcription per sync (the fake throws on any extra call).
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 values 3, 6, 1" },
+            new TranscriptionResult { Text = "plot 101 subsample 1 values 4, 2, 6" });
+
+        SyncVoiceRecordingResult first;
+        using (var scope = _fixture.CreateScope())
+        {
+            first = await CreateService(scope, fake).SyncAsync(
+                AudioBytes(), "clip.webm", Command(trialId, clientId1, plot: null, subsample: null, value: null));
+        }
+        first.Status.Should().Be(VoiceRecordingStatus.Written);
+        first.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C22", "D22", "E22");
+
+        // The second sync MUST use a DIFFERENT client id — the idempotency gate would
+        // otherwise answer a Replay without any workbook work.
+        SyncVoiceRecordingResult second;
+        using (var scope = _fixture.CreateScope())
+        {
+            second = await CreateService(scope, fake).SyncAsync(
+                AudioBytes(), "clip.webm", Command(trialId, clientId2, plot: null, subsample: null, value: null));
+        }
+
+        // Assert — LEAF2 received the second recording's values; two copies were exported
+        second.Status.Should().Be(VoiceRecordingStatus.Written);
+        second.Replayed.Should().BeFalse();
+        second.NeedsReview.Should().BeFalse();
+        second.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("F22", "G22", "H22");
+        second.WrittenCells.Select(c => c.Value).Should().Equal(4, 2, 6);
+        second.SkippedPresentCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().HaveCount(2);
+        BlobFiles(trialId).Should().HaveCount(2);
+
+        // The newest copy physically holds BOTH leaves: LEAF1 (C/E) and LEAF2 (F/H)
+        var newest = OutputCopies(trialId).OrderByDescending(File.GetLastWriteTimeUtc).First();
+        ReadCell(newest, plot: 101, subsample: 1, traitOrdinal: 1).Should().Be(3);
+        ReadCell(newest, plot: 101, subsample: 1, traitOrdinal: 3).Should().Be(1);
+        ReadCell(newest, plot: 101, subsample: 1, traitOrdinal: 4).Should().Be(4);
+        ReadCell(newest, plot: 101, subsample: 1, traitOrdinal: 6).Should().Be(6);
+
+        await AssertStoredAsync(clientId2, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
+    }
+
+    [Fact]
+    public async Task SyncAsync_MultiValue_OneOutOfRangeValue_FlagsWithoutWriting()
+    {
+        // Arrange — the transcript's value list contains an out-of-range entry (12)
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 values 3, 12" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null));
+
+        // Assert — gate B rejects the WHOLE list when ANY value is out of range: flagged, nothing written
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue();
+        result.WasTranscriptOnly.Should().BeTrue();
+        result.Value.Should().Be(3, "the first parsed value is still reported");
+        result.ParsedValue.Should().Be(3);
+        result.WrittenCells.Should().BeEmpty();
+        result.SkippedPresentCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().BeEmpty();
+        fake.CallCount.Should().Be(1, "gate B runs AFTER transcription, unlike gate A");
+
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Flagged);
+            row.ParsedValue.Should().Be(3);
+        });
+    }
+
+    [Fact]
+    public async Task SyncAsync_TraitOrdinalZero_DefaultsToOne_WritesAtTraitOne()
+    {
+        // Arrange — the voice client omitted traitOrdinal (binds to 0); the server treats
+        // that as the default 1, so the append scan starts at column C instead of flagging.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 value 5" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — traitOrdinal 0 is normalized to 1 and the write proceeds
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, traitOrdinal: 0, value: null));
+
+        // Assert — the value writes at trait 1 (column C) and the result echoes the DEFAULTED
+        // ordinal; nothing is flagged
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse();
+        result.TraitOrdinal.Should().Be(1, "a missing/zero traitOrdinal defaults to 1");
+        result.ParsedValue.Should().Be(5);
+        result.WrittenCells.Should().ContainSingle().Which.Subsample.Should().Be(1);
+        result.WrittenCells[0].TraitOrdinal.Should().Be(1);
+        NormalizeAddress(result.WrittenCells[0].CellAddress).Should().Be("C22");
+        result.WrittenCells[0].Value.Should().Be(5);
+        result.SkippedPresentCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
+    }
+
+    [Fact]
+    public async Task SyncAsync_TraitOrdinalZero_DefaultsToOne()
+    {
+        // Arrange — empty region row 22; the voice client omits traitOrdinal (binds to 0),
+        // so the server defaults it to 1 and the append scan starts at column C.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 values 3, 6, 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — traitOrdinal 0 is treated as 1
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, traitOrdinal: 0, value: null));
+
+        // Assert — Written with the three values in C22/D22/E22 and the defaulted ordinal echoed
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("a complete, confident, uncontested parse needs no review");
+        result.WasTranscriptOnly.Should().BeTrue();
+        result.TraitOrdinal.Should().Be(1, "a missing/zero traitOrdinal defaults to 1");
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C22", "D22", "E22");
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 6, 1);
+        result.SkippedPresentCells.Should().BeEmpty();
+        result.MissingSubsampleIndices.Should().BeEmpty();
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
+    }
+
+    [Fact]
+    public async Task SyncAsync_TraitOrdinalNine_OverflowFlagsInsteadOfSilentlyDropping()
+    {
+        // Arrange — traitOrdinal 9 (column K): of the three spoken values only 3 has a
+        // column (K22); 6 and 1 would land beyond trait 9 (columns L/M) — the sync must
+        // flag the recording so the human review sees the lost ratings.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 values 3, 6, 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, traitOrdinal: 9, value: null));
+
+        // Assert — flagged (values were dropped), yet the one legal write is reported and exported
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue();
+        result.OutOfTraitRangeValueCount.Should().Be(2, "6 and 1 have no free cell left in the LEAF3 block (I:K) past trait 9");
+        result.WrittenCells.Should().ContainSingle();
+        result.WrittenCells[0].Value.Should().Be(3);
+        NormalizeAddress(result.WrittenCells[0].CellAddress).Should().Be("K22");
+        result.SkippedPresentCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().ContainSingle("the single legal write still exports a copy");
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Flagged));
+    }
+
     // ── Normalization: non-positive confirmed fields mean “not confirmed” ────
 
     [Fact]
@@ -471,12 +729,14 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
         });
     }
 
-    // ── Already-present cell: locked overwrite → SkippedPresent ─────────────
+    // ── Already-present cell: append mode moves the write to the next free cell ─
 
     [Fact]
-    public async Task SyncAsync_CellAlreadyPresent_SkipsWriteAndMarksSkippedPresent()
+    public async Task SyncAsync_CellAlreadyPresent_AppendsIntoNextFreeCell()
     {
-        // Arrange — subsample 3 of trait 1 already holds 5; the sync offers 7
+        // Arrange — subsample 3's trait-1 cell already holds 5; the sync offers 7. In the
+        // category-block append mode (scanForFreeCells) the 7 lands in the row's NEXT free
+        // cell instead of being reported skipped — a recording is never lost to a full cell.
         var trialId = await CreateTrialAsync(prefilledCells: new Dictionary<(int, int, int), int>
         {
             [(101, 3, 1)] = 5,
@@ -490,18 +750,22 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
         // Act
         var result = await service.SyncAsync(AudioBytes(), "clip.webm", Command(trialId, clientId));
 
-        // Assert — nothing written, cell reported as present with its CURRENT value
-        result.Status.Should().Be(VoiceRecordingStatus.SkippedPresent);
-        result.NeedsReview.Should().BeTrue();
-        result.WrittenCells.Should().BeEmpty();
-        result.SkippedPresentCells.Should().ContainSingle().Which.Subsample.Should().Be(3);
-        result.SkippedPresentCells[0].Value.Should().Be(5);
+        // Assert — the 7 appends to trait 2 of the same row; nothing is skipped or dropped
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("an appended value is as complete as a direct write");
+        result.WrittenCells.Should().ContainSingle();
+        result.WrittenCells[0].Subsample.Should().Be(3);
+        result.WrittenCells[0].TraitOrdinal.Should().Be(2);
+        result.WrittenCells[0].Value.Should().Be(7);
+        result.SkippedPresentCells.Should().BeEmpty("append mode never reports occupies as skipped");
         result.MissingSubsampleIndices.Should().BeEmpty();
 
-        // 0 written cells ⇒ no workbook copy is exported (input workbook never touched)
-        OutputCopies(trialId).Should().BeEmpty();
+        // The original cell keeps its 5; the appended 7 was exported as a fresh output copy
+        var copy = OutputCopies(trialId).Should().ContainSingle().Subject;
+        ReadCell(copy, 101, 3, 1).Should().Be(5);
+        ReadCell(copy, 101, 3, 2).Should().Be(7);
 
-        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.SkippedPresent));
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
     }
 
     // ── Idempotency: same ClientRecordingId short-circuits as a Replay ──────
@@ -853,6 +1117,8 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
         result.ParsedPlot.Should().Be(101, "the stored parse is replayed on the correction result");
         result.WrittenCells.Should().ContainSingle().Which.Subsample.Should().Be(3);
         result.WrittenCells[0].Value.Should().Be(7);
+        NormalizeAddress(result.WrittenCells[0].CellAddress).Should().Be("C24",
+            "the correction's append scan lands in the row's first free cell (trait 1, column C)");
         OutputCopies(trialId).Should().ContainSingle();
         BlobFiles(trialId).Should().ContainSingle("a correction never re-uploads the audio");
 
@@ -941,9 +1207,9 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task CorrectAsync_FilledTargetCell_SkipsPresentAndFlagsReview()
+    public async Task CorrectAsync_OccupiedTargetCell_AppendsToNextFreeCell()
     {
-        // Arrange — the target cell already holds 5; the row is flagged (transcript-only partial)
+        // Arrange — the trait-1 target cell already holds 5; the row is flagged (transcript-only partial)
         var trialId = await CreateTrialAsync(prefilledCells: new Dictionary<(int, int, int), int>
         {
             [(101, 3, 1)] = 5,
@@ -957,7 +1223,9 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
             flagged.Status.Should().Be(VoiceRecordingStatus.Flagged);
         }
 
-        // Act — the locked-overwrite policy refuses to clobber the existing 5
+        // Act — the correction re-runs the same category-block append scan the voice sync
+        // uses: the single confirmed value lands in the row's FIRST FREE cell (D24, trait 2)
+        // instead of clobbering the occupied C24
         SyncVoiceRecordingResult result;
         using (var scope = _fixture.CreateScope())
         {
@@ -965,17 +1233,130 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
                 .CorrectAsync(clientId, plot: 101, subsample: 3, value: 7, traitOrdinal: 1);
         }
 
-        // Assert — nothing written, the current content is reported, review required
-        result.Status.Should().Be(VoiceRecordingStatus.SkippedPresent);
-        result.NeedsReview.Should().BeTrue();
+        // Assert — the append WROTE D24 (trait 2); C24 keeps its 5 and nothing is skipped
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse();
         result.WasTranscriptOnly.Should().BeFalse();
-        result.WrittenCells.Should().BeEmpty();
-        result.SkippedPresentCells.Should().ContainSingle().Which.Subsample.Should().Be(3);
-        result.SkippedPresentCells[0].Value.Should().Be(5, "the CURRENT content is reported");
-        OutputCopies(trialId).Should().BeEmpty("0 written cells ⇒ no copy is exported");
+        result.WrittenCells.Should().ContainSingle();
+        result.WrittenCells[0].Subsample.Should().Be(3);
+        result.WrittenCells[0].TraitOrdinal.Should().Be(2, "the first free cell after C is trait 2");
+        NormalizeAddress(result.WrittenCells[0].CellAddress).Should().Be("D24");
+        result.WrittenCells[0].Value.Should().Be(7);
+        result.SkippedPresentCells.Should().BeEmpty("occupied cells are skipped silently in append mode");
+        OutputCopies(trialId).Should().ContainSingle("the written append still exports a copy");
+
+        var copy = OutputCopies(trialId).Single();
+        ReadCell(copy, 101, 3, 1).Should().Be(5, "the occupied C24 survives untouched");
+        ReadCell(copy, 101, 3, 2).Should().Be(7);
         BlobFiles(trialId).Should().ContainSingle("a correction never re-uploads the audio");
 
-        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.SkippedPresent));
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Written);
+            row.ConfirmedValue.Should().Be(7);
+        });
+    }
+
+    [Fact]
+    public async Task CorrectAsync_TraitOrdinalZero_AppendsToNextFreeCell()
+    {
+        // Arrange — subsample 1's LEAF1 (C:E) AND LEAF2 (F:H) blocks are fully occupied;
+        // the row is flagged (transcript-only partial). The reviewer then confirms a correction
+        // that omits traitOrdinal (binds to 0) — the server defaults it to 1, and the append
+        // scan walks the occupied blocks until it finds the first free cell: I22 (LEAF3).
+        var trialId = await CreateTrialAsync(prefilledCells: new Dictionary<(int, int, int), int>
+        {
+            [(101, 1, 1)] = 1,
+            [(101, 1, 2)] = 1,
+            [(101, 1, 3)] = 1, // LEAF1 block C22:E22
+            [(101, 1, 4)] = 1,
+            [(101, 1, 5)] = 1,
+            [(101, 1, 6)] = 1, // LEAF2 block F22:H22
+        });
+        var clientId = Guid.NewGuid().ToString();
+        using (var scope = _fixture.CreateScope())
+        {
+            var flagged = await CreateService(scope, new FakeTranscriptionService(
+                new TranscriptionResult { Text = "plot 101" })).SyncAsync(
+                AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null));
+            flagged.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        }
+
+        // Act — correct with traitOrdinal 0 (defaulted to 1), value 5 for subsample 1
+        SyncVoiceRecordingResult result;
+        using (var scope = _fixture.CreateScope())
+        {
+            result = await CreateService(scope, new FakeTranscriptionService())
+                .CorrectAsync(clientId, plot: 101, subsample: 1, value: 5, traitOrdinal: 0);
+        }
+
+        // Assert — the single confirmed value landed in the row's first free cell (I22, trait 7)
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse();
+        result.Value.Should().Be(5);
+        result.TraitOrdinal.Should().Be(1, "a missing/zero traitOrdinal defaults to 1");
+        result.WrittenCells.Should().ContainSingle();
+        result.WrittenCells[0].Subsample.Should().Be(1);
+        result.WrittenCells[0].Value.Should().Be(5);
+        NormalizeAddress(result.WrittenCells[0].CellAddress).Should().Be("I22");
+        result.SkippedPresentCells.Should().BeEmpty("occupied cells are skipped silently in append mode");
+        result.MissingSubsampleIndices.Should().BeEmpty();
+        OutputCopies(trialId).Should().ContainSingle();
+
+        var copy = OutputCopies(trialId).Single();
+        ReadCell(copy, 101, 1, 7).Should().Be(5, "I22 is the first free cell after the occupied C..H");
+        ReadCell(copy, 101, 1, 1).Should().Be(1);
+        ReadCell(copy, 101, 1, 6).Should().Be(1);
+        BlobFiles(trialId).Should().ContainSingle("a correction never re-uploads the audio");
+
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Written);
+            row.ConfirmedPlot.Should().Be(101);
+            row.ConfirmedSubsample.Should().Be(1);
+            row.ConfirmedValue.Should().Be(5);
+        });
+    }
+
+    [Fact]
+    public async Task CorrectAsync_TraitOrdinalAboveNine_FlagsWithoutWriting()
+    {
+        // Arrange — flag a row first (transcript-only partial)
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        using (var scope = _fixture.CreateScope())
+        {
+            var flagged = await CreateService(scope, new FakeTranscriptionService(
+                new TranscriptionResult { Text = "plot 101" })).SyncAsync(
+                AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null));
+            flagged.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        }
+
+        // Act — an explicit traitOrdinal ABOVE 9 cannot address any cell: the correction is
+        // flagged without writing even though 0 is now a legal "default to 1" signal
+        SyncVoiceRecordingResult result;
+        using (var scope = _fixture.CreateScope())
+        {
+            result = await CreateService(scope, new FakeTranscriptionService())
+                .CorrectAsync(clientId, plot: 101, subsample: 3, value: 7, traitOrdinal: 10);
+        }
+
+        // Assert — flagged, nothing written, nothing exported
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue();
+        result.TraitOrdinal.Should().Be(10, "the explicit out-of-range ordinal is echoed, not clamped");
+        result.WrittenCells.Should().BeEmpty();
+        result.SkippedPresentCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().BeEmpty("flagged corrections never export a workbook copy");
+        BlobFiles(trialId).Should().ContainSingle();
+
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Flagged);
+            row.ConfirmedPlot.Should().Be(101);
+            row.ConfirmedSubsample.Should().Be(3);
+            row.ConfirmedValue.Should().Be(7);
+        });
     }
 
     [Fact]

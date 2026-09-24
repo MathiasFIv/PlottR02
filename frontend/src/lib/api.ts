@@ -97,7 +97,24 @@ async function requestWithRetry(
   withAuth: boolean,
   applyDefaultHeaders = true,
 ): Promise<Response> {
-  const headers = applyDefaultHeaders ? buildHeaders(init, withAuth) : undefined;
+  // When `applyDefaultHeaders` is false (multipart), we still attach the
+  // Authorization header whenever a token exists — only Content-Type is
+  // deferred to the browser so it can generate the multipart boundary. A
+  // logged-in sync must never make a deliberately unauthenticated first
+  // attempt: that produced a visible 401 on every recording and burnt a
+  // single-use refresh-token rotation each time.
+  let headers: Record<string, string> | undefined;
+  if (applyDefaultHeaders) {
+    headers = buildHeaders(init, withAuth);
+  } else if (withAuth) {
+    const accessToken = tokens.getAccessToken();
+    if (accessToken) {
+      headers = {
+        ...((init?.headers as Record<string, string>) ?? {}),
+        Authorization: `Bearer ${accessToken}`,
+      };
+    }
+  }
 
   let response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -249,6 +266,8 @@ export interface SyncRecordingResponse {
     cellAddress: string;
   }[];
   missingSubsampleIndices: number[];
+  /** number of spoken values that could not be written at all (category full / beyond trait 9). > 0 implies status Flagged. */
+  outOfTraitRangeValueCount: number;
 }
 
 /**
@@ -262,8 +281,6 @@ export interface CorrectRecordingRequest {
   plot: number | null;
   subsample: number | null;
   value: number | null;
-  /** Trait ordinal (workbook column) — required by the server (binds to 0 when omitted). */
-  traitOrdinal: number;
 }
 
 /** Maps a recorded container mime type to a file extension (default webm). */
@@ -433,7 +450,6 @@ export const api = {
     const body = new FormData();
     body.append('clientRecordingId', rec.id);
     body.append('trialId', rec.trialId ?? '');
-    body.append('traitOrdinal', String(rec.traitOrdinal));
     body.append('plot', String(rec.plot ?? ''));
     body.append('subsample', String(rec.subsample ?? ''));
     body.append('value', String(rec.value ?? ''));
@@ -445,8 +461,7 @@ export const api = {
   /**
    * Applies a confirmed correction to a recording that came back
    * `needs-review` (or was transcript-only). Uses the JSON `correct` endpoint
-   * so the client sends only the confirmed fields + trait ordinaal — never a
-   * transcript.
+   * so the client sends only the confirmed fields — never a transcript.
    *
    * Correction is inherently a "confirmed send": the client explicitly chose
    * plot/subsample/value, so the returned `SyncRecordingResponse` always has
