@@ -1,11 +1,71 @@
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+/**
+ * Shared in-memory storage for the default-target store, exposed through
+ * vi.hoisted so both the module mocks below and the test bodies can see it.
+ */
+const { defaultTargetStorage, defaultTargetStorageStub, realSyncRecordingHolder } =
+  vi.hoisted(() => {
+    const map = new Map<string, string>();
+    return {
+      defaultTargetStorage: map,
+      defaultTargetStorageStub: {
+        getItem: (key: string) => map.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          map.set(key, value);
+        },
+      },
+      realSyncRecordingHolder: { current: undefined as unknown },
+    };
+  });
+
+/**
+ * Route the default-target store through the fake storage: both the engine
+ * (advanceDefaultTarget) and the real api.syncRecording (readDefaultTarget,
+ * bare call → this default) share one injected memory store, keyed per trial.
+ * Every function is trial-scoped now (`plottR-default-target:<trialId>`), so
+ * the wrapper passes the trialId straight through.
+ */
+vi.mock('./defaultTarget', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./defaultTarget')>();
+  return {
+    ...actual,
+    readDefaultTarget: (
+      trialId: string,
+      storage?: Pick<Storage, 'getItem' | 'setItem'>,
+    ) => actual.readDefaultTarget(trialId, storage ?? defaultTargetStorageStub),
+    writeDefaultTarget: (
+      trialId: string,
+      target: { plot: number; subsample: number },
+      storage?: Pick<Storage, 'getItem' | 'setItem'>,
+    ) =>
+      actual.writeDefaultTarget(
+        trialId,
+        target,
+        storage ?? defaultTargetStorageStub,
+      ),
+    advanceDefaultTarget: (
+      trialId: string,
+      result: { plot?: number | null; subsample?: number | null },
+      storage?: Pick<Storage, 'getItem' | 'setItem'>,
+    ) =>
+      actual.advanceDefaultTarget(
+        trialId,
+        result,
+        storage ?? defaultTargetStorageStub,
+      ),
+  };
+});
 
 // Mock the API transport BEFORE anything imports api.ts: swap only the two
 // recording endpoints for vi.fn() stubs, keep the real ApiError class so the
 // engine's `instanceof` 409 branch and the status checks under test are real.
+// The real syncRecording is captured so one test can exercise the actual
+// FormData construction (defaultPlot/defaultSubsample) end-to-end.
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
+  realSyncRecordingHolder.current = actual.api.syncRecording;
   return {
     ...actual,
     api: {
@@ -28,6 +88,7 @@ import {
   saveRecording,
 } from './audioDb';
 import type { AudioRecording } from './audioDb';
+import { readDefaultTarget, writeDefaultTarget } from './defaultTarget';
 import { recordingsNeedingAttentionCountAtom } from '../store/atoms';
 import {
   applyCorrection,
@@ -71,6 +132,7 @@ function syncResponse(
     traitOrdinal: 1,
     needsReview: false,
     replayed: false,
+    usedDefaultTarget: false,
     wasTranscriptOnly: true,
     submittedAt: '2026-09-16T12:00:00Z',
     transcript: 'plot 101 subsample 3 value 7',
@@ -106,6 +168,7 @@ function attentionCount(): number {
 beforeEach(async () => {
   syncMock.mockReset();
   correctMock.mockReset();
+  defaultTargetStorage.clear();
   // openDb is cached across calls, so clear the store instead of deleting the
   // database (a delete would be blocked by the open connection).
   const db = await openDb();
@@ -116,6 +179,12 @@ beforeEach(async () => {
     tx.onerror = () => reject(new Error('Failed to clear recordings store'));
   });
   getDefaultStore().set(recordingsNeedingAttentionCountAtom, 0);
+});
+
+// Tests that drive the real api.syncRecording stub fetch + localStorage; undo
+// those global stubs unconditionally so they can't leak into the next test.
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('autoSync', () => {
@@ -378,6 +447,24 @@ describe('summarizeSync', () => {
     expect(variant).toBe('success');
   });
 
+  it('adds the used-default-target line when the server applied the remembered target', () => {
+    const { lines, variant } = summarizeSync(
+      syncResponse({
+        status: 'Written',
+        usedDefaultTarget: true,
+        needsReview: true,
+        transcript: 'values 4 2 6',
+      }),
+    );
+    const text = lines.join(' ');
+    expect(text).toContain('Used default target — Plot 101, Subsample 3');
+    // Kept after the written-cell summary and before the transcript preview.
+    expect(text.indexOf('Used default target')).toBeLessThan(
+      text.indexOf('Whisper heard'),
+    );
+    expect(variant).toBe('success');
+  });
+
   it('says "Already filled — not overwritten" for SkippedPresent', () => {
     const { lines, variant } = summarizeSync(
       syncResponse({
@@ -456,5 +543,259 @@ describe('summarizeSync', () => {
     );
     expect(lines.join(' ')).toContain('already sent');
     expect(variant).toBe('warning');
+  });
+});
+
+describe('default target memory', () => {
+  /** Minimal localStorage stand-in so the real api transport (tokens) works. */
+  const localStorageStub: Storage = {
+    getItem: () => null,
+    setItem: () => {},
+    removeItem: () => {},
+    clear: () => {},
+    key: () => null,
+    length: 0,
+  };
+
+  /** The default pair a clip actually shipped (meaningful for values-only clips). */
+  function sentDefaults(
+    init?: RequestInit,
+  ): { plot: number; subsample: number } | null {
+    if (!init?.body || !(init.body instanceof FormData)) return null;
+    const plot = Number(init.body.get('defaultPlot'));
+    const subsample = Number(init.body.get('defaultSubsample'));
+    if (plot < 1 || subsample < 1) return null; // absent or non-numeric
+    return { plot, subsample };
+  }
+
+  /**
+   * Real syncRecording + fake transport: the fetch stub ECHOES the default
+   * pair the client shipped back as a Written resolve with usedDefaultTarget
+   * true — mirroring the real server's /sync substitution. Returns the stub.
+   */
+  function stubRealTransport(): ReturnType<typeof vi.fn> {
+    syncMock.mockImplementation(
+      realSyncRecordingHolder.current as typeof syncMock,
+    );
+    const fetchStub = vi.fn(async (_url: string, init?: RequestInit) => {
+      const defaults = sentDefaults(init);
+      const result = syncResponse(
+        defaults === null ? {} : { ...defaults, usedDefaultTarget: true },
+      );
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchStub);
+    vi.stubGlobal('localStorage', localStorageStub);
+    return fetchStub;
+  }
+
+  it('advances the remembered target after a Written sync and sends it as defaults on the next values-only clip', async () => {
+    const fetchStub = stubRealTransport();
+
+    // First clip is values-only (no plot/subsample) with nothing remembered
+    // yet → it ships NO defaults and resolves to Written 101/3 → the store
+    // (keyed by this trial) advances to 101/4.
+    const first = makeRec({ plot: null, subsample: null, value: 5 });
+    await saveRecording(first);
+    expect(await autoSync(first.id)).toBe(true);
+    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
+
+    // Second values-only clip: the remembered target has to go on the wire;
+    // the stub echoes the shipped pair back as Written 101/4 with
+    // usedDefaultTarget true — exactly what the server resolves to.
+    const second = makeRec({ plot: null, subsample: null, value: 6 });
+    await saveRecording(second);
+    expect(await autoSync(second.id)).toBe(true);
+
+    const sentBody = fetchStub.mock.calls[1]?.[1]?.body;
+    expect(sentBody).toBeInstanceOf(FormData);
+    const sent = sentBody as FormData;
+    expect(sent.get('defaultPlot')).toBe('101');
+    expect(sent.get('defaultSubsample')).toBe('4');
+    // Explicit fields stay empty — the defaults supply the target.
+    expect(sent.get('plot')).toBe('');
+    expect(sent.get('subsample')).toBe('');
+
+    // W3: the banner reflects the echoed resolve end-to-end (lastResult).
+    const synced = await getRecordingById(second.id);
+    expect(synced?.lastResult?.usedDefaultTarget).toBe(true);
+    expect(
+      summarizeSync(synced?.lastResult as SyncRecordingResponse).lines,
+    ).toContain('Used default target — Plot 101, Subsample 4');
+  });
+
+  it('never ships a default plot when the clip carries an explicit plot', async () => {
+    const fetchStub = stubRealTransport();
+
+    // Explicit plot said; subsample not said. The partial pair must NOT pull
+    // defaults — the snapshot condition requires both fields absent.
+    const rec = makeRec({ plot: 12, subsample: null, value: 5 });
+    await saveRecording(rec);
+    expect(await autoSync(rec.id)).toBe(true);
+
+    const wire = fetchStub.mock.calls[0]?.[1]?.body as FormData;
+    expect(wire).toBeInstanceOf(FormData);
+    expect(wire.get('plot')).toBe('12');
+    expect(wire.get('subsample')).toBe('');
+    expect(wire.get('defaultPlot')).toBeNull();
+    expect(wire.get('defaultSubsample')).toBeNull();
+  });
+
+  it('sweep chain: two pending values-only clips continue subsample-by-subsample', async () => {
+    const fetchStub = stubRealTransport();
+
+    // Seed the cursor from a prior written run: Plot 101, Sub 3.
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 3 });
+
+    // Two pending values-only clips in the SAME trial, order fixed by the
+    // primary-key tiebreak of the status index ('sweep-1' before 'sweep-2').
+    // Each snapshots the cursor left by the previous one — Sub 3, then Sub 4.
+    const first = makeRec({
+      id: 'sweep-1',
+      plot: null,
+      subsample: null,
+      value: 7,
+    });
+    const second = makeRec({
+      id: 'sweep-2',
+      plot: null,
+      subsample: null,
+      value: 9,
+    });
+    await saveRecording(first);
+    await saveRecording(second);
+
+    await sweepPendingSyncs();
+
+    const firstWire = fetchStub.mock.calls[0]?.[1]?.body as FormData;
+    const secondWire = fetchStub.mock.calls[1]?.[1]?.body as FormData;
+    expect(firstWire.get('defaultPlot')).toBe('101');
+    expect(firstWire.get('defaultSubsample')).toBe('3');
+    expect(secondWire.get('defaultPlot')).toBe('101');
+    expect(secondWire.get('defaultSubsample')).toBe('4');
+    // Advanced twice (3 → 4 → 5); the queue drained.
+    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 5 });
+    expect(await getRecordingsByStatus('pending')).toHaveLength(0);
+  });
+
+  it('retry replays the frozen first-send snapshot, not the advanced live memory', async () => {
+    const fetchStub = stubRealTransport();
+    // First send of the values-only clip fails (500) after the snapshot froze.
+    fetchStub.mockResolvedValueOnce(new Response('boom', { status: 500 }));
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 3 });
+
+    const first = makeRec({ id: 'w1-a', plot: null, subsample: null, value: 5 });
+    await saveRecording(first);
+    expect(await autoSync(first.id)).toBe(false);
+
+    // Meanwhile a later clip writes at 101/3 and advances live memory to 101/4.
+    const later = makeRec({
+      id: 'w1-b',
+      plot: null,
+      subsample: null,
+      value: 6,
+    });
+    await saveRecording(later);
+    expect(await autoSync(later.id)).toBe(true);
+    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
+
+    // The retry (call index 2: two sends) must ship THIS row's frozen Sub 3,
+    // not the now-current Sub 4.
+    expect(await autoSync(first.id)).toBe(true);
+    const retryWire = fetchStub.mock.calls[2]?.[1]?.body as FormData;
+    expect(retryWire.get('defaultPlot')).toBe('101');
+    expect(retryWire.get('defaultSubsample')).toBe('3');
+  });
+
+  it('advances the remembered target after a Written correction', async () => {
+    const rec = makeRec({ status: 'needs-attention' });
+    await saveRecording(rec);
+    correctMock.mockResolvedValue(
+      syncResponse({ status: 'Written', wasTranscriptOnly: false }),
+    );
+
+    const outcome = await applyCorrection(rec.id, {
+      plot: 12,
+      subsample: 1,
+      value: 8,
+    });
+
+    expect(outcome.kind).toBe('success');
+    // The corrected result resolved to 101/3 and carries the trial id → the
+    // next values-only clip in the trial continues at Sub 4.
+    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
+  });
+
+  it('does not advance on a Flagged sync result', async () => {
+    const rec = makeRec({ plot: null, subsample: null, value: 5 });
+    await saveRecording(rec);
+    syncMock.mockResolvedValue(
+      syncResponse({
+        status: 'Flagged',
+        needsReview: true,
+        transcript: '',
+        writtenCells: [],
+      }),
+    );
+
+    expect(await autoSync(rec.id)).toBe(true);
+    expect(readDefaultTarget('trial-1')).toBeNull();
+  });
+
+  it('omits traitOrdinal from FormData when not provided (backward-compatibility)', async () => {
+    const fetchStub = stubRealTransport();
+    const rec = makeRec({ plot: 101, subsample: 3, value: 7 });
+    await saveRecording(rec);
+    expect(await autoSync(rec.id)).toBe(true);
+
+    const wire = fetchStub.mock.calls[0]?.[1]?.body as FormData;
+    expect(wire).toBeInstanceOf(FormData);
+    expect(wire.get('traitOrdinal')).toBeNull();
+  });
+
+  it('sends traitOrdinal when provided', async () => {
+    const fetchStub = stubRealTransport();
+    const rec = makeRec({ plot: 101, subsample: 3, value: 7, traitOrdinal: 5 });
+    await saveRecording(rec);
+    expect(await autoSync(rec.id)).toBe(true);
+
+    const wire = fetchStub.mock.calls[0]?.[1]?.body as FormData;
+    expect(wire).toBeInstanceOf(FormData);
+    expect(wire.get('traitOrdinal')).toBe('5');
+  });
+
+  it('does not send traitOrdinal when it is non-positive or non-integer (treated as absent)', async () => {
+    const fetchStub = stubRealTransport();
+    const rec0 = makeRec({ plot: 101, subsample: 3, value: 7, traitOrdinal: 0 });
+    const recNeg = makeRec({
+      id: 'rec-neg',
+      plot: 101,
+      subsample: 3,
+      value: 7,
+      traitOrdinal: -1,
+    });
+    const recFloat = makeRec({
+      id: 'rec-float',
+      plot: 101,
+      subsample: 3,
+      value: 7,
+      traitOrdinal: 2.5,
+    });
+    await saveRecording(rec0);
+    await saveRecording(recNeg);
+    await saveRecording(recFloat);
+    expect(await autoSync(rec0.id)).toBe(true);
+    expect(await autoSync(recNeg.id)).toBe(true);
+    expect(await autoSync(recFloat.id)).toBe(true);
+
+    const wire0 = fetchStub.mock.calls[0]?.[1]?.body as FormData;
+    const wire1 = fetchStub.mock.calls[1]?.[1]?.body as FormData;
+    const wire2 = fetchStub.mock.calls[2]?.[1]?.body as FormData;
+    expect(wire0.get('traitOrdinal')).toBeNull();
+    expect(wire1.get('traitOrdinal')).toBeNull();
+    expect(wire2.get('traitOrdinal')).toBeNull();
   });
 });

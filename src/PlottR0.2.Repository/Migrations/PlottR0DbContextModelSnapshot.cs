@@ -360,6 +360,9 @@ namespace PlottR0._2.Repository.Migrations
                     b.Property<int?>("ParsedValue")
                         .HasColumnType("integer");
 
+                    b.Property<int?>("ResolvedTraitOrdinal")
+                        .HasColumnType("integer");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()

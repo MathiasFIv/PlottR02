@@ -14,6 +14,13 @@ public class VoiceRecording : AuditableEntity
     public int? ConfirmedPlot { get; set; }
     public int? ConfirmedSubsample { get; set; }
     public int? ConfirmedValue { get; set; }
+
+    /// <summary>
+    /// The trait ordinal this recording's write actually used; 1 when the client did not specify one;
+    /// a value above 9 means the sync was flagged without writing. Nullable only for rows predating this column.
+    /// </summary>
+    public int? ResolvedTraitOrdinal { get; set; }
+
     public string? Transcript { get; set; }
     public int? ParsedPlot { get; set; }
     public int? ParsedSubsample { get; set; }

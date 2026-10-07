@@ -305,6 +305,279 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
         });
     }
 
+    // ── Default target memory: client-sent defaults fill a values-only utterance ─
+
+    [Fact]
+    public async Task SyncAsync_ValuesOnlyWithDefaults_FillsTargetFromDefaultsAndWrites()
+    {
+        // Arrange — the PWA posts ONLY the values; the remembered default target (plot 101,
+        // subsample 2) travels on the command as the values-only fallback
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "values 3 6 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — no confirmed fields; only the defaults fill the target
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null,
+                defaultPlot: 101, defaultSubsample: 2));
+
+        // Assert — the defaults carry the write to plot 101 subsample 2; a values-only
+        // utterance under a default target needs no review (the write is the authority), and
+        // the echo surfaces the RESOLVED (default-affected) values
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("a values-only utterance under a client default target is authoritative; the write itself is the review");
+        result.UsedDefaultTarget.Should().BeTrue();
+        result.WasTranscriptOnly.Should().BeTrue();
+        result.Plot.Should().Be(101, "the client-sent default plot fills the omitted target");
+        result.Subsample.Should().Be(2, "the client-sent default subsample fills the omitted target");
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => c.Subsample).Should().AllBeEquivalentTo(2);
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 6, 1);
+        // The values fill the LEAF1 block of the row for plot 101 subsample 2
+        // (FirstDataRow 22 + subsample - 1 = row 23).
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C23", "D23", "E23");
+        result.SkippedPresentCells.Should().BeEmpty();
+        result.MissingSubsampleIndices.Should().BeEmpty();
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        // The audit row persists no confirmed target — only the parsed values
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Written);
+            row.ConfirmedPlot.Should().BeNull();
+            row.ConfirmedSubsample.Should().BeNull();
+            row.ConfirmedValue.Should().BeNull();
+            row.ParsedPlot.Should().BeNull("the transcript never stated a plot");
+            row.ParsedSubsample.Should().BeNull("the transcript never stated a subsample");
+            row.ParsedValue.Should().Be(3);
+        });
+    }
+
+    [Fact]
+    public async Task SyncAsync_ValuesOnlyWithoutDefaults_HasNoAddressableTarget_Flags()
+    {
+        // Arrange — the SAME values-only utterance but WITHOUT client defaults: nothing
+        // fills the omitted plot/subsample, so the write must stay disabled (regression
+        // guard proving the defaults in the test above carried the write)
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "values 3 6 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — no confirmed fields and no defaults
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null));
+
+        // Assert — nothing resolves to an addressable cell: flagged and reviewed
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue();
+        result.UsedDefaultTarget.Should().BeFalse();
+        result.Plot.Should().BeNull();
+        result.Subsample.Should().BeNull();
+        result.WrittenCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().BeEmpty();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Flagged));
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExplicitNewPlotWithDefaults_RejectsDefaultSubsampleAndFlags()
+    {
+        // Arrange — the operator explicitly says a NEW plot (102) but no subsample, while
+        // the PWA still posts the remembered defaults (101/2). The subsample guard must
+        // REJECT the default subsample: a new explicit plot never inherits the old cursor
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 102 values 3 6 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — explicit plot 102 with defaults 101/2 present
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null,
+                defaultPlot: 101, defaultSubsample: 2));
+
+        // Assert — no addressable subsample (the guard refused 2 because 102 != 101): flagged
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue("an unresolved subsample always requires review");
+        result.UsedDefaultTarget.Should().BeFalse("the default subsample was refused, so no default affected the target");
+        result.Plot.Should().Be(102, "the explicit spoken plot still resolves");
+        result.Subsample.Should().BeNull("the guard refused the stale subsample cursor for the new plot");
+        result.WrittenCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().BeEmpty();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Flagged));
+    }
+
+    [Fact]
+    public async Task SyncAsync_SameDefaultPlotWithDefaults_SubsampleDefaultsAndWrites()
+    {
+        // Arrange — the operator says the DEFAULT plot (101) and the values but no subsample;
+        // the subsample default (2) applies because the spoken plot equals the default plot
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 values 3 6 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null,
+                defaultPlot: 101, defaultSubsample: 2));
+
+        // Assert — the subsample defaults to 2 and the write lands there without review
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("the default subsample completed a target whose plot the operator confirmed");
+        result.UsedDefaultTarget.Should().BeTrue("the subsample came from the client default");
+        result.Plot.Should().Be(101);
+        result.Subsample.Should().Be(2);
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => c.Subsample).Should().AllBeEquivalentTo(2);
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 6, 1);
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C23", "D23", "E23");
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExplicitSubsampleWithDefaults_PlotDefaultsAndExplicitSubsampleWins()
+    {
+        // Arrange — the operator says ONLY the subsample; the plot defaults to 101, and the
+        // EXPLICIT subsample 1 wins over the default 2
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "subsample 1 values 3 6 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null,
+                defaultPlot: 101, defaultSubsample: 2));
+
+        // Assert — plot 101 is defaulted while the SPOKEN subsample 1 wins; still no review
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("the spoken subsample completed the target");
+        result.UsedDefaultTarget.Should().BeTrue("the plot came from the client default");
+        result.Plot.Should().Be(101);
+        result.Subsample.Should().Be(1, "an explicit spoken subsample always wins over the default");
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => c.Subsample).Should().AllBeEquivalentTo(1);
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 6, 1);
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C22", "D22", "E22");
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
+    }
+
+    [Fact]
+    public async Task SyncAsync_FullyExplicitWithDefaults_DefaultsUnusedAndNoReview()
+    {
+        // Arrange — a FULLY explicit utterance; the defaults are posted but MUST be ignored
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 102 subsample 1 values 3 6 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null,
+                defaultPlot: 101, defaultSubsample: 2));
+
+        // Assert — the explicit target wins outright, the defaults are unused, and a
+        // complete confident parse needs no review
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("a complete, confident, uncontested parse needs no review");
+        result.UsedDefaultTarget.Should().BeFalse("a fully explicit utterance never touches the defaults");
+        result.Plot.Should().Be(102);
+        result.Subsample.Should().Be(1);
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => c.Subsample).Should().AllBeEquivalentTo(1);
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 6, 1);
+        // Plot 102 subsample 1 (the second plot) sits on row 26 and gets the LEAF1 block.
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C26", "D26", "E26");
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
+    }
+
+    [Fact]
+    public async Task SyncAsync_DefaultsMatchingSpokenTarget_UsedDefaultTargetIsFalse()
+    {
+        // Arrange — the transcript SPELLS OUT the same target as the posted defaults
+        // (101, 2): a coincidence, not a default — nothing may be reported as defaulted
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 2 values 3 6 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null,
+                defaultPlot: 101, defaultSubsample: 2));
+
+        // Assert — (101, 2) was SPOKEN, so the defaults were never consulted
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("a complete, confident, uncontested parse needs no review");
+        result.UsedDefaultTarget.Should().BeFalse("the target was spoken, not defaulted; the defaults coincidentally match");
+        result.Plot.Should().Be(101);
+        result.Subsample.Should().Be(2);
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C23", "D23", "E23");
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ZeroDefaults_TreatedAsAbsent_FlagsValuesOnlyUtterance()
+    {
+        // Arrange — a values-only utterance whose posted defaults are literally 0 (old-client
+        // garbage, same shape as the confirmed-field normalization): they must normalize to
+        // "no default" so nothing resolves an addressable target
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "values 3 6 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null,
+                defaultPlot: 0, defaultSubsample: 0));
+
+        // Assert — zero defaults are absent defaults: nothing addressable → flagged, no write
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue();
+        result.UsedDefaultTarget.Should().BeFalse("zero defaults are normalized to absent, so no default affected the target");
+        result.Plot.Should().BeNull();
+        result.Subsample.Should().BeNull();
+        result.WrittenCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().BeEmpty();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Flagged));
+    }
+
     // ── Category-block append: the sync fills the next free cells of the Part Rated
     //    block (row-8 metadata), and successive syncs accumulate leaf by leaf ────
 
@@ -522,6 +795,159 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
         await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Flagged));
     }
 
+    [Fact]
+    public async Task SyncAsync_ForwardedTraitOrdinalFour_WritesFromColumnFAndPersistsResolvedOrdinal()
+    {
+        // Arrange — a values-only clip recorded against the client's remembered LEAF2 anchor:
+        // traitOrdinal 4. Only the remembered default target fills plot/subsample, so the
+        // FORWARDED ordinal is the sole thing positioning the write.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "values 3 6 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null,
+                traitOrdinal: 4, value: null, defaultPlot: 101, defaultSubsample: 1));
+
+        // Assert — the category-block append starts at the FORWARDED anchor (trait 4 = column F)
+        // and fills that block (LEAF2 = F:H); the default first cell (trait 1 = column C) stays empty
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("a values-only utterance under a client default target is authoritative");
+        result.UsedDefaultTarget.Should().BeTrue();
+        result.TraitOrdinal.Should().Be(4, "the client's confirmed anchor is echoed verbatim, never substituted with 1");
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("F22", "G22", "H22");
+        result.WrittenCells.Select(c => c.TraitOrdinal).Should().Equal(4, 5, 6);
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 6, 1);
+        result.SkippedPresentCells.Should().BeEmpty();
+        result.MissingSubsampleIndices.Should().BeEmpty();
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        var copy = OutputCopies(trialId).Single();
+        ReadCell(copy, plot: 101, subsample: 1, traitOrdinal: 4).Should().Be(3);
+        ReadCell(copy, plot: 101, subsample: 1, traitOrdinal: 6).Should().Be(1);
+        ReadCell(copy, plot: 101, subsample: 1, traitOrdinal: 1).Should().BeNull(
+            "the forwarded anchor owns the run — the default first cell receives nothing");
+
+        // Assert — the row persists the RESOLVED anchor (4) the write actually used, not the
+        // first written column or the normalized default, so a replay re-reports it.
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Written);
+            row.ResolvedTraitOrdinal.Should().Be(4,
+                "the resolved ordinal is stored verbatim on both paths; > 9 passes normalization unchanged");
+        });
+    }
+
+    [Fact]
+    public async Task SyncAsync_TraitOrdinalAboveNine_FlagsWithoutWriting()
+    {
+        // Arrange — an explicit traitOrdinal of 10 addresses no workbook column (the rating
+        // region ends at trait 9 / column K), so the sync must flag instead of writing.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "values 3 6 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null,
+                traitOrdinal: 10, value: null, defaultPlot: 101, defaultSubsample: 1));
+
+        // Assert — flagged before any workbook work; the transcript still ran (the gate sits
+        // after transcription, so the reviewer sees WHAT was said against a bad anchor)
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue();
+        result.TraitOrdinal.Should().Be(10, "the out-of-range ordinal is echoed, not clamped and never 0");
+        result.WrittenCells.Should().BeEmpty();
+        result.SkippedPresentCells.Should().BeEmpty();
+        result.OutOfTraitRangeValueCount.Should().Be(0, "the ordinal gate runs before the write, so nothing was dropped mid-write");
+        OutputCopies(trialId).Should().BeEmpty("a flagged sync never exports a workbook copy");
+        fake.CallCount.Should().Be(1);
+
+        // The row keeps the out-of-range ordinal verbatim as the evidence for the flag
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Flagged);
+            row.ResolvedTraitOrdinal.Should().Be(10, "the flagged row stores the anchor the reviewer must fix");
+        });
+    }
+
+    [Fact]
+    public async Task SyncAsync_NegativeTraitOrdinal_BehavesLikeAbsent()
+    {
+        // Arrange — a client that sends a negative anchor (-1) is expressing the same
+        // "unspecified" intent as omitting the field (absent binds to 0), so it must behave
+        // identically: resolve to 1, write at column C and echo 1.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 value 5" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null,
+                traitOrdinal: -1, value: null));
+
+        // Assert — identical to the absent case: column C, echoed 1, stored 1 (never -1)
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.TraitOrdinal.Should().Be(1, "a negative traitOrdinal normalizes to 1 exactly like an absent one");
+        result.WrittenCells.Should().ContainSingle();
+        NormalizeAddress(result.WrittenCells[0].CellAddress).Should().Be("C22");
+        result.WrittenCells[0].Value.Should().Be(5);
+        OutputCopies(trialId).Should().ContainSingle();
+
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Written);
+            row.ResolvedTraitOrdinal.Should().Be(1, "the stored resolved ordinal never carries the negative value");
+        });
+    }
+
+    [Fact]
+    public async Task SyncAsync_AbsentTraitOrdinal_DefaultsToOneAndStoresResolvedOrdinal()
+    {
+        // Arrange — an OLD PWA payload that never sends traitOrdinal (the form field binds to
+        // 0). Backward compatibility: the anchor defaults to 1, and the row stores the RESOLVED
+        // 1 — one meaning per column, symmetric with the echoed TraitOrdinal.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 value 5" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null,
+                traitOrdinal: 0, value: null));
+
+        // Assert — the write lands at the default anchor (trait 1 = column C) and the echo
+        // reports 1, never the raw 0
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.TraitOrdinal.Should().Be(1, "an absent/zero traitOrdinal echoes the normalized 1, never 0");
+        result.WrittenCells.Should().ContainSingle();
+        NormalizeAddress(result.WrittenCells[0].CellAddress).Should().Be("C22");
+        result.WrittenCells[0].Value.Should().Be(5);
+        OutputCopies(trialId).Should().ContainSingle();
+
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Written);
+            row.ResolvedTraitOrdinal.Should().Be(1,
+                "the row stores the resolved anchor the write used (1), symmetric with the echo");
+        });
+    }
+
     // ── Normalization: non-positive confirmed fields mean “not confirmed” ────
 
     [Fact]
@@ -660,6 +1086,40 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
             row.ConfirmedSubsample.Should().BeNull();
             row.ConfirmedValue.Should().BeNull();
         });
+    }
+
+    [Fact]
+    public async Task SyncAsync_PartialParseWithoutDefaultTarget_NeedsReview()
+    {
+        // Arrange — a parse that resolved every target field from the transcript PLUS the
+        // confirmed value, but is NOT complete (the utterance never said a value word, so
+        // IsComplete is false). No client default target was sent, so usedDefaultTarget is
+        // false and the incomplete-parse term applies: a deliberate omission is only
+        // excusable when a default filled the gap, and never otherwise.
+        //
+        // NOTE: this pins the END STATE, not the `!parsed.IsComplete` term specifically.
+        // Today the two review terms overlap — the parser scores every incomplete parse at
+        // confidence 0.5, below ReviewConfidenceThreshold (0.75), so the confidence term
+        // already forces review. The IsComplete term is kept as a forward guard: it encodes
+        // a different failure mode, and the two would diverge if the parser's confidence
+        // bands ever change. Do not "clean up" the seemingly redundant term — and do not
+        // read this test as proof that the term is load-bearing.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 3" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — value supplied by the confirmed field, so the target is fully resolvable
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null,
+                traitOrdinal: 1, value: 7));
+
+        // Assert — review is still required: nothing filled a parse gap.
+        result.UsedDefaultTarget.Should().BeFalse("no client default target was sent");
+        result.NeedsReview.Should().BeTrue(
+            "an incomplete parse with no default target to excuse it must still require review");
     }
 
     [Fact]
@@ -817,6 +1277,122 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
         await AssertStoredAsync(clientId, row => row.Status.Should().Be(
             VoiceRecordingStatus.Written,
             "a replay must not overwrite the first submission's terminal status"));
+    }
+
+    [Fact]
+    public async Task SyncAsync_SameClientRecordingId_ReplayEchoesCommittedTargetNotStaleDefaults()
+    {
+        // Arrange — the FIRST sync commits an explicit spoken target (102,1) while the PWA
+        // posts STALE defaults (101,2); the defaults must play no part in the committed write
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var firstFake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 102 subsample 1 values 3 6 1" });
+
+        SyncVoiceRecordingResult first;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = CreateService(scope, firstFake);
+            first = await service.SyncAsync(
+                AudioBytes(), "clip.webm",
+                Command(trialId, clientId, plot: null, subsample: null, value: null,
+                    defaultPlot: 101, defaultSubsample: 2));
+            first.Status.Should().Be(VoiceRecordingStatus.Written);
+            first.Plot.Should().Be(102);
+            first.Subsample.Should().Be(1);
+            first.UsedDefaultTarget.Should().BeFalse("the target was spoken, not defaulted");
+            first.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C26", "D26", "E26");
+        }
+
+        // Act — retry with the SAME idempotency key and the SAME (still stale) defaults; a
+        // replay answers without transcription or workbook work
+        var replayFake = new FakeTranscriptionService();
+        SyncVoiceRecordingResult replay;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = CreateService(scope, replayFake);
+            replay = await service.SyncAsync(
+                AudioBytes(seed: 42), "clip.webm",
+                Command(trialId, clientId, plot: null, subsample: null, value: null,
+                    defaultPlot: 101, defaultSubsample: 2));
+        }
+
+        // Assert — the replay echo reflects the COMMITTED write (102,1), never the stale
+        // defaults (101,2); the parsed-echo contract stays intact (nulls for a no-parse replay)
+        replay.Replayed.Should().BeTrue();
+        replay.Status.Should().Be(VoiceRecordingStatus.Replay);
+        replay.NeedsReview.Should().BeFalse();
+        replay.Transcript.Should().BeEmpty();
+        replay.Plot.Should().Be(102, "a replay echoes what was actually written, not the caller's stale defaults");
+        replay.Subsample.Should().Be(1);
+        replay.UsedDefaultTarget.Should().BeFalse("nothing was defaulted in the committed write");
+        replay.Confidence.Should().BeNull("a replay ran no parse");
+        replay.ParsedPlot.Should().BeNull();
+        replay.ParsedSubsample.Should().BeNull();
+        replay.ParsedValue.Should().BeNull();
+        replay.PlotExists.Should().BeFalse("a replay ran no workbook write");
+        replay.WrittenCells.Should().BeEmpty("a replay performs no write");
+        replay.MissingSubsampleIndices.Should().BeEmpty();
+        replayFake.CallCount.Should().Be(0);
+        firstFake.CallCount.Should().Be(1);
+        OutputCopies(trialId).Should().ContainSingle("a replay must not create a second workbook copy");
+    }
+
+    [Fact]
+    public async Task SyncAsync_ReplayOfTraitFourRecording_EchoesCommittedTraitOrdinal()
+    {
+        // Arrange — the FIRST sync commits a values-only clip recorded against trait 4
+        // (column F), so the row's ResolvedTraitOrdinal is the anchor that was used.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var firstFake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "values 3 6 1" });
+
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = CreateService(scope, firstFake);
+            var first = await service.SyncAsync(
+                AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null,
+                    traitOrdinal: 4, value: null, defaultPlot: 101, defaultSubsample: 1));
+            first.Status.Should().Be(VoiceRecordingStatus.Written);
+            first.TraitOrdinal.Should().Be(4);
+            first.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("F22", "G22", "H22");
+        }
+
+        // Act — the queue retries the SAME clip, but this time WITHOUT the traitOrdinal field
+        // (an older/edge PWA build). A replay must not trust the caller's missing anchor: it
+        // re-reports the anchor the row was committed under. The fake has an empty queue, so
+        // any transcription or workbook work would throw.
+        var replayFake = new FakeTranscriptionService();
+        SyncVoiceRecordingResult replay;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = CreateService(scope, replayFake);
+            replay = await service.SyncAsync(
+                AudioBytes(seed: 42), "clip.webm", Command(trialId, clientId, plot: null, subsample: null,
+                    traitOrdinal: 0, value: null, defaultPlot: 101, defaultSubsample: 1));
+        }
+
+        // Assert — the echo is honest about the committed outcome: trait 4, not the normalized
+        // default 1 the omitted field would otherwise produce.
+        replay.Replayed.Should().BeTrue();
+        replay.Status.Should().Be(VoiceRecordingStatus.Replay);
+        replay.NeedsReview.Should().BeFalse();
+        replay.TraitOrdinal.Should().Be(4, "a replay re-reports the anchor persisted on the row, not the caller's omitted one");
+        replay.Plot.Should().Be(101);
+        replay.Subsample.Should().Be(1);
+        replay.WrittenCells.Should().BeEmpty("a replay performs no write");
+        replay.PlotExists.Should().BeFalse();
+        replayFake.CallCount.Should().Be(0);
+        firstFake.CallCount.Should().Be(1);
+        OutputCopies(trialId).Should().ContainSingle("a replay must not create a second workbook copy");
+
+        // The stored anchor survives the replay untouched — the row is never re-written.
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Written);
+            row.ResolvedTraitOrdinal.Should().Be(4, "a replay never clobbers the committed anchor");
+        });
     }
 
     // ── Value gate: out of range → stored but flagged, never transcribed ────
@@ -1390,6 +1966,15 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
             "the correction must write the cell in the FORWARDED trait column");
         ReadCell(copy, plot: 101, subsample: 3, traitOrdinal: 1).Should().BeNull(
             "trait 1 must stay empty — the default column receives nothing");
+
+        // The reviewer's RESOLVED anchor is persisted onto the row next to the other confirmed fields
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.ResolvedTraitOrdinal.Should().Be(2, "the corrected row records the reviewer's confirmed anchor");
+            row.ConfirmedPlot.Should().Be(101);
+            row.ConfirmedSubsample.Should().Be(3);
+            row.ConfirmedValue.Should().Be(7);
+        });
     }
 
     [Fact]
@@ -1521,7 +2106,9 @@ await AssertStoredAsync(clientId, row =>
     /// <summary>
     /// Builds a sync command. The confirmed fields are nullable: pass <see langword="null"/>
     /// to simulate a transcript-only sync (the PWA without an unlocked layout) or pass 0/
-    /// non-positive values, which the service normalizes to “not confirmed”.
+    /// non-positive values, which the service normalizes to “not confirmed”. The default
+    /// target (<paramref name="defaultPlot"/>/<paramref name="defaultSubsample"/>) simulates
+    /// the remembered-target fallback the PWA posts on a values-only form.
     /// </summary>
     private static SyncVoiceRecordingCommand Command(
         Guid trialId,
@@ -1529,7 +2116,9 @@ await AssertStoredAsync(clientId, row =>
         int? plot = 101,
         int? subsample = 3,
         int traitOrdinal = 1,
-        int? value = 7)
+        int? value = 7,
+        int? defaultPlot = null,
+        int? defaultSubsample = null)
         => new()
         {
             ClientRecordingId = Guid.Parse(clientId),
@@ -1538,6 +2127,8 @@ await AssertStoredAsync(clientId, row =>
             Subsample = subsample,
             TraitOrdinal = traitOrdinal,
             Value = value,
+            DefaultPlot = defaultPlot,
+            DefaultSubsample = defaultSubsample,
         };
 
     private static MemoryStream AudioBytes(int seed = 0)

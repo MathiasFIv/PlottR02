@@ -45,6 +45,15 @@ public sealed class SyncVoiceRecordingResult
     public int? Subsample { get; init; }
 
     /// <summary>
+    /// <see langword="true"/> when the resolved plot and/or subsample came from the
+    /// command's <see cref="SyncVoiceRecordingCommand.DefaultPlot"/> /
+    /// <see cref="SyncVoiceRecordingCommand.DefaultSubsample"/> because the transcript (and
+    /// the confirmed fields) omitted it/them. Lets the PWA surface which target parts were
+    /// assumed rather than spoken.
+    /// </summary>
+    public bool UsedDefaultTarget { get; init; }
+
+    /// <summary>
     /// The resolved rating value that was (or would be) written: confirmed field from the
     /// command (0 is a valid confirmed value), otherwise the parsed transcript value.
     /// <see langword="null"/> when neither source supplied a valid value.
@@ -75,7 +84,13 @@ public sealed class SyncVoiceRecordingResult
     /// </summary>
     public bool PlotExists { get; init; }
 
-    /// <summary>The confirmed trait ordinal (workbook column) from the incoming command.</summary>
+    /// <summary>
+    /// The trait ordinal (workbook column) this outcome was committed under: the command's
+    /// confirmed ordinal normalized by the service — absent, 0 and negative all report 1
+    /// (never 0), while an explicit out-of-range value is echoed verbatim so the reviewer
+    /// sees why the recording was flagged. A replay echoes the anchor recovered from the
+    /// stored row, so it re-reports the committed column rather than the caller's.
+    /// </summary>
     public int TraitOrdinal { get; init; }
 
     /// <summary>

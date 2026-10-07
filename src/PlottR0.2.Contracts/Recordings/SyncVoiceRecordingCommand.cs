@@ -38,7 +38,34 @@ public sealed class SyncVoiceRecordingCommand
     /// </summary>
     public int? Subsample { get; init; }
 
-    /// <summary>1-indexed trait ordinal (1..9) mapping to a single workbook column (design.md §5).</summary>
+    /// <summary>
+    /// The CLIENT-SENT default plot number (<c>defaultPlot</c> form field): the PWA
+    /// remembers the target of the last successful utterance and posts it whenever the form
+    /// suggests a values-only utterance (plot/subsample not spoken). The resolution falls
+    /// back to this value only when the confirmed field AND the transcript both omitted the
+    /// plot; an explicit spoken/confirmed plot always wins. Nullable because the client only
+    /// sends it on values-only forms — a missing form field binds as <see langword="null"/>,
+    /// which disables the fallback.
+    /// </summary>
+    public int? DefaultPlot { get; init; }
+
+    /// <summary>
+    /// The CLIENT-SENT default subsample index (<c>defaultSubsample</c> form field): the
+    /// PWA remembers the target of the last successful utterance and posts it whenever the
+    /// form suggests a values-only utterance. The resolution falls back to this value only
+    /// when the confirmed field AND the transcript both omitted the subsample AND no NEW
+    /// plot was spoken (or the spoken plot equals the default plot — a new plot never
+    /// inherits the previous subsample cursor); an explicit spoken/confirmed subsample
+    /// always wins. Nullable because the client only sends it on values-only forms — a
+    /// missing form field binds as <see langword="null"/>, which disables the fallback.
+    /// </summary>
+    public int? DefaultSubsample { get; init; }
+
+    /// <summary>1-indexed trait ordinal (1..9) mapping to a single workbook column (design.md §5).
+    /// Non-nullable on purpose: an OMITTED form field binds to 0, and the service treats absent,
+    /// 0 and negative identically as "unspecified" — all coerce to 1 (the first Part Rated
+    /// column) — so no separate "was it sent" flag is needed and an all-zeros legacy payload is
+    /// a legal request. Only an explicit value above 9 is out of range and gets flagged.</summary>
     public int TraitOrdinal { get; init; }
 
     /// <summary>

@@ -10,6 +10,7 @@ import type {
   User,
 } from '../types';
 import type { AudioRecording } from './audioDb';
+import { readDefaultTarget } from './defaultTarget';
 import { tokens } from './tokens';
 
 /**
@@ -245,6 +246,10 @@ export interface SyncRecordingResponse {
   traitOrdinal: number;
   needsReview: boolean;
   replayed: boolean;
+  /** True when the write target's plot and/or subsample came from the
+   *  `defaultPlot`/`defaultSubsample` fields (values-only utterance with a
+   *  remembered target). The server sends this on every sync/correct response. */
+  usedDefaultTarget: boolean;
   /** True when the write ran on the transcript alone because the client sent
    *  no confirmed fields (corrections never set it; only transcript-only syncs). */
   wasTranscriptOnly: boolean;
@@ -453,6 +458,29 @@ export const api = {
     body.append('plot', String(rec.plot ?? ''));
     body.append('subsample', String(rec.subsample ?? ''));
     body.append('value', String(rec.value ?? ''));
+    // Values-only utterance ("values 4, 2, 6"): the operator is continuing a
+    // run, so ship the default target as the server-side defaults. NEVER sent
+    // when either field is present — explicit spoken values always win.
+    // The row's `defaultTarget` snapshot (taken at first send in autoSync)
+    // wins over live memory so a retry replays the target the clip was
+    // INTENDED for; live memory only seeds the very first send.
+    const target =
+      rec.defaultTarget ??
+      (rec.plot == null && rec.subsample == null
+        ? readDefaultTarget(rec.trialId ?? '')
+        : null);
+    if (target !== null) {
+      body.append('defaultPlot', String(target.plot));
+      body.append('defaultSubsample', String(target.subsample));
+    }
+    const traitOrdinal = rec.traitOrdinal;
+    if (
+      typeof traitOrdinal === 'number' &&
+      Number.isInteger(traitOrdinal) &&
+      traitOrdinal > 0
+    ) {
+      body.append('traitOrdinal', String(traitOrdinal));
+    }
     body.append('createdAt', rec.createdAt); // already ISO-8601 (stored via toISOString() at save)
     body.append('file', rec.blob, `rec.${extensionForMimeType(rec.mimeType)}`);
     return formRequest<SyncRecordingResponse>('/api/Recordings/sync', body);

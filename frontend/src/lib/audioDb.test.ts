@@ -42,6 +42,7 @@ function syncResponse(): SyncRecordingResponse {
     traitOrdinal: 1,
     needsReview: false,
     replayed: false,
+    usedDefaultTarget: false,
     wasTranscriptOnly: true,
     submittedAt: '2026-09-16T12:00:00Z',
     transcript: 'plot 101 subsample 3 value 7',

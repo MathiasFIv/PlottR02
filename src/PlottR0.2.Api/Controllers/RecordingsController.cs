@@ -28,10 +28,11 @@ public class RecordingsController : ControllerBase
     /// Idempotent per <c>clientRecordingId</c>: a repeat key short-circuits as a Replay.
     /// </summary>
     /// <param name="request">The confirmed recording metadata (clientRecordingId, trialId,
-    /// traitOrdinal, plot, subsample, value, createdAt) + the audio file (form field
-    /// <c>file</c>, e.g. <c>rec.webm</c>) from the multipart form. A null or non-positive
-    /// plot/subsample and a null value are treated as "not confirmed" so the transcript
-    /// becomes authoritative for those fields.</param>
+    /// traitOrdinal, plot, subsample, value, createdAt) + the remembered default target
+    /// (<c>defaultPlot</c>/<c>defaultSubsample</c>, the values-only fallback) + the audio
+    /// file (form field <c>file</c>, e.g. <c>rec.webm</c>) from the multipart form. A null
+    /// or non-positive plot/subsample and a null value are treated as "not confirmed" so
+    /// the transcript becomes authoritative for those fields.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>200 with the sync outcome, 400 on a missing file or invalid form values,
     /// or 404 when the referenced trial does not exist.</returns>
@@ -58,6 +59,8 @@ public class RecordingsController : ControllerBase
                 TraitOrdinal = request.TraitOrdinal,
                 Plot = request.Plot,
                 Subsample = request.Subsample,
+                DefaultPlot = request.DefaultPlot,
+                DefaultSubsample = request.DefaultSubsample,
                 Value = request.Value,
                 CreatedAt = request.CreatedAt,
             };
@@ -128,6 +131,13 @@ public sealed class SyncVoiceRecordingRequest
 {
     public Guid ClientRecordingId { get; init; }
     public Guid TrialId { get; init; }
+
+    /// <summary>
+    /// The confirmed trait ordinal (workbook column anchor, 1..9). Optional on the wire:
+    /// an OMITTED form field binds to 0 and the service treats absent, 0 and negative
+    /// identically as "unspecified" (all normalize to 1), so an older PWA that never sends
+    /// the field keeps working unchanged. Only an explicit value above 9 is flagged.
+    /// </summary>
     public int TraitOrdinal { get; init; }
 
     /// <summary>
@@ -147,6 +157,22 @@ public sealed class SyncVoiceRecordingRequest
     /// authoritative. 0 is a legal "no plants" rating and is never treated as absent.
     /// </summary>
     public int? Value { get; init; }
+
+    /// <summary>
+    /// The client-sent default plot (<c>defaultPlot</c>) the PWA remembers from the previous
+    /// successful utterance, or <see langword="null"/> when the form does not suggest a
+    /// values-only utterance. A non-positive value is treated the same as
+    /// <see langword="null"/>. Always overridden by an explicit spoken/confirmed plot.
+    /// </summary>
+    public int? DefaultPlot { get; init; }
+
+    /// <summary>
+    /// The client-sent default subsample (<c>defaultSubsample</c>) the PWA remembers from
+    /// the previous successful utterance, or <see langword="null"/> when the form does not
+    /// suggest a values-only utterance. A non-positive value is treated the same as
+    /// <see langword="null"/>. Always overridden by an explicit spoken/confirmed subsample.
+    /// </summary>
+    public int? DefaultSubsample { get; init; }
 
     public DateTimeOffset? CreatedAt { get; init; }
     public IFormFile? File { get; init; }

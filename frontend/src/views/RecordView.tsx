@@ -8,6 +8,7 @@ import { useTrials } from '../hooks/useTrials';
 import { useVoiceQueue } from '../hooks/useVoiceQueue';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { getRecordingById } from '../lib/audioDb';
+import { readDefaultTarget } from '../lib/defaultTarget';
 import { summarizeSync } from '../lib/syncQueue';
 import { activeTrialIdAtom, currentUserAtom } from '../store/atoms';
 
@@ -180,6 +181,11 @@ export function RecordView() {
   const micDisabled = permissionState === 'unsupported' || activeTrialId === null;
   const pendingStatus = pendingRec?.status;
 
+  // Remembered write target (keyed by trial) from the last written sync — a
+  // "values-only" clip continues the run at this plot/subsample.
+  const nextDefaultTarget =
+    activeTrialId !== null ? readDefaultTarget(activeTrialId) : null;
+
   /**
    * Variant-aware color class for the inline outcome banner. The `synced` case
    * with a stale `lastError` (a 409 "already saved" correction) renders as a
@@ -256,6 +262,13 @@ export function RecordView() {
             Tap to start, tap again to stop. The clip saves and syncs the
             moment the mic stops.
           </p>
+
+          {nextDefaultTarget && (
+            <p className="muted record-saved" role="status">
+              Next: Plot {nextDefaultTarget.plot} · Sub{' '}
+              {nextDefaultTarget.subsample}
+            </p>
+          )}
 
           <div className="record-mic-area">
             <button

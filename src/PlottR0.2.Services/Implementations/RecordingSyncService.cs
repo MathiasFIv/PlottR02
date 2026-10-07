@@ -75,6 +75,14 @@ public sealed class RecordingSyncService : IRecordingSyncService
     private static readonly IReadOnlySet<int> EmptySubsampleSet = new HashSet<int>();
 
     /// <summary>
+    /// A parse that stated nothing, used when <see cref="BuildResult"/> derives default-target
+    /// usage for paths that never ran a parse (replay, value gate A, out-of-range store). Those
+    /// paths have an empty transcript, so resolving them as a parse whose fields are all
+    /// <see langword="null"/> matches how a real empty parse behaves for default resolution.
+    /// </summary>
+    private static readonly TranscriptParseResult EmptyParse = new();
+
+    /// <summary>
     /// Creates a new <see cref="RecordingSyncService"/>.
     /// </summary>
     /// <param name="voiceRecordings">Repository of <c>VoiceRecording</c> audit rows.</param>
@@ -118,6 +126,13 @@ public sealed class RecordingSyncService : IRecordingSyncService
         var cSubsample = command.Subsample is int cs && cs > 0 ? cs : (int?)null;
         var cValue = command.Value;
 
+        // The RESOLVED trait ordinal for the audit row: an absent form field binds to 0, and a
+        // non-positive value means the client confirmed no anchor, so the row stores the
+        // normalized 1 — the anchor the write actually used (see
+        // VoiceRecording.ResolvedTraitOrdinal). Values above 9 pass normalization unchanged
+        // and are stored verbatim as the flagged row's evidence.
+        var cTraitOrdinal = NormalizeTraitOrdinal(command.TraitOrdinal);
+
         // Step 1 — Buffer: the blob store and the transcription service each consume the
         // stream, so one rewindable buffer feeds both without re-reading the caller's source.
         using var buffered = new MemoryStream();
@@ -159,8 +174,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
         // Step 6 — Audit row: the VoiceRecording row (Received) exists BEFORE any downstream
         // work and carries the NORMALIZED confirmed fields from the command (contract truth).
         var recording = CreateRecording(
-            trial.Id, clientId, blobPath, mimeType, cPlot, cSubsample, cValue, command.CreatedAt,
-            VoiceRecordingStatus.Received);
+            trial.Id, clientId, blobPath, mimeType, cPlot, cSubsample, cValue, cTraitOrdinal,
+            command.CreatedAt, VoiceRecordingStatus.Received);
         try
         {
             await _voiceRecordings.CreateAsync(recording, ct);
@@ -222,11 +237,24 @@ public sealed class RecordingSyncService : IRecordingSyncService
         var parsed = TranscriptParser.Parse(transcript);
 
         // Step 9 — Resolution (design.md §3): the confirmed field wins per field; a missing
-        // or non-positive confirmed field falls back to the parsed transcript value. Values
-        // resolve as a LIST: a confirmed value is a single-cell correction (one entry), while
-        // an unconfirmed value resolves to the transcript's multi-value list ("values 3 6 1").
-        var plot = cPlot ?? parsed.Plot;
+        // or non-positive confirmed field falls back to the parsed transcript value, then to
+        // the CLIENT-SENT DEFAULT TARGET (design.md V2E default memory, "plot/subsample
+        // default memory"): a values-only utterance that omitted plot/subsample re-uses the
+        // target the PWA remembers from the previous successful utterance. The subsample
+        // default is guarded — a NEW plot spoken in the transcript (different from the
+        // default plot) never inherits the previous subsample cursor. Values resolve as a
+        // LIST: a confirmed value is a single-cell correction (one entry), while an
+        // unconfirmed value resolves to the transcript's multi-value list ("values 3 6 1").
+        var defaultPlot = command.DefaultPlot is int dp && dp > 0 ? dp : (int?)null;
+        var defaultSubsample = command.DefaultSubsample is int ds && ds > 0 ? ds : (int?)null;
+        var plot = cPlot ?? parsed.Plot ?? defaultPlot;
         var subsample = cSubsample ?? parsed.Subsample;
+        if (subsample is null && defaultSubsample is int dsub
+            && (parsed.Plot is null || parsed.Plot == defaultPlot))
+        {
+            subsample = dsub;
+        }
+
         IReadOnlyList<int> values = cValue is int cv ? new[] { cv } : parsed.Values;
 
         // Step 10 — Value gate B: when NO legal value can be resolved (no confirmed value
@@ -264,7 +292,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         // voice client may omit it (binds to 0), which the server interprets as 1 — the
         // append scan then starts at column C and walks the Part Rated category blocks
         // (row 8). Only an explicit traitOrdinal above 9 is invalid and flagged.
-        var traitOrdinal = command.TraitOrdinal < 1 ? 1 : command.TraitOrdinal;
+        var traitOrdinal = NormalizeTraitOrdinal(command.TraitOrdinal);
         if (traitOrdinal > 9)
         {
             recording.Status = VoiceRecordingStatus.Flagged;
@@ -349,11 +377,28 @@ public sealed class RecordingSyncService : IRecordingSyncService
         await _voiceRecordings.UpdateAsync(recording, ct);
 
         // Step 14 — Review gate, logging and result (design.md §3): any transcription
-        // failure, incomplete/low-confidence parse, per-field disagreement with the confirmed
-        // fields, or non-Written status requires a human review.
+        // failure, an unresolved target field, per-field disagreement with the confirmed
+        // fields, or a non-Written status requires a human review. The parser's
+        // IsComplete/confidence no longer disables a VOICE-ONLY values utterance outright:
+        // under a client-sent default target (UsedDefaultTarget) such an utterance
+        // deliberately omits plot/subsample, so its low-confidence partial parse is
+        // expected — the write itself is the authority and a Written result needs no review.
+        // When ANY part of the target was spoken, or no defaults applied, the existing
+        // conservative checks stay intact.
+        //
+        // The IsComplete term is deliberately NOT redundant-looking: today the parser scores
+        // every incomplete parse at confidence 0.5, below the threshold, so the confidence
+        // term already forces review. It is kept because it encodes a different failure mode
+        // (a missing field) than the confidence term (a fuzzy parse), and the two would
+        // diverge if the parser's confidence bands changed.
+        var (usedDefaultPlot, usedDefaultSubsample) = ResolveDefaultUsage(cPlot, cSubsample, parsed, command);
+        var usedDefaultTarget = usedDefaultPlot || usedDefaultSubsample;
+        var targetFullyKnown = (cPlot is not null || parsed.Plot is not null || usedDefaultPlot)
+            && (cSubsample is not null || parsed.Subsample is not null || usedDefaultSubsample);
         var needsReview = transcriptionFailed
-            || !parsed.IsComplete
-            || parsed.Confidence < ReviewConfidenceThreshold
+            || !targetFullyKnown
+            || (!usedDefaultTarget && !parsed.IsComplete)
+            || (!usedDefaultTarget && parsed.Confidence < ReviewConfidenceThreshold)
             || MismatchesConfirmed(parsed, cPlot, cSubsample, cValue)
             || status is VoiceRecordingStatus.Flagged or VoiceRecordingStatus.SkippedPresent;
 
@@ -401,7 +446,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
         // traitOrdinal (binds to 0), which the server interprets as 1 — the correction's
         // append scan then starts at column C and walks the Part Rated category blocks.
         // Only an explicit traitOrdinal above 9 remains invalid and is flagged below.
-        traitOrdinal = traitOrdinal < 1 ? 1 : traitOrdinal;
+        // The RESOLVED (normalized) value is persisted on both paths.
+        traitOrdinal = NormalizeTraitOrdinal(traitOrdinal);
 
         var recording = await _voiceRecordings.GetByClientRecordingIdAsync(clientRecordingId, ct);
         if (recording is null)
@@ -424,6 +470,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
             recording.ConfirmedPlot = cPlot;
             recording.ConfirmedSubsample = cSubsample;
             recording.ConfirmedValue = cValue;
+            recording.ResolvedTraitOrdinal = traitOrdinal;
             recording.Status = VoiceRecordingStatus.Flagged;
             recording.UpdatedAt = DateTime.UtcNow;
             await _voiceRecordings.UpdateAsync(recording, ct);
@@ -451,6 +498,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
             recording.ConfirmedPlot = cPlot;
             recording.ConfirmedSubsample = cSubsample;
             recording.ConfirmedValue = cValue;
+            recording.ResolvedTraitOrdinal = traitOrdinal;
             recording.Status = VoiceRecordingStatus.Flagged;
             recording.UpdatedAt = DateTime.UtcNow;
             await _voiceRecordings.UpdateAsync(recording, ct);
@@ -513,6 +561,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         recording.ConfirmedPlot = cPlot;
         recording.ConfirmedSubsample = cSubsample;
         recording.ConfirmedValue = cValue;
+        recording.ResolvedTraitOrdinal = traitOrdinal;
         recording.Status = status;
         recording.UpdatedAt = DateTime.UtcNow;
         await _voiceRecordings.UpdateAsync(recording, ct);
@@ -563,7 +612,18 @@ public sealed class RecordingSyncService : IRecordingSyncService
             parsed: null,
             policy: null,
             submittedAt: DateTimeOffset.UtcNow,
-            replayed: true));
+            replayed: true,
+            // Resolution input = the original commit's parse (rebuilt from the stored row's
+            // parsed fields), so the echo reports the cell that was ACTUALLY written — never
+            // the caller's possibly-stale defaults. The echo (Parsed*/Confidence) stays null
+            // via `parsed: null` above, preserving the replay contract.
+            parsedForResolution: ReconstructParsed(existing),
+            // Trait anchor = the anchor the COMMIT actually used, recovered from the stored
+            // row, so a replayed trait-4 recording still reports TraitOrdinal 4 even when the
+            // retry omits the field (which would otherwise echo the normalized 1). For rows
+            // predating the column, the persisted value is null and the anchor is 1 (the only
+            // ordinal a pre-migration row could ever have used); the caller's value is never used.
+            traitOrdinal: existing.ResolvedTraitOrdinal ?? 1));
     }
 
     /// <summary>
@@ -585,7 +645,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
         var blobPath = await _blobStore.SaveAsync(trial.Id, clientId, mimeType, audio, ct);
 
         var recording = CreateRecording(
-            trial.Id, clientId, blobPath, mimeType, cPlot, cSubsample, cValue, command.CreatedAt,
+            trial.Id, clientId, blobPath, mimeType, cPlot, cSubsample, cValue,
+            NormalizeTraitOrdinal(command.TraitOrdinal), command.CreatedAt,
             VoiceRecordingStatus.Flagged);
         try
         {
@@ -678,14 +739,60 @@ public sealed class RecordingSyncService : IRecordingSyncService
         || (cValue is int cv && parsed.FirstValue is int pv && cv != pv);
 
     /// <summary>
+    /// Reports whether the resolved target fell back to a CLIENT-SENT DEFAULT
+    /// (<see cref="SyncVoiceRecordingCommand.DefaultPlot"/>/<see cref="SyncVoiceRecordingCommand.DefaultSubsample"/>)
+    /// because the confirmed fields AND the transcript both omitted the field. An explicit
+    /// NEW plot in the transcript never inherits the previous subsample cursor, so the
+    /// subsample default applies only when the transcript stated no plot or stated the same
+    /// plot as the default — the same guard Step 9's resolution uses, so the review gate and
+    /// the result echo can never disagree about what the write actually used.
+    /// </summary>
+    private static (bool usedDefaultPlot, bool usedDefaultSubsample) ResolveDefaultUsage(
+        int? cPlot, int? cSubsample, TranscriptParseResult parsed, SyncVoiceRecordingCommand command)
+    {
+        var defaultPlot = command.DefaultPlot is int dp && dp > 0 ? dp : (int?)null;
+        var defaultSubsample = command.DefaultSubsample is int ds && ds > 0 ? ds : (int?)null;
+        var usedDefaultPlot = cPlot is null && parsed.Plot is null && defaultPlot is not null;
+        var usedDefaultSubsample = cSubsample is null && parsed.Subsample is null
+            && defaultSubsample is not null
+            && (parsed.Plot is null || parsed.Plot == defaultPlot);
+        return (usedDefaultPlot, usedDefaultSubsample);
+    }
+
+    /// <summary>Normalizes a client-confirmed trait ordinal. Absent, 0 and negative all mean
+    /// "unspecified" and map to 1 (the first Part Rated column); values above 9 are returned
+    /// as-is so the caller's existing &gt; 9 flag gate still sees them.</summary>
+    private static int NormalizeTraitOrdinal(int? confirmed)
+        => confirmed is int v && v > 1 ? v : 1;
+
+    /// <summary>
     /// Assembles the result DTO, honouring a <see langword="null"/> parse and a
     /// <see langword="null"/> policy write. The resolved Plot/Subsample/Value (confirmed ??
-    /// parsed) travel on the wire, and <see cref="SyncVoiceRecordingResult.WasTranscriptOnly"/>
-    /// reports whether NO confirmed field was supplied. The parsed transcript fields travel
-    /// even when transcription failed (nulls with confidence 0) or a partial parse ran
+    /// resolution parse ?? client default — the same resolution the sync path applied in
+    /// Step 9, so the echo always reflects what the write attempted) travel on the wire, and
+    /// <see cref="SyncVoiceRecordingResult.WasTranscriptOnly"/> reports whether NO confirmed
+    /// field was supplied. <see cref="SyncVoiceRecordingResult.UsedDefaultTarget"/> reports
+    /// whether a client-sent default filled part of the target. The parsed transcript fields
+    /// travel even when transcription failed (nulls with confidence 0) or a partial parse ran
     /// (some nulls). <see cref="SyncVoiceRecordingResult.PlotExists"/> reports whether the
     /// workbook confirmed the plot — always <see langword="false"/> on replay, under a value
     /// gate, or when no policy write ran.
+    /// <para>
+    /// The ECHO and the RESOLUTION intentionally take separate inputs: <paramref name="parsed"/>
+    /// feeds the echoed Parsed*/Value/Confidence (kept <see langword="null"/> on replay by
+    /// contract), while <paramref name="parsedForResolution"/> — defaulting to
+    /// <paramref name="parsed"/>, then to an empty parse on null — feeds Plot/Subsample/
+    /// UsedDefaultTarget. A replay passes the stored row's reconstructed parse so its echo
+    /// reflects the committed write instead of the caller's possibly-stale defaults.
+    /// </para>
+    /// <para>
+    /// <see cref="SyncVoiceRecordingResult.TraitOrdinal"/> echoes the anchor the outcome was
+    /// committed under: <paramref name="traitOrdinal"/> — the resolved/persisted anchor,
+    /// passed by the write path and by a replay (recovered from the stored row) — when the
+    /// caller supplied one, else the command's, always through
+    /// <see cref="NormalizeTraitOrdinal"/>. Every path therefore reports a NORMALIZED
+    /// ordinal (1..9, or the explicit out-of-range value that got flagged) and never 0.
+    /// </para>
     /// </summary>
     private static SyncVoiceRecordingResult BuildResult(
         SyncVoiceRecordingCommand command,
@@ -699,20 +806,42 @@ public sealed class RecordingSyncService : IRecordingSyncService
         PolicyWritePlotColumnResult? policy,
         DateTimeOffset submittedAt,
         int? traitOrdinal = null,
-        bool replayed = false)
-        => new()
+        bool replayed = false,
+        TranscriptParseResult? parsedForResolution = null)
+    {
+        // Same default-target rule as Step 9: a client-sent default fills a field the
+        // confirmed value AND the transcript both omitted (with the subsample guard against
+        // a NEW spoken plot). Callers that ran no parse and pass no `parsedForResolution`
+        // (replay, out-of-range store) fall back to the empty parse — "nothing omitted",
+        // which is exactly the empty-transcript truth on those paths.
+        var resolutionParsed = parsedForResolution ?? parsed ?? EmptyParse;
+        var defaultPlot = command.DefaultPlot is int dp && dp > 0 ? dp : (int?)null;
+        var defaultSubsample = command.DefaultSubsample is int ds && ds > 0 ? ds : (int?)null;
+
+        var plot = cPlot ?? resolutionParsed.Plot ?? defaultPlot;
+        var subsample = cSubsample ?? resolutionParsed.Subsample;
+        if (subsample is null && defaultSubsample is int dsub
+            && (resolutionParsed.Plot is null || resolutionParsed.Plot == defaultPlot))
+        {
+            subsample = dsub;
+        }
+
+        var (usedDefaultPlot, usedDefaultSubsample) = ResolveDefaultUsage(
+            cPlot, cSubsample, resolutionParsed, command);
+
+        return new()
         {
             ClientRecordingId = command.ClientRecordingId,
             TrialId = command.TrialId,
             Status = status,
-            Plot = cPlot ?? parsed?.Plot,
-            Subsample = cSubsample ?? parsed?.Subsample,
+            Plot = plot,
+            Subsample = subsample,
             Value = cValue ?? parsed?.FirstValue,
             ParsedPlot = parsed?.Plot,
             ParsedSubsample = parsed?.Subsample,
             ParsedValue = parsed?.FirstValue,
             PlotExists = policy?.PlotExists ?? false,
-            TraitOrdinal = traitOrdinal ?? command.TraitOrdinal,
+            TraitOrdinal = NormalizeTraitOrdinal(traitOrdinal ?? command.TraitOrdinal),
             NeedsReview = needsReview,
             Replayed = replayed,
             WasTranscriptOnly = cPlot is null && cSubsample is null && cValue is null,
@@ -723,7 +852,9 @@ public sealed class RecordingSyncService : IRecordingSyncService
             SkippedPresentCells = policy?.SkippedPresentCells ?? [],
             MissingSubsampleIndices = policy?.MissingSubsampleIndices ?? [],
             OutOfTraitRangeValueCount = policy?.OutOfTraitRangeValueCount ?? 0,
+            UsedDefaultTarget = usedDefaultPlot || usedDefaultSubsample,
         };
+    }
 
     /// <summary>
     /// Builds the command-shaped input the correction result derives its metadata from. The
@@ -757,7 +888,9 @@ public sealed class RecordingSyncService : IRecordingSyncService
     /// <summary>
     /// Creates the audit row, persisting the NORMALIZED confirmed fields (plot/subsample
     /// already nulled when non-positive) so the row never stores a target the sync refused
-    /// to consider confirmed.
+    /// to consider confirmed. <paramref name="resolvedTraitOrdinal"/> carries the RESOLVED
+    /// ordinal — the anchor the write actually used — see
+    /// <see cref="VoiceRecording.ResolvedTraitOrdinal"/>.
     /// </summary>
     private static VoiceRecording CreateRecording(
         Guid trialId,
@@ -767,6 +900,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         int? confirmedPlot,
         int? confirmedSubsample,
         int? confirmedValue,
+        int? resolvedTraitOrdinal,
         DateTimeOffset? createdAt,
         string status)
         => new()
@@ -780,6 +914,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
             ConfirmedPlot = confirmedPlot,
             ConfirmedSubsample = confirmedSubsample,
             ConfirmedValue = confirmedValue,
+            ResolvedTraitOrdinal = resolvedTraitOrdinal,
             CreatedAt = createdAt?.UtcDateTime ?? DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         };

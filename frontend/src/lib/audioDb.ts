@@ -10,6 +10,7 @@
  */
 
 import type { SyncRecordingResponse } from './api';
+import type { DefaultTarget } from './defaultTarget';
 
 /**
  * Lifecycle of a captured clip (doc PLAN §6.1):
@@ -42,6 +43,15 @@ export interface AudioRecording {
   status: RecordingStatus;
   syncAttempts: number;
   lastError?: string;
+  /**
+   * Snapshot of the remembered default target taken at FIRST send for a
+   * values-only clip. Retries replay this snapshot instead of the live memory
+   * (which other clips may have advanced in the meantime). `null` = checked
+   * and found nothing; `undefined` = not yet snapshotted.
+   */
+  defaultTarget?: DefaultTarget | null;
+  /** Optional client-side trait ordinal to send with the sync request. */
+  traitOrdinal?: number;
   /** Last /sync or /correct response — persists the outcome across reloads so
    *  the correction surface reappears. Type-only import: no runtime cycle. */
   lastResult?: SyncRecordingResponse;

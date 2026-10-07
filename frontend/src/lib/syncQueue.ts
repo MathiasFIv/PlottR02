@@ -21,6 +21,7 @@ import {
   getRecordingsByStatus,
   updateRecording,
 } from './audioDb';
+import { advanceDefaultTarget, readDefaultTarget } from './defaultTarget';
 import { recordingsNeedingAttentionCountAtom } from '../store/atoms';
 
 /** Ids with a send currently in flight — guards sweep + UI double-sends. */
@@ -63,15 +64,29 @@ export async function autoSync(recordingId: string): Promise<boolean> {
     const rec = await getRecordingById(id);
     if (rec === null) return false;
 
+    /**
+     * First-send snapshot (done ONCE, not on retries): for a values-only clip
+     * whose row has no snapshot yet, freeze the remembered default target onto
+     * the row before the wire. Retries then replay the target the clip was
+     * INTENDED for, even when other clips have since advanced the live memory.
+     * `defaultTarget` is persisted with the row (the `status: 'syncing'`
+     * update below carries it), so a failure keeps the snapshot for the fix
+     * path. `null` snapshots are also persisted — the read was done.
+     */
+    const sendRec =
+      rec.defaultTarget == null && rec.plot == null && rec.subsample == null
+        ? { ...rec, defaultTarget: readDefaultTarget(rec.trialId ?? '') }
+        : rec;
+
     let result: SyncRecordingResponse;
     try {
-      await updateRecording({ ...rec, status: 'syncing' });
-      result = await api.syncRecording(rec);
+      await updateRecording({ ...sendRec, status: 'syncing' });
+      result = await api.syncRecording(sendRec);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Sync failed unexpectedly';
       await updateRecording({
-        ...rec,
+        ...sendRec,
         status: 'failed',
         lastError: message,
       }).catch(() => {
@@ -81,8 +96,19 @@ export async function autoSync(recordingId: string): Promise<boolean> {
       return false;
     }
 
+    // Remember the resolved write target ("plot/subsample default memory"):
+    // after a Written, the next values-only clip continues at the next
+    // subsample. Flagged/SkippedPresent/Replay results do NOT advance — the
+    // operator gets a correction surface, not a silent continuation.
+    if (result.status === 'Written') {
+      advanceDefaultTarget(sendRec.trialId ?? '', {
+        plot: result.plot,
+        subsample: result.subsample,
+      });
+    }
+
     await updateRecording({
-      ...rec,
+      ...sendRec,
       status: result.needsReview ? 'needs-attention' : 'synced',
       syncAttempts: (rec.syncAttempts ?? 0) + 1,
       lastError: undefined,
@@ -175,6 +201,16 @@ export function summarizeSync(res: SyncRecordingResponse): SyncSummary {
       break;
   }
 
+  // Default-target feedback: when the write target (plot and/or subsample) came
+  // from the remembered default, tell the operator the resolved target so they
+  // can keep the run going. Kept after the written-cell summary above and
+  // before the transcript preview below.
+  if (res.usedDefaultTarget && res.plot != null && res.subsample != null) {
+    lines.push(
+      `Used default target — Plot ${res.plot}, Subsample ${res.subsample}`,
+    );
+  }
+
   if (res.needsReview && res.transcript.trim() !== '') {
     lines.push(`Check the transcript — Whisper heard: \u00AB${res.transcript.trim()}\u00BB`);
   }
@@ -210,6 +246,16 @@ export async function applyCorrection(
 ): Promise<CorrectionOutcome> {
   try {
     const result = await api.correctRecording(recordingId, fields);
+
+    // A human-confirmed correction that lands a Written write also advances
+    // the remembered target — the next values-only clip continues from here.
+    if (result.status === 'Written') {
+      advanceDefaultTarget(result.trialId, {
+        plot: result.plot,
+        subsample: result.subsample,
+      });
+    }
+
     const rec = await getRecordingById(recordingId);
     if (rec !== null) {
       await updateRecording({
