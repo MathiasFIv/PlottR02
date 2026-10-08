@@ -358,6 +358,246 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SyncAsync_BareKeywordFreeValuesWithDefaults_FillsTargetAndWrites()
+    {
+        // Arrange — owner decision (2026-10-08): continuing a run needs NO keyword. The
+        // operator says only the numbers ("3, 6, 1") and the PWA's remembered default
+        // target (plot 101, subsample 2) fills the omitted plot/subsample.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "3, 6, 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — no confirmed fields; only the defaults fill the target
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null,
+                defaultPlot: 101, defaultSubsample: 2));
+
+        // Assert — a keyword-free parse is PARTIAL (0.5) by design, but the client default
+        // target resolves the gap, so usedDefaultTarget bypasses the review threshold and
+        // the values auto-write exactly like the labeled "values 3 6 1" utterance does.
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse("the default target completes the target, so the low-confidence partial parse needs no review");
+        result.UsedDefaultTarget.Should().BeTrue();
+        result.WasTranscriptOnly.Should().BeTrue();
+        result.Plot.Should().Be(101, "the client-sent default plot fills the omitted target");
+        result.Subsample.Should().Be(2, "the client-sent default subsample fills the omitted target");
+        result.Confidence.Should().Be(0.5, "a keyword-free transcript never states plot/subsample → partial");
+        result.ParsedPlot.Should().BeNull("a keyword-free transcript states no plot");
+        result.ParsedSubsample.Should().BeNull("a keyword-free transcript states no subsample");
+        result.ParsedValue.Should().Be(3);
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => c.Subsample).Should().AllBeEquivalentTo(2);
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 6, 1);
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C23", "D23", "E23");
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Written);
+            row.ParsedPlot.Should().BeNull();
+            row.ParsedSubsample.Should().BeNull();
+            row.ParsedValue.Should().Be(3);
+            row.Confidence.Should().Be(0.5);
+        });
+    }
+
+    [Fact]
+    public async Task SyncAsync_BareKeywordFreeValuesWithoutDefaults_HasNoAddressableTarget_Flags()
+    {
+        // Arrange — the SAME keyword-free utterance but WITHOUT client defaults: nothing
+        // fills the omitted plot/subsample, so the 0.5 partial parse falls through to review
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "3, 6, 1" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — no confirmed fields and no defaults
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null));
+
+        // Assert — nothing resolves to an addressable cell: flagged and reviewed
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue("no default target → the incomplete 0.5 parse must not auto-write");
+        result.UsedDefaultTarget.Should().BeFalse();
+        result.Plot.Should().BeNull();
+        result.Subsample.Should().BeNull();
+        result.Confidence.Should().Be(0.5);
+        result.WrittenCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().BeEmpty();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Flagged));
+    }
+
+    [Fact]
+    public async Task SyncAsync_DeletedBareTriple101_IsOutOfRangeAndNeverWritten()
+    {
+        // Arrange — "101 3 7" USED to parse as plot 101 / subsample 3 / value 7. Since the
+        // bare form is values-only it now parses as values [101, 3, 7], and 101 is outside
+        // the legal 0..10 rating range: value gate B must flag it WITHOUT writing, even
+        // though a default target is available and would otherwise resolve the target.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "101 3 7" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — defaults 101/2 present, no confirmed fields
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null,
+                defaultPlot: 101, defaultSubsample: 2));
+
+        // Assert — the out-of-range parsed value routes to the review path; nothing is written
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue();
+        result.ParsedPlot.Should().BeNull("the deleted triple form no longer yields a plot");
+        result.ParsedSubsample.Should().BeNull();
+        result.ParsedValue.Should().Be(101, "101 survives parsing (format-only) and is reported as evidence");
+        result.Value.Should().Be(101, "the resolved value is echoed even when rejected");
+        result.Confidence.Should().Be(0.5);
+        result.WrittenCells.Should().BeEmpty();
+        result.PlotExists.Should().BeFalse("gate B runs before any workbook write");
+        OutputCopies(trialId).Should().BeEmpty();
+        fake.CallCount.Should().Be(1, "gate B runs after transcription, unlike gate A");
+
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Flagged);
+            row.ParsedPlot.Should().BeNull();
+            row.ParsedValue.Should().Be(101);
+        });
+    }
+
+    [Fact]
+    public async Task SyncAsync_OwnerUtterance_Glued398_WritesThreeCellsAndNeedsReview()
+    {
+        // Arrange — the owner's verbatim field utterance: Whisper dropped the separators
+        // between the spoken digits AND rendered the subsample alias as "subamble". Without
+        // the two fixes the subsample field would be dropped (target unresolvable) and the
+        // single value 398 would fail value gate B.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "Plot 101 subsamble 1.Values 398" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — fully explicit utterance: no client defaults
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null));
+
+        // Assert — the glued value re-splits into the three cells the owner actually spoke
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeTrue("the repaired parse is capped at 0.70, below ReviewConfidenceThreshold");
+        result.ParsedPlot.Should().Be(101, "the subamble alias still resolves the subsample keyword");
+        result.ParsedSubsample.Should().Be(1);
+        result.ParsedValue.Should().Be(3, "the reported first value agrees with the cell that was written");
+        result.Value.Should().Be(3);
+        result.Confidence.Should().Be(0.70, "a repair can never claim more than 0.70");
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 9, 8);
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C22", "D22", "E22");
+        result.OutOfTraitRangeValueCount.Should().Be(0, "every repaired digit fits trait columns C..E");
+        result.Transcript.Should().Be("Plot 101 subsamble 1.Values 398",
+            "the RAW transcript is the source of truth — the repair is never echoed over it");
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Written);
+            row.Transcript.Should().Be("Plot 101 subsamble 1.Values 398");
+            row.ParsedValue.Should().Be(3);
+            row.Confidence.Should().Be(0.70);
+        });
+    }
+
+    [Fact]
+    public async Task SyncAsync_BareSingleGlued398_WithDefaults_WritesThreeCells()
+    {
+        // Arrange — keyword-free AND exactly one numeric token: the bare branch's repair
+        // applies, and the remembered default target supplies plot/subsample.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "398" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — defaults 101/2 present, no confirmed fields
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null,
+                defaultPlot: 101, defaultSubsample: 2));
+
+        // Assert — the lone glued number expands to three ratings on the default target
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.UsedDefaultTarget.Should().BeTrue();
+        result.Plot.Should().Be(101);
+        result.Subsample.Should().Be(2);
+        result.WrittenCells.Should().HaveCount(3);
+        result.WrittenCells.Select(c => c.Value).Should().Equal(3, 9, 8);
+        result.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C23", "D23", "E23");
+        result.Confidence.Should().Be(0.5, "an incomplete parse stays at the partial band");
+        // Under a client-sent default target the low confidence is EXPECTED (a values-only
+        // utterance deliberately omits plot/subsample) — RecordingSyncService's review gate
+        // suppresses both the IsComplete and confidence terms there, so this write lands
+        // without review. That is the existing default-target rule, not a repaired-parse
+        // exemption: no confidence gating was changed by the repair.
+        result.NeedsReview.Should().BeFalse();
+        OutputCopies(trialId).Should().ContainSingle();
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
+    }
+
+    [Fact]
+    public async Task SyncAsync_GluedExpansionPastTrait9_PartialWriteAndFlags()
+    {
+        // Arrange — starting the run at trait 9: the glued "398" expands to THREE values,
+        // so only the first fits the LEAF3 block (column K) and the other two would land at
+        // traits 10/11. The overflow must be flagged rather than silently dropped — the
+        // repair may never hide lost ratings.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 values 398" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — traitOrdinal 9 anchors the run
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null,
+                traitOrdinal: 9, value: null));
+
+        // Assert — one legal write, two flagged losses, and the review flag comes along
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue();
+        result.OutOfTraitRangeValueCount.Should().Be(2, "traits 10 and 11 have no column past K");
+        result.WrittenCells.Should().ContainSingle();
+        result.WrittenCells[0].Value.Should().Be(3, "the first repaired digit is the value written");
+        result.WrittenCells[0].TraitOrdinal.Should().Be(9);
+        NormalizeAddress(result.WrittenCells[0].CellAddress).Should().Be("K22");
+        result.Confidence.Should().Be(0.70, "the repair caps the parse below the review threshold");
+        result.SkippedPresentCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().ContainSingle("the single legal write still exports a copy");
+        fake.CallCount.Should().Be(1);
+
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Flagged);
+            row.ParsedValue.Should().Be(3);
+            row.Confidence.Should().Be(0.70);
+        });
+    }
+
+    [Fact]
     public async Task SyncAsync_ValuesOnlyWithoutDefaults_HasNoAddressableTarget_Flags()
     {
         // Arrange — the SAME values-only utterance but WITHOUT client defaults: nothing

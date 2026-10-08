@@ -233,8 +233,20 @@ public sealed class RecordingSyncService : IRecordingSyncService
         }
 
         // Step 8 — Parse: format-only by contract — range/existence validation happens
-        // against the workbook in the policy write and the review gate below.
+        // against the workbook in the policy write and the review gate below. The one
+        // exception is the parser's ceiling-bounded glued-digit repair, which re-splits a
+        // value token Whisper glued together ("Values 398" → 3, 9, 8) and caps confidence
+        // at 0.70. The RAW transcript stays the source of truth on the row and the echo,
+        // so the log line below is where the repair becomes visible to ops.
         var parsed = TranscriptParser.Parse(transcript);
+
+        if (parsed.Repaired)
+        {
+            _logger.LogWarning(
+                "Voice recording {ClientRecordingId} had glued digits repaired into separate values " +
+                "(raw transcript {Transcript}); confidence capped below the review threshold.",
+                clientId, transcript);
+        }
 
         // Step 9 — Resolution (design.md §3): the confirmed field wins per field; a missing
         // or non-positive confirmed field falls back to the parsed transcript value, then to
