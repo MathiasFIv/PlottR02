@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { TrialSummary } from '../types';
 
 type TrialListProps = {
@@ -55,6 +56,11 @@ export function TrialList({
                   Download
                 </button>
               )}
+              {/* Read-only sheet route (N2). A non-ARM workbook renders the
+                  dedicated readable state on that page rather than failing. */}
+              <Link className="link-button" to={`/trials/${trial.trialId}/sheet`}>
+                View sheet
+              </Link>
             </div>
           </div>
           <code className="muted trial-list__id">{trial.trialId}</code>

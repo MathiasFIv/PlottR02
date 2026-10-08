@@ -1,11 +1,28 @@
 /**
- * Remembered write target ("plot/subsample default memory"), keyed per trial.
+ * Remembered **last-written** target ("plot/subsample default memory"), keyed
+ * per trial.
+ *
+ * The store holds the target of the LAST successful write — exactly the
+ * `result.plot` / `result.subsample` the server resolved — and NEVER a
+ * computed "next" pair. The next target is derived at READ time from the
+ * sheet payload (`lib/nextTarget.ts`: the row after the last-written one in
+ * `rows[]` order), so a run auto-continues across plot boundaries
+ * (`101 4 → 102 1`) and can never invent a pair the workbook does not
+ * contain — the old `subsample + 1` produced phantom pairs like `101 5` at
+ * the end of a plot, which then highlighted nothing, rendered a lie, and went
+ * out on the wire.
+ *
+ * The storage key (`plottR-default-target:<trialId>`) is unchanged, so a
+ * legacy stored pair needs no migration: it simply will not match any row in
+ * `rows[]` and derives `null` (no next target) until the next write lands.
  *
  * When the operator says "plot 101, subsample 1, values 3, 6, 1" and then
- * only "values 4, 2, 6", the app reuses the last successfully-written target
- * so the run continues at Plot 101, Sub 2 (then 3, 4, ... n). Explicitly
- * saying a subsample again is the only way to re-append to an already-done
- * subsample — spoken values always win over the defaults.
+ * only "values 4, 2, 6", the app reuses the last written target to compute
+ * where the run continues. Explicitly saying a plot/subsample again is the
+ * only way to re-append to an already-done subsample — **spoken values always
+ * win over these defaults**, both here (the store is only a fallback) and on
+ * the server (it substitutes `defaultPlot`/`defaultSubsample` only when the
+ * transcript named no plot: `defaultTarget.ts` wire contract below).
  *
  * The store is namespaced by trial (`plottR-default-target:<trialId>`): a
  * values-only utterance on a DIFFERENT trial must never silently apply the
@@ -17,7 +34,8 @@
  * a default subsample applies only when no subsample was said AND either no
  * plot was said or the said plot equals the default plot). The sync response
  * reports `usedDefaultTarget` and its resolved `plot`/`subsample`, which is
- * what this store reads back to advance itself (`subsample + 1`).
+ * what this store reads back **as-is** (`rememberWrittenTarget`) — the sheet
+ * payload then supplies the next pair at read time.
  *
  * Dependency-injectable: every function takes an optional storage
  * (`Pick<Storage, 'getItem' | 'setItem'>`) and defaults to a guarded
@@ -66,9 +84,10 @@ function isPositiveInt(n: unknown): n is number {
 }
 
 /**
- * Reads the remembered default target for a trial, or null when absent,
+ * Reads the last-written target for a trial, or null when absent,
  * corrupted, or invalid (storage access failures also degrade to null).
- * Never throws.
+ * Never throws. The NEXT target is derived from this pair plus the sheet
+ * payload (`lib/nextTarget.ts`) — never by incrementing it here.
  */
 export function readDefaultTarget(
   trialId: string,
@@ -91,7 +110,7 @@ export function readDefaultTarget(
 }
 
 /**
- * Persists the default target for a trial. No-ops unless both fields are
+ * Persists the last-written target for a trial. No-ops unless both fields are
  * positive integers, so garbage can never be written. Never throws.
  */
 export function writeDefaultTarget(
@@ -109,13 +128,17 @@ export function writeDefaultTarget(
 }
 
 /**
- * Advances the remembered target for a trial to the next subsample after a
- * successful write: `advanceDefaultTarget('t', { plot: 101, subsample: 3 })`
- * stores `{ plot: 101, subsample: 4 }`. The caller passes the resolved result
- * fields (the server's `plot`/`subsample` on a `Written` response); no-ops
- * unless both are positive integers.
+ * Remembers what was JUST written for a trial: stores the resolved result
+ * pair as-is — `rememberWrittenTarget('t', { plot: 101, subsample: 4 })`
+ * stores `{ plot: 101, subsample: 4 }`. There is deliberately NO `+ 1`:
+ * the "next" target is derived from the sheet payload at read time
+ * (`deriveNextTarget` in `lib/nextTarget.ts`), which is the only way to know
+ * whether the workbook actually has a following row (and whether it crosses a
+ * plot boundary). The caller passes the resolved result fields (the server's
+ * `plot`/`subsample` on a `Written` response); no-ops unless both are
+ * positive integers.
  */
-export function advanceDefaultTarget(
+export function rememberWrittenTarget(
   trialId: string,
   result: { plot?: number | null; subsample?: number | null },
   storage: Pick<Storage, 'getItem' | 'setItem'> = safeStorage(),
@@ -123,7 +146,7 @@ export function advanceDefaultTarget(
   if (!isPositiveInt(result.plot) || !isPositiveInt(result.subsample)) return;
   writeDefaultTarget(
     trialId,
-    { plot: result.plot, subsample: result.subsample + 1 },
+    { plot: result.plot, subsample: result.subsample },
     storage,
   );
 }

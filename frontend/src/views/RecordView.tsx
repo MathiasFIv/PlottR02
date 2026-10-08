@@ -3,14 +3,20 @@ import { useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '../components/Button';
 import { ConfirmCard } from '../components/ConfirmCard';
+import { SheetPanel } from '../components/SheetPanel';
 import { useAuth } from '../hooks/useAuth';
 import { useTrials } from '../hooks/useTrials';
 import { useVoiceQueue } from '../hooks/useVoiceQueue';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { getRecordingById } from '../lib/audioDb';
-import { readDefaultTarget } from '../lib/defaultTarget';
+import { deriveEndOfSheet, deriveNextTarget, resolveNextTarget } from '../lib/nextTarget';
 import { summarizeSync } from '../lib/syncQueue';
-import { activeTrialIdAtom, currentUserAtom } from '../store/atoms';
+import {
+  activeTrialIdAtom,
+  currentUserAtom,
+  sheetLastWrittenAtom,
+  trialSheetAtom,
+} from '../store/atoms';
 
 /** Formats a whole-second count as m:ss (e.g. 7 → 0:07, 83 → 1:23). */
 function formatDuration(totalSeconds: number): string {
@@ -31,6 +37,10 @@ export function RecordView() {
   const { logout } = useAuth();
   const { trials, loading, error: trialsError } = useTrials();
   const [activeTrialId, setActiveTrialId] = useAtom(activeTrialIdAtom);
+  /** N3 last-written pair — reactive (the sync engine writes it non-React). */
+  const lastWrittenRaw = useAtomValue(sheetLastWrittenAtom);
+  /** The sheet payload on screen — the rows the next target derives from. */
+  const sheetPayload = useAtomValue(trialSheetAtom);
 
   const {
     isRecording,
@@ -181,10 +191,26 @@ export function RecordView() {
   const micDisabled = permissionState === 'unsupported' || activeTrialId === null;
   const pendingStatus = pendingRec?.status;
 
-  // Remembered write target (keyed by trial) from the last written sync — a
-  // "values-only" clip continues the run at this plot/subsample.
-  const nextDefaultTarget =
-    activeTrialId !== null ? readDefaultTarget(activeTrialId) : null;
+  // Next write target for a "values-only" clip — derived reactively, never a
+  // stored "+1": the last-written pair (atom, guarded to THIS trial) walked
+  // one step forward through the payload's rows[]. When no payload is loaded
+  // yet (sheet still fetching, offline), fall back to the persisted
+  // snapshot-derived resolution — same derivation, best rows available.
+  const rows =
+    activeTrialId !== null && sheetPayload?.trialId === activeTrialId
+      ? sheetPayload.rows
+      : null;
+  const lastWritten =
+    activeTrialId !== null && lastWrittenRaw?.trialId === activeTrialId
+      ? lastWrittenRaw
+      : null;
+  const nextTarget =
+    activeTrialId === null
+      ? null
+      : rows !== null
+        ? deriveNextTarget(rows, lastWritten)
+        : resolveNextTarget(activeTrialId);
+  const endOfSheetTarget = deriveEndOfSheet(rows, lastWritten);
 
   /**
    * Variant-aware color class for the inline outcome banner. The `synced` case
@@ -221,162 +247,184 @@ export function RecordView() {
       </header>
 
       <main className="record-screen">
-        <section className="card">
-          <h2 className="heading">Trial</h2>
-          <div className="field record-trial-field">
-            <label className="field__label" htmlFor="record-trial">
-              Work on
-            </label>
-            <select
-              id="record-trial"
-              name="record-trial"
-              className="input"
-              value={activeTrialId ?? ''}
-              onChange={(e) => setActiveTrialId(e.target.value)}
-              disabled={loading}
-            >
-              {activeTrialId === null && (
-                <option value="">Select a trial…</option>
-              )}
-              {trials.map((t) => (
-                <option key={t.trialId} value={t.trialId}>
-                  {t.fileName || t.externalId}
-                </option>
-              ))}
-            </select>
-          </div>
-          <p className="muted">Recordings are synced under this trial.</p>
-        </section>
-
-        {!loading && trials.length === 0 && (
-          <p className="muted record-no-trials" role="status">
-            No trials yet — upload a workbook from the Dashboard and they will
-            show up here.
-          </p>
-        )}
-        {trialsError && <p className="error-text">{trialsError}</p>}
-
-        <section className="card record-mic-card">
-          <h2 className="heading">Voice note</h2>
-          <p className="muted">
-            Tap to start, tap again to stop. The clip saves and syncs the
-            moment the mic stops.
-          </p>
-
-          {nextDefaultTarget && (
-            <p className="muted record-saved" role="status">
-              Next: Plot {nextDefaultTarget.plot} · Sub{' '}
-              {nextDefaultTarget.subsample}
-            </p>
-          )}
-
-          <div className="record-mic-area">
-            <button
-              type="button"
-              className={`mic-button${isRecording ? ' mic-button--recording' : ''}`}
-              onClick={() => (isRecording ? stopRecording() : handleStart())}
-              disabled={micDisabled}
-              aria-label={isRecording ? 'Stop recording' : 'Start recording'}
-              aria-pressed={isRecording}
-            >
-              <span className="mic-button__glyph" aria-hidden="true" />
-            </button>
-
-            {isRecording && (
-              <p className="record-duration" role="timer" aria-live="off">
-                {formatDuration(durationSeconds)}
-              </p>
-            )}
-
-            {permissionState === 'unsupported' && (
-              <p className="muted record-unsupported" role="status">
-                Microphone recording is not supported in this browser — try a
-                recent version of Chrome, Edge, Safari, or Firefox.
-              </p>
-            )}
-
-            {recorderError && !isRecording && (
-              <p className="error-text record-error" role="alert">
-                {recorderError}
-              </p>
-            )}
-
-            {audioBlob !== null && !isRecording && pendingRec === null && (
-              saving ? (
-                <p className="muted record-saved" role="status">
-                  Saving…
-                </p>
-              ) : (
-                <p className="error-text record-saved" role="alert">
-                  {queueError ?? 'The recording could not be saved.'}{' '}
-                  <button
-                    type="button"
-                    className="link-button"
-                    onClick={clearHeldClip}
-                  >
-                    Retry — reset and re-record
-                  </button>
-                </p>
-              )
-            )}
-
-            {/* Inline sync states under the mic (PLAN §6.2). */}
-            {pendingRec !== null && !isRecording && (
-              <>
-                {(pendingStatus === 'pending' || pendingStatus === 'syncing') && (
-                  <p className="muted record-saved" role="status">
-                    Syncing…
-                  </p>
+        {/* One grid column keeps today's 16px stack exactly as it was; the
+            sheet panel below is a SIBLING of this column, not a new card
+            inside it (PLAN_2026-10-07 §6.1). */}
+        <div className="record-col">
+          <section className="card">
+            <h2 className="heading">Trial</h2>
+            <div className="field record-trial-field">
+              <label className="field__label" htmlFor="record-trial">
+                Work on
+              </label>
+              <select
+                id="record-trial"
+                name="record-trial"
+                className="input"
+                value={activeTrialId ?? ''}
+                onChange={(e) => setActiveTrialId(e.target.value)}
+                disabled={loading}
+              >
+                {activeTrialId === null && (
+                  <option value="">Select a trial…</option>
                 )}
+                {trials.map((t) => (
+                  <option key={t.trialId} value={t.trialId}>
+                    {t.fileName || t.externalId}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="muted">Recordings are synced under this trial.</p>
+          </section>
 
-                {pendingStatus === 'synced' &&
-                  (pendingRec.lastError != null ? (
-                    <p
-                      className={`warning-text record-saved`}
-                      role="status"
-                    >
-                      {pendingRec.lastError}
-                    </p>
-                  ) : (
-                    pendingRec.lastResult && (() => {
-                      const { lines, variant } = summarizeSync(pendingRec.lastResult);
-                      return (
-                        <div
-                          className={`${bannerClassName(variant)} record-saved`}
-                          role="status"
-                        >
-                          {lines.map((line, i) => (
-                            <p key={i}>{line}</p>
-                          ))}
-                        </div>
-                      );
-                    })()
-                  ))}
-              </>
-            )}
-          </div>
-
-          {attentionCount > 0 && (
-            <p className="pending-badge" role="status">
-              {attentionCount} clip{attentionCount === 1 ? '' : 's'}{' '}
-              {attentionCount === 1 ? 'needs' : 'need'} attention
+          {!loading && trials.length === 0 && (
+            <p className="muted record-no-trials" role="status">
+              No trials yet — upload a workbook from the Dashboard and they will
+              show up here.
             </p>
           )}
-        </section>
+          {trialsError && <p className="error-text">{trialsError}</p>}
 
-        {/* Correction surface: only when the clip needs a human or a retry. */}
-        {pendingRec !== null &&
-          !isRecording &&
-          (pendingStatus === 'needs-attention' || pendingStatus === 'failed') && (
-            <ConfirmCard
-              audioUrl={audioUrl}
-              rec={pendingRec}
-              confirming={saving}
-              error={queueError}
-              onSyncComplete={handleSyncComplete}
-              onDiscard={handleDiscard}
-            />
-          )}
+          <section className="card record-mic-card">
+            <h2 className="heading">Voice note</h2>
+            <p className="muted">
+              Tap to start, tap again to stop. The clip saves and syncs the
+              moment the mic stops.
+            </p>
+
+            {nextTarget !== null ? (
+              <p className="muted record-saved" role="status">
+                Next: Plot {nextTarget.plot} · Sub {nextTarget.subsample}
+              </p>
+            ) : endOfSheetTarget !== null &&
+              activeTrialId !== null &&
+              sheetPayload?.trialId === activeTrialId ? (
+              <p className="muted record-saved" role="status">
+                End of sheet - last: Plot {endOfSheetTarget.plot} · Sub{' '}
+                {endOfSheetTarget.subsample}
+              </p>
+            ) : null}
+
+            <div className="record-mic-area">
+              <button
+                type="button"
+                className={`mic-button${isRecording ? ' mic-button--recording' : ''}`}
+                onClick={() => (isRecording ? stopRecording() : handleStart())}
+                disabled={micDisabled}
+                aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+                aria-pressed={isRecording}
+              >
+                <span className="mic-button__glyph" aria-hidden="true" />
+              </button>
+
+              {isRecording && (
+                <p className="record-duration" role="timer" aria-live="off">
+                  {formatDuration(durationSeconds)}
+                </p>
+              )}
+
+              {permissionState === 'unsupported' && (
+                <p className="muted record-unsupported" role="status">
+                  Microphone recording is not supported in this browser — try a
+                  recent version of Chrome, Edge, Safari, or Firefox.
+                </p>
+              )}
+
+              {recorderError && !isRecording && (
+                <p className="error-text record-error" role="alert">
+                  {recorderError}
+                </p>
+              )}
+
+              {audioBlob !== null && !isRecording && pendingRec === null && (
+                saving ? (
+                  <p className="muted record-saved" role="status">
+                    Saving…
+                  </p>
+                ) : (
+                  <p className="error-text record-saved" role="alert">
+                    {queueError ?? 'The recording could not be saved.'}{' '}
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={clearHeldClip}
+                    >
+                      Retry — reset and re-record
+                    </button>
+                  </p>
+                )
+              )}
+
+              {/* Inline sync states under the mic (PLAN §6.2). */}
+              {pendingRec !== null && !isRecording && (
+                <>
+                  {(pendingStatus === 'pending' || pendingStatus === 'syncing') && (
+                    <p className="muted record-saved" role="status">
+                      Syncing…
+                    </p>
+                  )}
+
+                  {pendingStatus === 'synced' &&
+                    (pendingRec.lastError != null ? (
+                      <p
+                        className={`warning-text record-saved`}
+                        role="status"
+                      >
+                        {pendingRec.lastError}
+                      </p>
+                    ) : (
+                      pendingRec.lastResult && (() => {
+                        const { lines, variant } = summarizeSync(pendingRec.lastResult);
+                        return (
+                          <div
+                            className={`${bannerClassName(variant)} record-saved`}
+                            role="status"
+                          >
+                            {lines.map((line, i) => (
+                              <p key={i}>{line}</p>
+                            ))}
+                          </div>
+                        );
+                      })()
+                    ))}
+                </>
+              )}
+            </div>
+
+            {attentionCount > 0 && (
+              <p className="pending-badge" role="status">
+                {attentionCount} clip{attentionCount === 1 ? '' : 's'}{' '}
+                {attentionCount === 1 ? 'needs' : 'need'} attention
+              </p>
+            )}
+          </section>
+
+          {/* Correction surface: only when the clip needs a human or a retry. */}
+          {pendingRec !== null &&
+            !isRecording &&
+            (pendingStatus === 'needs-attention' || pendingStatus === 'failed') && (
+              <ConfirmCard
+                audioUrl={audioUrl}
+                rec={pendingRec}
+                confirming={saving}
+                error={queueError}
+                onSyncComplete={handleSyncComplete}
+                onDiscard={handleDiscard}
+              />
+            )}
+        </div>
+
+        {/* Sheet panel (N2, PLAN_2026-10-07 §6.1): last child of the record
+            screen so the mic + correction surface keep thumb reach; rendered
+            only while a trial is active. It keys off `activeTrialId` alone and
+            owns its own fetch/snapshot lifecycle — switching trials changes
+            the prop, which clears the sheet atoms and refetches. */}
+        {activeTrialId !== null && (
+          <section className="card record-sheet-card">
+            <SheetPanel trialId={activeTrialId} />
+          </section>
+        )}
       </main>
     </div>
   );

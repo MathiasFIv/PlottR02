@@ -21,8 +21,10 @@ import {
   getRecordingsByStatus,
   updateRecording,
 } from './audioDb';
-import { advanceDefaultTarget, readDefaultTarget } from './defaultTarget';
-import { recordingsNeedingAttentionCountAtom } from '../store/atoms';
+import { nextTick } from './sheetRefreshTick';
+import { resolveNextTarget } from './nextTarget';
+import { advanceSheetTarget } from './sheetTarget';
+import { recordingsNeedingAttentionCountAtom, sheetRefreshTickAtom } from '../store/atoms';
 
 /** Ids with a send currently in flight — guards sweep + UI double-sends. */
 const inFlight = new Set<string>();
@@ -46,6 +48,20 @@ export async function refreshAttentionCount(): Promise<void> {
 }
 
 /**
+ * Signals a mounted sheet host to re-check the grid — call ONLY where the
+ * server was actually contacted for a send attempt (a tick is a *check*, not
+ * a claim: the sheet's `changed:false` fast path answers without touching the
+ * payload atoms, so a no-op outcome can never fabricate a change). A null or
+ * empty trial id has no sheet to refresh, so it never bumps. Same non-React
+ * write path as `refreshAttentionCount` above — `getDefaultStore()`.
+ */
+function bumpSheetRefresh(trialId: string | null): void {
+  if (trialId === null || trialId === '') return;
+  const store = getDefaultStore();
+  store.set(sheetRefreshTickAtom, nextTick(store.get(sheetRefreshTickAtom), trialId));
+}
+
+/**
  * Sends one recording to the backend: row → 'syncing' → outcome.
  *
  * - 2xx: `needsReview` → 'needs-attention' (correction surface), else 'synced';
@@ -53,6 +69,10 @@ export async function refreshAttentionCount(): Promise<void> {
  * - error (network or ApiError): 'failed' + `lastError`; retried by the same
  *   call — the idempotency key makes a lost-response replay safe (server
  *   answers Replay instead of double-writing).
+ *
+ * Every dispatched send bumps the sheet-refresh signal — in BOTH the resolve
+ * and the reject branch — so a mounted sheet host re-checks the grid once per
+ * server contact.
  *
  * Returns false when the row is missing, already in flight, or the send failed.
  */
@@ -66,22 +86,35 @@ export async function autoSync(recordingId: string): Promise<boolean> {
 
     /**
      * First-send snapshot (done ONCE, not on retries): for a values-only clip
-     * whose row has no snapshot yet, freeze the remembered default target onto
-     * the row before the wire. Retries then replay the target the clip was
-     * INTENDED for, even when other clips have since advanced the live memory.
-     * `defaultTarget` is persisted with the row (the `status: 'syncing'`
-     * update below carries it), so a failure keeps the snapshot for the fix
-     * path. `null` snapshots are also persisted — the read was done.
+     * whose row has no snapshot yet (`undefined` = not yet snapshotted, per
+     * `AudioRecording.defaultTarget`), freeze the file-derived next target
+     * (`resolveNextTarget`: last-written pair + the sheet payload's rows[])
+     * onto the row before the wire. Retries then replay the target the clip
+     * was INTENDED for, even when other clips have since advanced the live
+     * memory — a frozen `null` stays null too (an absent key is the ONLY
+     * thing that re-resolves). `defaultTarget` is persisted with the row (the
+     * `status: 'syncing'` update below carries it), so a failure keeps the
+     * snapshot for the fix path. `null` snapshots are also persisted — the
+     * read was done.
      */
     const sendRec =
-      rec.defaultTarget == null && rec.plot == null && rec.subsample == null
-        ? { ...rec, defaultTarget: readDefaultTarget(rec.trialId ?? '') }
+      !('defaultTarget' in rec) && rec.plot == null && rec.subsample == null
+        ? { ...rec, defaultTarget: resolveNextTarget(rec.trialId ?? '') }
         : rec;
 
     let result: SyncRecordingResponse;
     try {
       await updateRecording({ ...sendRec, status: 'syncing' });
-      result = await api.syncRecording(sendRec);
+      try {
+        result = await api.syncRecording(sendRec);
+      } finally {
+        // The server was contacted for this send attempt — tick in BOTH the
+        // resolve and the reject branch (a lost-response-after-commit failure
+        // can still have written cells, and a `changed:false` answer is a
+        // check, not a claim). The local early returns above never reach this
+        // line, and nothing ticks before the request is dispatched.
+        bumpSheetRefresh(sendRec.trialId);
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Sync failed unexpectedly';
@@ -97,13 +130,19 @@ export async function autoSync(recordingId: string): Promise<boolean> {
     }
 
     // Remember the resolved write target ("plot/subsample default memory"):
-    // after a Written, the next values-only clip continues at the next
-    // subsample. Flagged/SkippedPresent/Replay results do NOT advance — the
-    // operator gets a correction surface, not a silent continuation.
+    // the store now holds the LAST-WRITTEN pair as-is, and the next
+    // values-only clip continues at the row that follows it in the sheet
+    // payload (derived at read time — `lib/nextTarget.ts`), so the run can
+    // cross plot boundaries and never invents a pair the file lacks.
+    // Flagged/SkippedPresent/Replay results do NOT move it — the operator
+    // gets a correction surface, not a silent continuation.
+    // `advanceSheetTarget` = `rememberWrittenTarget` (persistence)
+    // + the last-written atom (N3), seeded with the trait column.
     if (result.status === 'Written') {
-      advanceDefaultTarget(sendRec.trialId ?? '', {
+      advanceSheetTarget(sendRec.trialId ?? '', {
         plot: result.plot,
         subsample: result.subsample,
+        traitOrdinal: result.traitOrdinal,
       });
     }
 
@@ -239,6 +278,10 @@ export type CorrectionOutcome =
  * - 409 (row already terminal Written/SkippedPresent) → row 'synced' with
  *   lastError "Already saved — nothing to correct";
  * - other → row 'failed' with the surfaced message.
+ *
+ * All three exits bump the sheet-refresh signal (the request was dispatched in
+ * every one of them): 200 uses the result's trial id, 409 and error re-read the
+ * recording's trial id.
  */
 export async function applyCorrection(
   recordingId: string,
@@ -247,12 +290,14 @@ export async function applyCorrection(
   try {
     const result = await api.correctRecording(recordingId, fields);
 
-    // A human-confirmed correction that lands a Written write also advances
-    // the remembered target — the next values-only clip continues from here.
+    // A human-confirmed correction that lands a Written write also records
+    // the last-written target — the next values-only clip continues from the
+    // row after it. Same seam as autoSync: persistence first, then the atom.
     if (result.status === 'Written') {
-      advanceDefaultTarget(result.trialId, {
+      advanceSheetTarget(result.trialId, {
         plot: result.plot,
         subsample: result.subsample,
+        traitOrdinal: result.traitOrdinal,
       });
     }
 
@@ -268,6 +313,8 @@ export async function applyCorrection(
       });
     }
     await refreshAttentionCount();
+    // 200 → the RESULT carries the trial that was actually corrected.
+    bumpSheetRefresh(result.trialId);
     return { kind: 'success', result };
   } catch (err) {
     if (err instanceof ApiError && err.status === 409) {
@@ -282,6 +329,8 @@ export async function applyCorrection(
         });
       }
       await refreshAttentionCount();
+      // 409 → re-read the recording's own trial id (no result body).
+      bumpSheetRefresh(rec?.trialId ?? null);
       return { kind: 'already-saved' };
     }
     const message =
@@ -297,6 +346,8 @@ export async function applyCorrection(
       });
     }
     await refreshAttentionCount();
+    // Error exit → same re-read: the request was dispatched before it failed.
+    bumpSheetRefresh(rec?.trialId ?? null);
     return { kind: 'failed', message };
   }
 }

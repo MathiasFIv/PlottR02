@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  advanceDefaultTarget,
   readDefaultTarget,
+  rememberWrittenTarget,
   writeDefaultTarget,
 } from './defaultTarget';
 
@@ -103,16 +103,25 @@ describe('defaultTarget', () => {
     }
   });
 
-  it('advanceDefaultTarget writes subsample + 1', () => {
+  it('rememberWrittenTarget stores the pair AS WRITTEN — never subsample + 1', () => {
     const storage = memoryStorage();
-    advanceDefaultTarget(TRIAL, { plot: 101, subsample: 3 }, storage);
+    rememberWrittenTarget(TRIAL, { plot: 101, subsample: 4 }, storage);
+    // The workbook decides what comes next (deriveNextTarget walks rows[]);
+    // the store only remembers the last write, so 101/4 stays 101/4 — the old
+    // `+ 1` here invented a nonexistent 101/5 at the end of a plot.
     expect(readDefaultTarget(TRIAL, storage)).toEqual({
       plot: 101,
       subsample: 4,
     });
+    // A mid-plot write is stored verbatim too — no increment, ever.
+    rememberWrittenTarget(TRIAL, { plot: 101, subsample: 3 }, storage);
+    expect(readDefaultTarget(TRIAL, storage)).toEqual({
+      plot: 101,
+      subsample: 3,
+    });
   });
 
-  it('advanceDefaultTarget no-ops unless both fields are positive', () => {
+  it('rememberWrittenTarget no-ops unless both fields are positive', () => {
     const badResults: Array<{
       plot?: number | null;
       subsample?: number | null;
@@ -123,17 +132,19 @@ describe('defaultTarget', () => {
       { plot: undefined, subsample: 3 },
       { plot: -1, subsample: 3 },
       { plot: 101, subsample: -1 },
+      { plot: 1.5, subsample: 3 },
+      { plot: 101, subsample: 2.5 },
     ];
     for (const result of badResults) {
       const storage = memoryStorage();
-      advanceDefaultTarget(TRIAL, result, storage);
+      rememberWrittenTarget(TRIAL, result, storage);
       expect(readDefaultTarget(TRIAL, storage)).toBeNull();
     }
   });
 
-  it('advanceDefaultTarget no-ops when the result omits the target entirely', () => {
+  it('rememberWrittenTarget no-ops when the result omits the target entirely', () => {
     const storage = memoryStorage();
-    advanceDefaultTarget(TRIAL, {}, storage);
+    rememberWrittenTarget(TRIAL, {}, storage);
     expect(readDefaultTarget(TRIAL, storage)).toBeNull();
   });
 
@@ -145,7 +156,7 @@ describe('defaultTarget', () => {
       writeDefaultTarget(TRIAL, { plot: 101, subsample: 3 }),
     ).not.toThrow();
     expect(() =>
-      advanceDefaultTarget(TRIAL, { plot: 101, subsample: 3 }),
+      rememberWrittenTarget(TRIAL, { plot: 101, subsample: 3 }),
     ).not.toThrow();
   });
 });

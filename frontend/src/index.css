@@ -720,3 +720,306 @@ p {
 .pwa-toast__dismiss:hover {
   background: #1f2937;
 }
+
+/* ---------- Read-only sheet (N2) -------------------------------------------
+   Shared by both hosts: the embedded RecordView panel and the
+   /trials/:trialId/sheet route. Plain semantic <table>, CSS-only — sticky
+   header/column instead of virtualization, no JS scroll listeners.
+   ------------------------------------------------------------------------ */
+
+/* The grid child may be wider than the viewport (table is min-width:
+   max-content). Pinning the track to minmax(0, 1fr) keeps that overflow
+   inside .sheet-scroll and stops the PAGE from scrolling horizontally. */
+.record-screen {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* The sheet is a SIBLING of the existing stack, so this column carries the
+   exact 16px gap the record screen already had. */
+.record-col {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.sheet-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.sheet-page__card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.sheet-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sheet-panel__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sheet-panel__title {
+  margin-right: auto;
+}
+
+/* --- status pill ---------------------------------------------------------- */
+
+.sheet-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sheet-pill--muted {
+  background: #f3f4f6;
+  border-color: #e5e7eb;
+  color: #6b7280;
+}
+
+.sheet-pill--ok {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+
+.sheet-pill--warn {
+  background: #fef3c7;
+  border-color: #fde68a;
+  color: #b45309;
+}
+
+.sheet-pill--error {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #dc2626;
+}
+
+/* --- metadata strip ------------------------------------------------------- */
+
+.sheet-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+  padding: 12px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.sheet-meta__item {
+  margin: 0;
+  min-width: 0;
+}
+
+.sheet-meta__label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+.sheet-meta__value {
+  margin: 0;
+  font-size: 14px;
+  color: #111827;
+  overflow-wrap: anywhere;
+}
+
+/* --- non-grid states ------------------------------------------------------ */
+
+.sheet-state {
+  padding: 24px 16px;
+  text-align: center;
+  background: #f9fafb;
+  border: 1px dashed #d1d5db;
+  border-radius: 8px;
+  color: #6b7280;
+  font-size: 14px;
+}
+
+/* --- grid -----------------------------------------------------------------
+   --sheet-head-h fixes tier 1's height so tier 2 can stick exactly below it
+   (no JS measurement, no scroll listener). It inherits down to the cells.
+   ------------------------------------------------------------------------ */
+
+.sheet-scroll {
+  --sheet-head-h: 32px;
+  overflow: auto;
+  max-height: min(55vh, 480px);
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.sheet-grid {
+  min-width: max-content;
+  /* separate (not collapse) — collapsed borders break position: sticky in
+     Safari/Chrome; each cell draws its own edge instead. */
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.sheet-grid thead th {
+  position: sticky;
+  z-index: 2;
+  height: var(--sheet-head-h);
+  padding: 6px 10px;
+  background: #f9fafb;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid #e5e7eb;
+  border-right: 1px solid #f3f4f6;
+}
+
+/* tier 1 — Part Rated runs */
+.sheet-head--part {
+  top: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* tier 2 — Pest Code, one cell per column, sticky under tier 1 */
+.sheet-head--pest {
+  top: var(--sheet-head-h);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #6b7280;
+}
+
+/* corner — sticky in BOTH directions and above the other header cells
+   (PLAN_2026-10-06 §11 risk 6). Scoped through `.sheet-grid thead` so the rule
+   outranks the generic `.sheet-grid thead th` (0-2-1 vs 0-1-2); a bare
+   `.sheet-head--corner` (0-1-0) loses there and the corner would paint at
+   z-index 2 with the generic background/border — a horizontally scrolled
+   header cell then covers "Plot (Sub)". */
+.sheet-grid thead .sheet-head--corner {
+  left: 0;
+  top: 0;
+  z-index: 4;
+  background: #f3f4f6;
+  border-right: 1px solid #e5e7eb;
+}
+
+.sheet-grid tbody th,
+.sheet-grid tbody td {
+  border-bottom: 1px solid #f3f4f6;
+  border-right: 1px solid #f3f4f6;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+/* D5 channel 1 — structural: the locked key column (column B). */
+.sheet-grid__key,
+.sheet-col--key {
+  background: #f9fafb;
+  color: #374151;
+}
+
+.sheet-grid__key {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  text-align: left;
+}
+
+/* D5 channel 2 — value: rated cells are solid, empty cells stay blank. */
+.sheet-col--value {
+  background: #fff;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet-cell--filled {
+  color: #111827;
+}
+
+/* Empty ≠ 0 (design.md Rule 2): no number, only a quiet "available" dot. */
+.sheet-cell--empty {
+  color: #9ca3af;
+}
+
+.sheet-cell--empty::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #d1d5db;
+  vertical-align: middle;
+}
+
+/* --- RecordView embed ----------------------------------------------------- */
+
+.record-sheet-card {
+  min-width: 0;
+}
+
+/* ≥960px — two columns: mic + correction on the left (thumb reach), the sheet
+   sticky on the right so it stays visible while recording. The left track is
+   capped at 480px (PLAN_2026-10-07 §6.2) so it keeps today's 480px stack
+   instead of widening to ~600px; the right track takes the remainder. */
+@media (min-width: 960px) {
+  .record-screen {
+    max-width: 1200px;
+    grid-template-columns: minmax(0, 480px) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .record-sheet-card {
+    position: sticky;
+    top: 16px;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 32px);
+    overflow: hidden;
+  }
+
+  .record-sheet-card .sheet-panel {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* The card stops shrinking here; the grid scroller owns the scroll. */
+  .record-sheet-card .sheet-scroll {
+    max-height: none;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+}
+
+.sheet-grid tbody tr.sheet-row--current > th,
+.sheet-grid tbody tr.sheet-row--current > td { background: #fef3c7; }
+.sheet-grid tbody tr.sheet-row--current > .sheet-cell--current { background: #fde68a; }

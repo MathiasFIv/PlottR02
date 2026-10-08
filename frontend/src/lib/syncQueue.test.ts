@@ -22,10 +22,11 @@ const { defaultTargetStorage, defaultTargetStorageStub, realSyncRecordingHolder 
 
 /**
  * Route the default-target store through the fake storage: both the engine
- * (advanceDefaultTarget) and the real api.syncRecording (readDefaultTarget,
- * bare call → this default) share one injected memory store, keyed per trial.
- * Every function is trial-scoped now (`plottR-default-target:<trialId>`), so
- * the wrapper passes the trialId straight through.
+ * (`rememberWrittenTarget`) and the real api.syncRecording /
+ * `resolveNextTarget` (`readDefaultTarget`, bare call → this default) share
+ * one injected memory store, keyed per trial. Every function is trial-scoped
+ * now (`plottR-default-target:<trialId>`), so the wrapper passes the trialId
+ * straight through.
  */
 vi.mock('./defaultTarget', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./defaultTarget')>();
@@ -45,12 +46,12 @@ vi.mock('./defaultTarget', async (importOriginal) => {
         target,
         storage ?? defaultTargetStorageStub,
       ),
-    advanceDefaultTarget: (
+    rememberWrittenTarget: (
       trialId: string,
       result: { plot?: number | null; subsample?: number | null },
       storage?: Pick<Storage, 'getItem' | 'setItem'>,
     ) =>
-      actual.advanceDefaultTarget(
+      actual.rememberWrittenTarget(
         trialId,
         result,
         storage ?? defaultTargetStorageStub,
@@ -89,7 +90,14 @@ import {
 } from './audioDb';
 import type { AudioRecording } from './audioDb';
 import { readDefaultTarget, writeDefaultTarget } from './defaultTarget';
-import { recordingsNeedingAttentionCountAtom } from '../store/atoms';
+import { resolveNextTarget } from './nextTarget';
+import {
+  recordingsNeedingAttentionCountAtom,
+  sheetRefreshTickAtom,
+  sheetLastWrittenAtom,
+  trialSheetAtom,
+} from '../store/atoms';
+import type { SheetLastWritten, SheetRefreshTick } from '../store/atoms';
 import {
   applyCorrection,
   autoSync,
@@ -97,9 +105,37 @@ import {
   summarizeSync,
   sweepPendingSyncs,
 } from './syncQueue';
+import type { SheetRow, TrialSheet } from '../types';
 
 const syncMock = vi.mocked(api.syncRecording);
 const correctMock = vi.mocked(api.correctRecording);
+
+/**
+ * Workbook-order rows for trial-1: 4 subsamples per plot (the real file's
+ * shape, 101 1 … 101 4, 102 1 … 102 4). The next target is derived from
+ * THESE rows (`resolveNextTarget`), so the suite pins the file-derived
+ * behaviour: a step crosses the plot boundary and the store itself only ever
+ * holds the last-written pair.
+ */
+const sheetRows: SheetRow[] = [101, 102].flatMap((plot) =>
+  [1, 2, 3, 4].map((subsample, i) => ({
+    row: 22 + (plot - 101) * 4 + i,
+    plot,
+    subsample,
+    values: [null],
+  })),
+);
+
+const trialSheet: TrialSheet = {
+  trialId: 'trial-1',
+  version: 'v1',
+  changed: true,
+  fileName: '4 subsamples.xlsx',
+  generatedAt: '2026-09-16T12:00:00Z',
+  metadata: null,
+  columns: null,
+  rows: sheetRows,
+};
 
 /** Deterministic fixture — explicit id, tiny fake audio blob. */
 function makeRec(overrides: Partial<AudioRecording> = {}): AudioRecording {
@@ -165,6 +201,16 @@ function attentionCount(): number {
   return getDefaultStore().get(recordingsNeedingAttentionCountAtom);
 }
 
+/** Reads the live sheet-refresh tick atom (engine bumps it on a server contact). */
+function sheetTick(): SheetRefreshTick | null {
+  return getDefaultStore().get(sheetRefreshTickAtom);
+}
+
+/** Reads the live last-written target atom (N3 — engine writes it). */
+function currentCell(): SheetLastWritten | null {
+  return getDefaultStore().get(sheetLastWrittenAtom);
+}
+
 beforeEach(async () => {
   syncMock.mockReset();
   correctMock.mockReset();
@@ -179,6 +225,12 @@ beforeEach(async () => {
     tx.onerror = () => reject(new Error('Failed to clear recordings store'));
   });
   getDefaultStore().set(recordingsNeedingAttentionCountAtom, 0);
+  getDefaultStore().set(sheetRefreshTickAtom, null);
+  getDefaultStore().set(sheetLastWrittenAtom, null);
+  // The next-target resolution is payload-first: seed trial-1's rows so
+  // `resolveNextTarget` derives from a real workbook order (the hosts read
+  // the same atom; `clearSheetState` never touches it).
+  getDefaultStore().set(trialSheetAtom, trialSheet);
 });
 
 // Tests that drive the real api.syncRecording stub fetch + localStorage; undo
@@ -398,6 +450,211 @@ describe('applyCorrection', () => {
   });
 });
 
+describe('sheet refresh tick (recording-driven live refresh)', () => {
+  it('bumps after a 2xx sync that wrote cells', async () => {
+    const rec = makeRec();
+    await saveRecording(rec);
+    syncMock.mockResolvedValue(syncResponse()); // Written, one cell
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    expect(sheetTick()).toEqual({ seq: 1, trialId: 'trial-1' });
+  });
+
+  it('bumps after a 2xx sync that wrote ZERO cells — the tick is a check, not a claim', async () => {
+    const rec = makeRec();
+    await saveRecording(rec);
+    syncMock.mockResolvedValue(
+      syncResponse({
+        status: 'SkippedPresent',
+        writtenCells: [],
+        skippedPresentCells: [
+          { plot: 101, subsample: 3, traitOrdinal: 1, value: 7, cellAddress: 'C24' },
+        ],
+      }),
+    );
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    expect(sheetTick()).toEqual({ seq: 1, trialId: 'trial-1' });
+  });
+
+  it('bumps after a FAILED sync — a lost-response-after-commit still contacted the server', async () => {
+    const rec = makeRec();
+    await saveRecording(rec);
+    syncMock.mockRejectedValue(
+      new ApiError(500, 'API request failed (500): /api/Recordings/sync'),
+    );
+
+    expect(await autoSync(rec.id)).toBe(false);
+
+    expect(sheetTick()).toEqual({ seq: 1, trialId: 'trial-1' });
+  });
+
+  it('does NOT bump for an unknown recording id — the server is never contacted', async () => {
+    expect(await autoSync('missing-1')).toBe(false);
+
+    expect(syncMock).not.toHaveBeenCalled();
+    expect(sheetTick()).toBeNull();
+  });
+
+  it('does NOT bump when the in-flight guard short-circuits the second call', async () => {
+    const rec = makeRec();
+    await saveRecording(rec);
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    syncMock.mockImplementation(() => gate.then(() => syncResponse()));
+
+    const first = autoSync(rec.id);
+    // The guarded call returns false without a transport call of its own, and
+    // the first send has no outcome yet (its gate is still closed) → no tick.
+    expect(await autoSync(rec.id)).toBe(false);
+    expect(sheetTick()).toBeNull();
+
+    release();
+    expect(await first).toBe(true);
+    expect(sheetTick()).toEqual({ seq: 1, trialId: 'trial-1' });
+  });
+
+  it('does NOT bump when the send record has no trial id — there is no sheet to refresh', async () => {
+    const rec = makeRec({ trialId: null });
+    await saveRecording(rec);
+    syncMock.mockResolvedValue(syncResponse());
+
+    // The server WAS contacted, but the bump reads the send record's trial id,
+    // and null/empty never signals a host.
+    expect(await autoSync(rec.id)).toBe(true);
+    expect(syncMock).toHaveBeenCalledTimes(1);
+    expect(sheetTick()).toBeNull();
+  });
+
+  it('bumps after correction 200 with the RESULT trial id', async () => {
+    const rec = makeRec({ status: 'needs-attention' });
+    await saveRecording(rec);
+    // Deliberately not the row's own 'trial-1', so the assertion proves the
+    // 200 exit reads the trial id off the result body.
+    correctMock.mockResolvedValue(
+      syncResponse({
+        status: 'Written',
+        wasTranscriptOnly: false,
+        trialId: 'trial-9',
+      }),
+    );
+
+    const outcome = await applyCorrection(rec.id, {
+      plot: 12,
+      subsample: 1,
+      value: 8,
+    });
+
+    expect(outcome.kind).toBe('success');
+    expect(sheetTick()).toEqual({ seq: 1, trialId: 'trial-9' });
+  });
+
+  it('bumps after correction 409 with the re-read recording trial id', async () => {
+    const rec = makeRec({ status: 'needs-attention' });
+    await saveRecording(rec);
+    correctMock.mockRejectedValue(new ApiError(409, 'Row already in terminal state'));
+
+    const outcome = await applyCorrection(rec.id, {
+      plot: 101,
+      subsample: 3,
+      value: 7,
+    });
+
+    expect(outcome.kind).toBe('already-saved');
+    expect(sheetTick()).toEqual({ seq: 1, trialId: 'trial-1' });
+  });
+
+  it('bumps after a FAILED correction — the request was dispatched', async () => {
+    const rec = makeRec({ status: 'needs-attention' });
+    await saveRecording(rec);
+    correctMock.mockRejectedValue(
+      new ApiError(404, 'API request failed (404): /api/Recordings/x/correct'),
+    );
+
+    const outcome = await applyCorrection(rec.id, {
+      plot: 12,
+      subsample: 1,
+      value: 8,
+    });
+
+    expect(outcome.kind).toBe('failed');
+    expect(sheetTick()).toEqual({ seq: 1, trialId: 'trial-1' });
+  });
+});
+
+describe('current cell target (N3 highlight atom)', () => {
+  it('records the written pair as-is after a Written sync — the next target derives from the payload', async () => {
+    const rec = makeRec();
+    await saveRecording(rec);
+    syncMock.mockResolvedValue(syncResponse()); // Written 101/3, traitOrdinal 1
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    // Persistence holds the written pair verbatim: NO subsample + 1 …
+    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
+    // … and the atom mirrors it, tagged with the trial + the trait column.
+    expect(currentCell()).toEqual({
+      trialId: 'trial-1',
+      plot: 101,
+      subsample: 3,
+      traitOrdinal: 1,
+    });
+    // The NEXT target is derived from the payload's rows[] at read time:
+    // 101 3 → 101 4 (and 101 4 would cross to 102 1 — see nextTarget.test.ts).
+    expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
+  });
+
+  it('does NOT touch the target atom on a non-Written result', async () => {
+    const rec = makeRec();
+    await saveRecording(rec);
+    syncMock.mockResolvedValue(
+      syncResponse({
+        status: 'Flagged',
+        needsReview: true,
+        transcript: '',
+        writtenCells: [],
+      }),
+    );
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    expect(readDefaultTarget('trial-1')).toBeNull();
+    expect(currentCell()).toBeNull();
+  });
+
+  it('advances the target atom after a Written correction under the RESULT trial id', async () => {
+    const rec = makeRec({ status: 'needs-attention' });
+    await saveRecording(rec);
+    // Deliberately not the row's own 'trial-1': the result body decides.
+    correctMock.mockResolvedValue(
+      syncResponse({ status: 'Written', wasTranscriptOnly: false, trialId: 'trial-9' }),
+    );
+
+    const outcome = await applyCorrection(rec.id, {
+      plot: 12,
+      subsample: 1,
+      value: 8,
+    });
+    expect(outcome.kind).toBe('success');
+
+    expect(readDefaultTarget('trial-9')).toEqual({ plot: 101, subsample: 3 });
+    expect(readDefaultTarget('trial-1')).toBeNull();
+    expect(currentCell()).toEqual({
+      trialId: 'trial-9',
+      plot: 101,
+      subsample: 3,
+      traitOrdinal: 1,
+    });
+    // Foreign trial: trial-1's payload never seeds trial-9's next target.
+    expect(resolveNextTarget('trial-9')).toBeNull();
+  });
+});
+
 describe('sweepPendingSyncs', () => {
   it('sends a pending row and a legacy ready row, the ready row carrying its confirmed fields', async () => {
     const pending = makeRec();
@@ -418,6 +675,9 @@ describe('sweepPendingSyncs', () => {
     expect((await getRecordingById(pending.id))?.status).toBe('synced');
     expect((await getRecordingById(ready.id))?.status).toBe('synced');
     expect(attentionCount()).toBe(0);
+    // (d) Each replayed send went over the wire, so each ticked the sheet
+    // signal — the seq grows, one refresh check per server contact.
+    expect(sheetTick()).toEqual({ seq: 2, trialId: 'trial-1' });
   });
 
   it('is a no-op when no rows need sending', async () => {
@@ -597,15 +857,16 @@ describe('default target memory', () => {
 
     // First clip is values-only (no plot/subsample) with nothing remembered
     // yet → it ships NO defaults and resolves to Written 101/3 → the store
-    // (keyed by this trial) advances to 101/4.
+    // (keyed by this trial) records 101/3 AS WRITTEN (no + 1).
     const first = makeRec({ plot: null, subsample: null, value: 5 });
     await saveRecording(first);
     expect(await autoSync(first.id)).toBe(true);
-    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
+    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
 
-    // Second values-only clip: the remembered target has to go on the wire;
-    // the stub echoes the shipped pair back as Written 101/4 with
-    // usedDefaultTarget true — exactly what the server resolves to.
+    // Second values-only clip: the file-derived NEXT target (101 3 → 101 4
+    // from the payload's rows[]) has to go on the wire; the stub echoes the
+    // shipped pair back as Written 101/4 with usedDefaultTarget true —
+    // exactly what the server resolves to.
     const second = makeRec({ plot: null, subsample: null, value: 6 });
     await saveRecording(second);
     expect(await autoSync(second.id)).toBe(true);
@@ -647,12 +908,14 @@ describe('default target memory', () => {
   it('sweep chain: two pending values-only clips continue subsample-by-subsample', async () => {
     const fetchStub = stubRealTransport();
 
-    // Seed the cursor from a prior written run: Plot 101, Sub 3.
-    writeDefaultTarget('trial-1', { plot: 101, subsample: 3 });
+    // Seed the last-written pair from a prior run: Plot 101, Sub 2 — so the
+    // file-derived next target is Sub 3.
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 2 });
 
     // Two pending values-only clips in the SAME trial, order fixed by the
     // primary-key tiebreak of the status index ('sweep-1' before 'sweep-2').
-    // Each snapshots the cursor left by the previous one — Sub 3, then Sub 4.
+    // Each snapshots the file-derived next target left by the previous one —
+    // Sub 3, then Sub 4.
     const first = makeRec({
       id: 'sweep-1',
       plot: null,
@@ -676,8 +939,9 @@ describe('default target memory', () => {
     expect(firstWire.get('defaultSubsample')).toBe('3');
     expect(secondWire.get('defaultPlot')).toBe('101');
     expect(secondWire.get('defaultSubsample')).toBe('4');
-    // Advanced twice (3 → 4 → 5); the queue drained.
-    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 5 });
+    // Written twice (2 → 3 → 4) — the store only ever records what was
+    // written; the queue drained.
+    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
     expect(await getRecordingsByStatus('pending')).toHaveLength(0);
   });
 
@@ -685,13 +949,19 @@ describe('default target memory', () => {
     const fetchStub = stubRealTransport();
     // First send of the values-only clip fails (500) after the snapshot froze.
     fetchStub.mockResolvedValueOnce(new Response('boom', { status: 500 }));
-    writeDefaultTarget('trial-1', { plot: 101, subsample: 3 });
+    // Last written 101/2 → the file-derived next target is 101/3.
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 2 });
 
     const first = makeRec({ id: 'w1-a', plot: null, subsample: null, value: 5 });
     await saveRecording(first);
     expect(await autoSync(first.id)).toBe(false);
+    // The freeze is persisted with the row — 101/3, derived from the payload.
+    expect((await getRecordingById(first.id))?.defaultTarget).toEqual({
+      plot: 101,
+      subsample: 3,
+    });
 
-    // Meanwhile a later clip writes at 101/3 and advances live memory to 101/4.
+    // Meanwhile a later clip writes at 101/3 and moves the live pair on.
     const later = makeRec({
       id: 'w1-b',
       plot: null,
@@ -700,14 +970,41 @@ describe('default target memory', () => {
     });
     await saveRecording(later);
     expect(await autoSync(later.id)).toBe(true);
-    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
+    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
+    // Live memory has moved PAST the frozen value: the next derive is 101/4.
+    expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
 
-    // The retry (call index 2: two sends) must ship THIS row's frozen Sub 3,
-    // not the now-current Sub 4.
+    // The retry (call index 2: two sends) must ship THIS row's frozen 101/3,
+    // not the now-current 101/4.
     expect(await autoSync(first.id)).toBe(true);
     const retryWire = fetchStub.mock.calls[2]?.[1]?.body as FormData;
     expect(retryWire.get('defaultPlot')).toBe('101');
     expect(retryWire.get('defaultSubsample')).toBe('3');
+  });
+
+  it('a frozen null stays null on the wire — a retry never re-targets', async () => {
+    const fetchStub = stubRealTransport();
+    // The row was snapshotted at first send with NOTHING remembered →
+    // `defaultTarget: null` (checked, found nothing), persisted with the row.
+    const rec = makeRec({
+      plot: null,
+      subsample: null,
+      value: 5,
+      defaultTarget: null,
+    });
+    await saveRecording(rec);
+    // Live memory now HAS a target — but the row's freeze predates it.
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 3 });
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    // Key PRESENT (frozen null) → no default fields go out, even though the
+    // live file-derived next target would resolve to 101/4.
+    expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
+    const wire = fetchStub.mock.calls[0]?.[1]?.body as FormData;
+    expect(wire).toBeInstanceOf(FormData);
+    expect(wire.get('defaultPlot')).toBeNull();
+    expect(wire.get('defaultSubsample')).toBeNull();
   });
 
   it('advances the remembered target after a Written correction', async () => {
@@ -725,8 +1022,10 @@ describe('default target memory', () => {
 
     expect(outcome.kind).toBe('success');
     // The corrected result resolved to 101/3 and carries the trial id → the
-    // next values-only clip in the trial continues at Sub 4.
-    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
+    // store records 101/3 as written; the next values-only clip derives
+    // Sub 4 from the payload's rows[].
+    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
+    expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
   });
 
   it('does not advance on a Flagged sync result', async () => {

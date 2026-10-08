@@ -11,7 +11,7 @@ import type {
   User,
 } from '../types';
 import type { AudioRecording } from './audioDb';
-import { readDefaultTarget } from './defaultTarget';
+import { resolveNextTarget } from './nextTarget';
 import { tokens } from './tokens';
 
 /**
@@ -486,15 +486,20 @@ export const api = {
     body.append('value', String(rec.value ?? ''));
     // Values-only utterance ("values 4, 2, 6"): the operator is continuing a
     // run, so ship the default target as the server-side defaults. NEVER sent
-    // when either field is present — explicit spoken values always win.
+    // when either field is present — explicit spoken values always win, so
+    // the whole defaults branch is gated on both being null.
     // The row's `defaultTarget` snapshot (taken at first send in autoSync)
-    // wins over live memory so a retry replays the target the clip was
-    // INTENDED for; live memory only seeds the very first send.
+    // wins over live resolution so a retry replays the target the clip was
+    // INTENDED for — the key being PRESENT is what decides: a frozen `null`
+    // stays `null` (a retry must never silently re-target). Only an ABSENT
+    // key (never snapshotted) falls back to the live file-derived next
+    // target (`resolveNextTarget`: last-written pair + the sheet payload).
     const target =
-      rec.defaultTarget ??
-      (rec.plot == null && rec.subsample == null
-        ? readDefaultTarget(rec.trialId ?? '')
-        : null);
+      rec.plot == null && rec.subsample == null
+        ? 'defaultTarget' in rec
+          ? rec.defaultTarget ?? null
+          : resolveNextTarget(rec.trialId ?? '')
+        : null;
     if (target !== null) {
       body.append('defaultPlot', String(target.plot));
       body.append('defaultSubsample', String(target.subsample));

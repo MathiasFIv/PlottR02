@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AudioRecording } from './audioDb';
 import type { SheetColumn, SheetRow, TrialSheet } from '../types';
 import { ApiError, api, readApiErrorMessage } from './api';
+import { writeDefaultTarget } from './defaultTarget';
+import { resolveNextTarget } from './nextTarget';
+import { writeSheetSnapshot } from './sheetSnapshot';
 
 /**
  * House style: hand-rolled fakes, no mock library. Swaps global `fetch` and
@@ -213,5 +217,160 @@ describe('api.getTrialSheet', () => {
         '/api/Trials',
       ),
     ).toBe('API request failed (400): /api/Trials — File is too large');
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// syncRecording — the default-target fields on the wire (file-derived next
+// target: frozen key wins, absent key resolves from last-written + payload)
+// ---------------------------------------------------------------------------
+
+/** Plot 101, subsamples 1..4 — the workbook order `next` derives from. */
+const syncRows: SheetRow[] = [1, 2, 3, 4].map((subsample, i) => ({
+  row: 22 + i,
+  plot: 101,
+  subsample,
+  values: [],
+}));
+
+const syncSheet: TrialSheet = {
+  trialId: 'trial-1',
+  version: 'v1',
+  changed: true,
+  fileName: '4 subsamples.xlsx',
+  generatedAt: '2026-10-06T09:45:13.402Z',
+  metadata: null,
+  columns: [],
+  rows: syncRows,
+};
+
+/**
+ * Node-safe storage BOTH layers can see: the token layer (bare `localStorage`)
+ * and the file-target helpers (`safeStorage()` reads `window.localStorage`).
+ * Returns the fetch spy for FormData assertions.
+ */
+function stubSyncTransport(): {
+  fetch: ReturnType<typeof vi.fn>;
+  storage: Storage;
+} {
+  const map = new Map<string, string>();
+  const storage: Storage = {
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      map.set(key, value);
+    },
+    removeItem: (key: string) => {
+      map.delete(key);
+    },
+    clear: () => {
+      map.clear();
+    },
+    key: (index: number) => [...map.keys()][index] ?? null,
+    get length() {
+      return map.size;
+    },
+  };
+  const fetchStub = vi.fn(() =>
+    jsonResponse({
+      clientRecordingId: 'rec-sync-1',
+      trialId: 'trial-1',
+      status: 'Written',
+      plot: 101,
+      subsample: 4,
+    }),
+  );
+  vi.stubGlobal('fetch', fetchStub);
+  vi.stubGlobal('localStorage', storage); // token layer
+  vi.stubGlobal('window', { localStorage: storage }); // safeStorage()
+  return { fetch: fetchStub, storage };
+}
+
+/** Last written 101/3 + payload rows 101/1..101/4 → next derives to 101/4. */
+function seedFile(storage: Storage): void {
+  writeDefaultTarget('trial-1', { plot: 101, subsample: 3 }, storage);
+  writeSheetSnapshot('trial-1', syncSheet, 'network', storage);
+}
+
+/** Values-only clip: both spoken fields null (defaults branch eligible). */
+function valuesOnly(overrides: Partial<AudioRecording> = {}): AudioRecording {
+  return {
+    id: 'rec-sync-1',
+    blob: new Blob(['fake-audio'], { type: 'audio/webm' }),
+    mimeType: 'audio/webm',
+    createdAt: '2026-10-06T09:45:13.402Z',
+    trialId: 'trial-1',
+    plot: null,
+    subsample: null,
+    value: null,
+    status: 'pending',
+    syncAttempts: 0,
+    ...overrides,
+  };
+}
+
+describe('syncRecording default-target fields', () => {
+  /** The multipart body of the single request this test issued. */
+  function wireOf(fetchStub: ReturnType<typeof vi.fn>): FormData {
+    expect(fetchStub.mock.calls).toHaveLength(1);
+    return fetchStub.mock.calls[0]?.[1]?.body as FormData;
+  }
+
+  it('an unsnapshotted row resolves the file-derived next target at send time', async () => {
+    const { fetch, storage } = stubSyncTransport();
+    seedFile(storage);
+
+    await api.syncRecording(valuesOnly()); // `defaultTarget` key ABSENT
+
+    const body = wireOf(fetch);
+    expect(body.get('defaultPlot')).toBe('101');
+    expect(body.get('defaultSubsample')).toBe('4');
+    expect(body.get('plot')).toBe('');
+    expect(body.get('subsample')).toBe('');
+  });
+
+  it('a frozen null stays null — the key being present wins over live memory', async () => {
+    const { fetch, storage } = stubSyncTransport();
+    seedFile(storage);
+    // Live resolution WOULD have a target to ship …
+    expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
+
+    await api.syncRecording(valuesOnly({ defaultTarget: null }));
+
+    const body = wireOf(fetch);
+    expect(body.get('defaultPlot')).toBeNull();
+    expect(body.get('defaultSubsample')).toBeNull();
+  });
+
+  it('a frozen pair ships as-is — a retry never re-resolves the target', async () => {
+    const { fetch, storage } = stubSyncTransport();
+    seedFile(storage); // live next would be 101/4
+
+    await api.syncRecording(
+      valuesOnly({ defaultTarget: { plot: 101, subsample: 2 } }),
+    );
+
+    const body = wireOf(fetch);
+    expect(body.get('defaultPlot')).toBe('101');
+    expect(body.get('defaultSubsample')).toBe('2');
+  });
+
+  it('an explicit spoken plot/subsample always suppresses the defaults', async () => {
+    const { fetch, storage } = stubSyncTransport();
+    seedFile(storage);
+
+    await api.syncRecording(
+      valuesOnly({
+        plot: 12,
+        subsample: 1,
+        defaultTarget: { plot: 101, subsample: 4 },
+      }),
+    );
+
+    const body = wireOf(fetch);
+    expect(body.get('plot')).toBe('12');
+    expect(body.get('subsample')).toBe('1');
+    expect(body.get('defaultPlot')).toBeNull();
+    expect(body.get('defaultSubsample')).toBeNull();
   });
 });

@@ -14,6 +14,7 @@ import { LoginView } from './views/LoginView';
 import { DashboardView } from './views/DashboardView';
 import { RatingsView } from './views/RatingsView';
 import { RecordView } from './views/RecordView';
+import { SheetView } from './views/SheetView';
 
 // ---------------------------------------------------------------------------
 // Session restore — re-fetches the user profile from /api/Users/me when a
@@ -123,6 +124,16 @@ function App() {
           element={
             <RequireAuth>
               <RecordView />
+            </RequireAuth>
+          }
+        />
+        {/* Read-only ratings sheet for one trial (N2) — the full-region host
+            for the same SheetGrid embedded in RecordView. */}
+        <Route
+          path="/trials/:trialId/sheet"
+          element={
+            <RequireAuth>
+              <SheetView />
             </RequireAuth>
           }
         />

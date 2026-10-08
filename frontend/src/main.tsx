@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Provider } from 'jotai'
+import { Provider, getDefaultStore } from 'jotai'
 import './index.css'
 import App from './App.tsx'
 import { PwaUpdateToast } from './components/PwaUpdateToast.tsx'
@@ -19,7 +19,13 @@ if (navigator.storage?.persist) {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Provider>
+    {/* `getDefaultStore()` MUST be passed in explicitly. Provider called with
+        no `store` creates a private one (jotai/react.js: `storeRef.current =
+        vanilla.createStore()`), and `lib/syncQueue.ts` writes atoms from
+        non-React code via `getDefaultStore()` — without this line the two
+        stores diverge and those writes (the sheet-refresh tick, the
+        attention badge) never reach anything React renders. */}
+    <Provider store={getDefaultStore()}>
       <PwaUpdateToast />
       <App />
     </Provider>
