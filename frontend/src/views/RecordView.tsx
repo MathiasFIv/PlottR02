@@ -20,6 +20,7 @@ import {
   sheetSelectedAtom,
   trialSheetAtom,
 } from '../store/atoms';
+import { roleLabel } from '../types';
 
 /** Formats a whole-second count as m:ss (e.g. 7 → 0:07, 83 → 1:23). */
 function formatDuration(totalSeconds: number): string {
@@ -248,12 +249,9 @@ export function RecordView() {
           {currentUser && (
             <span className="topbar__identity">
               Signed in as <strong>{currentUser.name}</strong>
-              {currentUser.role ? ` (${currentUser.role})` : ''}
+              {currentUser.role ? ` (${roleLabel(currentUser.role)})` : ''}
             </span>
           )}
-          <Link className="link-button" to="/ratings">
-            Ratings
-          </Link>
           <Link className="link-button" to="/">
             Dashboard
           </Link>

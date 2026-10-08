@@ -2,8 +2,6 @@ import { atom } from 'jotai';
 import type { TrialSheetSource, TrialSheetStatus } from '../lib/sheetStatus';
 import type {
   CurrentUser,
-  RatingCell,
-  SubsampleRatingResult,
   TrialSheet,
   TrialSummary,
   User,
@@ -31,28 +29,6 @@ export const loadingAtom = atom<boolean>(false);
 
 /** Last error message from a users API request, if any. */
 export const errorAtom = atom<string | null>(null);
-
-// ---------------------------------------------------------------------------
-// Rating atoms
-// ---------------------------------------------------------------------------
-
-/** Cells returned by GET /api/Ratings/{plot}/{trait}. */
-export const ratingCellsAtom = atom<RatingCell[]>([]);
-
-/** Whether a record-rating API request is in flight. */
-export const ratingRecordLoadingAtom = atom<boolean>(false);
-
-/** Last error message from a record-rating API request, if any. */
-export const ratingRecordErrorAtom = atom<string | null>(null);
-
-/** Whether a read-plot-column API request is in flight. */
-export const ratingReadLoadingAtom = atom<boolean>(false);
-
-/** Last error message from a read-plot-column API request, if any. */
-export const ratingReadErrorAtom = atom<string | null>(null);
-
-/** The most recently recorded rating result, or null. */
-export const lastRatingResultAtom = atom<SubsampleRatingResult | null>(null);
 
 // ---------------------------------------------------------------------------
 // Trial atoms
@@ -192,9 +168,9 @@ export const sheetAnchorNoticeAtom = atom<SheetAnchorNotice | null>(null);
 // are MUTUALLY EXCLUSIVE routes today — never render both in one tab, or they
 // would drive each other's status pill (each host's fetch would flip the
 // other's pill). `useTrialSheet` clears this block on unmount AND on
-// `trialId` change (RatingsView precedent, RatingsView.tsx:64-71), so switching
-// trials never flashes the previous workbook's grid; the persisted snapshot in
-// `lib/sheetSnapshot.ts` makes the resulting refetch instant and offline-safe.
+// `trialId` change, so switching trials never flashes the previous workbook's
+// grid; the persisted snapshot in `lib/sheetSnapshot.ts` makes the resulting
+// refetch instant and offline-safe.
 // The `sheetRefreshTickAtom` signal above is deliberately NOT part of this
 // block: clearing or switching hosts neither resets nor replays it.
 // ---------------------------------------------------------------------------

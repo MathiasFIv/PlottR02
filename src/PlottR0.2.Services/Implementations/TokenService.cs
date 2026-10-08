@@ -109,9 +109,9 @@ public class TokenService : ITokenService
         };
 
         // Role is optional — only emit the claim when the user has one assigned.
-        if (!string.IsNullOrEmpty(user.Role))
+        if (user.Role is not null)
         {
-            claims.Add(new Claim("role", user.Role));
+            claims.Add(new Claim("role", user.Role.Value.ToString()));
         }
 
         return claims;

@@ -2,14 +2,14 @@
  * Two-tier column header for the read-only sheet grid (decision B2 / A12).
  *
  * The header is derived **only** from the server-supplied `columns` array
- * (`GET /api/Trials/{trialId}/sheet`) — never from the workbook and never from
- * the file-local `TRAITS` table in `views/RatingsView.tsx:21-31`.
+ * (`GET /api/Trials/{trialId}/sheet`) — never from the workbook or any
+ * client-side trait table.
  *
- * ⚠️ `TRAITS` in RatingsView is a KNOWN BUG (G11 / B3): it is pest-major
- * (ordinal 2 = SEPTTR × LEAF2) while the workbook is part-major (ordinal 2 =
- * col D = ERYSGR × LEAF1). It is NOT this module's job to fix — importing it
- * here would poison the sheet header with the same wrong mapping. Sheet header
- * identity comes from the file, per column, via the API.
+ * The old mis-ordered pilot `TRAITS` table (pest-major: ordinal 2 =
+ * SEPTTR × LEAF2, while the workbook is part-major: ordinal 2 = col D =
+ * ERYSGR × LEAF1) has been removed from the codebase, so there is no longer
+ * any in-repo copy of that wrong mapping to poison the header with. Sheet
+ * header identity comes from the file, per column, via the API.
  *
  * Tier 1 — Part Rated runs: consecutive columns sharing a `partRated` value
  * become ONE cell with a `colSpan`. Runs are derived from *consecutive equal

@@ -9,17 +9,44 @@
  *   POST /api/Auth/login     -> 200 LoginResponse | 401 (body: LoginRequest)
  */
 
+/**
+ * The role enum shared with the API. The backend validates `role` against
+ * exactly these four PascalCase values (anything else is a 400), so this list
+ * is the single source of truth for the create-user dropdowns.
+ * `null` means "no role" and is still a valid, submittable value.
+ */
+export const USER_ROLES = [
+  { value: 'SystemAdmin', label: 'System admin' },
+  { value: 'Researcher', label: 'Researcher' },
+  { value: 'TrialManager', label: 'Trial manager' },
+  { value: 'FieldWorker', label: 'Field worker' },
+] as const;
+
+/** One of the four API role values, e.g. `'TrialManager'`. */
+export type UserRole = (typeof USER_ROLES)[number]['value'];
+
+/**
+ * Human-readable label for a role. Returns `''` for "no role" (null/empty)
+ * and the display label otherwise (`'SystemAdmin'` -> `'System admin'`).
+ * Unknown strings pass through unchanged so nothing ever renders blank.
+ */
+export function roleLabel(role: string | null): string {
+  if (!role) return '';
+  return USER_ROLES.find((r) => r.value === role)?.label ?? role;
+}
+
 export type User = {
   id: string;
   name: string;
   email: string;
-  role: string | null;
+  role: UserRole | null;
 };
 
 export type CreateUserInput = {
   name: string;
   email: string;
-  role?: string | null;
+  /** Exactly one of the four roles, or null/omitted for "no role". */
+  role?: UserRole | null;
   password: string;
 };
 
@@ -45,47 +72,6 @@ export type RefreshResponse = {
  * returned profile is what the app treats as the current user.
  */
 export type CurrentUser = User;
-
-// ---------------------------------------------------------------------------
-// Rating types — mirror the ASP.NET Core WebAPI DTOs:
-//
-//   POST   /api/Ratings              -> SubsampleRatingResult
-//   GET    /api/Ratings/{plot}/{trait} -> RatingCell[]
-// ---------------------------------------------------------------------------
-
-/** Command to record a rating for one plot/trait combination. */
-export type RecordSubsampleRatingsCommand = {
-  plot: number;
-  traitOrdinal: number;
-  value: number;
-  subsampleIndices: number[];
-};
-
-/** A single written cell returned by the rating endpoint. */
-export type WrittenCellDto = {
-  subsample: number;
-  cellAddress: string;
-  value: number;
-};
-
-/** Result after successfully recording a rating. */
-export type SubsampleRatingResult = {
-  plot: number;
-  traitOrdinal: number;
-  value: number;
-  writtenCells: WrittenCellDto[];
-  untouchedSubsamples: number[];
-  emptyPreserved: boolean;
-};
-
-/** Current value of a single cell when reading a plot column. */
-export type RatingCell = {
-  plot: number;
-  subsample: number;
-  traitOrdinal: number;
-  value: number | null;
-  cellAddress: string;
-};
 
 // ---------------------------------------------------------------------------
 // Trial types — mirror the ASP.NET Core WebAPI DTOs:

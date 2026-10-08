@@ -31,7 +31,7 @@ public sealed class AuthServiceTests
                 Id = id,
                 Name = "Alice",
                 Email = "alice@example.com",
-                Role = "Agronomist",
+                Role = UserRole.Researcher,
             });
 
         public Task<User?> GetByIdAsync(Guid id, CancellationToken ct = default)

@@ -2,10 +2,7 @@ import type {
   CreateUserInput,
   LoginRequest,
   LoginResponse,
-  RatingCell,
-  RecordSubsampleRatingsCommand,
   RefreshResponse,
-  SubsampleRatingResult,
   TrialSheet,
   TrialSummary,
   User,
@@ -395,17 +392,6 @@ export const api = {
 
   deleteUser: (id: string) =>
     noContentRequest(`/api/Users/${id}`, { method: 'DELETE' }),
-
-  // Ratings ---------------------------------------------------------------
-
-  recordRating: (input: RecordSubsampleRatingsCommand) =>
-    jsonRequest<SubsampleRatingResult>('/api/Ratings', {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-
-  readPlotColumn: (plot: number, traitOrdinal: number) =>
-    jsonRequest<RatingCell[]>(`/api/Ratings/${plot}/${traitOrdinal}`),
 
   // Trials ---------------------------------------------------------------
 

@@ -12,7 +12,6 @@ import { tokens } from './lib/tokens';
 import { currentUserAtom, isAuthenticatedAtom } from './store/atoms';
 import { LoginView } from './views/LoginView';
 import { DashboardView } from './views/DashboardView';
-import { RatingsView } from './views/RatingsView';
 import { RecordView } from './views/RecordView';
 import { SheetView } from './views/SheetView';
 
@@ -108,14 +107,6 @@ function App() {
           element={
             <RequireAuth>
               <DashboardView />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/ratings"
-          element={
-            <RequireAuth>
-              <RatingsView />
             </RequireAuth>
           }
         />

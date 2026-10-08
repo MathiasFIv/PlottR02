@@ -40,8 +40,13 @@ public class PlottR0DbContext : DbContext
                 .HasMaxLength(320);
             entity.HasIndex(u => u.Email)
                 .IsUnique();
+            // Role is a nullable enum persisted AS A STRING so the existing
+            // character varying column is only narrowed (100 → 20) instead of
+            // being dropped/recreated — RefreshToken.UserId and Trial.CreatedBy
+            // reference the Users table and must keep their FKs intact.
             entity.Property(u => u.Role)
-                .HasMaxLength(100);
+                .HasConversion<string>()
+                .HasMaxLength(20);
             entity.Property(u => u.PasswordHash)
                 .IsRequired()
                 .HasMaxLength(100);

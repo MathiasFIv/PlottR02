@@ -105,7 +105,7 @@ public sealed class UserServiceTests : IAsyncLifetime
             Name = "Valid Login User",
             Email = email,
             Password = password,
-            Role = "Agronomist",
+            Role = UserRole.Researcher,
         });
 
         var result = await service.LoginAsync(new LoginRequest { Email = email, Password = password });
@@ -416,6 +416,55 @@ public sealed class UserServiceTests : IAsyncLifetime
         var dtoPropertyNames = typeof(UserResponse).GetProperties().Select(p => p.Name).ToArray();
         dtoPropertyNames.Should().BeEquivalentTo(
             [nameof(UserResponse.Id), nameof(UserResponse.Name), nameof(UserResponse.Email), nameof(UserResponse.Role)]);
+    }
+
+    // ── Role round-trip (typed enum contract) ─────────────────────────────────
+
+    [Fact]
+    public async Task CreateAndUpdateAsync_Role_RoundTripsThroughDatabaseAsEnum()
+    {
+        var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+        request.Role = UserRole.TrialManager;
+        using var scope = _fixture.CreateScope();
+        var service = Service(scope);
+
+        var created = await service.CreateAsync(request);
+
+        created.Role.Should().Be(UserRole.TrialManager);
+
+        // Persisted entity must materialise the enum from the string column.
+        var repo = scope.ServiceProvider
+            .GetRequiredService<PlottR0._2.Contracts.Repositories.IUserRepository>();
+        var persisted = await repo.GetByEmailAsync(request.Email);
+        persisted!.Role.Should().Be(UserRole.TrialManager);
+
+        // Update to a different member and confirm it survives the round-trip.
+        var updated = await service.UpdateAsync(created.Id, new UpdateUserRequest
+        {
+            Name = created.Name,
+            Email = created.Email,
+            Role = UserRole.FieldWorker,
+        });
+
+        updated!.Role.Should().Be(UserRole.FieldWorker);
+    }
+
+    [Fact]
+    public async Task CreateAsync_NullRole_RoundTripsAsNull()
+    {
+        var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+        request.Role = null;
+        using var scope = _fixture.CreateScope();
+        var service = Service(scope);
+
+        var created = await service.CreateAsync(request);
+
+        created.Role.Should().BeNull();
+
+        var persisted = await scope.ServiceProvider
+            .GetRequiredService<PlottR0._2.Contracts.Repositories.IUserRepository>()
+            .GetByEmailAsync(request.Email);
+        persisted!.Role.Should().BeNull();
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

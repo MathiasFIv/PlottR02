@@ -29,8 +29,8 @@
  *   no longer a "saved copy" (otherwise the pill would claim
  *   `live — saved copy · saved <fetch time>` for a time nothing was written).
  *   Never let a fast-path response blank the grid.
- * - **Clearing:** atoms are cleared on unmount AND on `trialId` change
- *   (RatingsView precedent, `RatingsView.tsx:64-71`). The tick atom is NOT
+ * - **Clearing:** atoms are cleared on unmount AND on `trialId` change, so a
+ *   trial switch can never flash the previous workbook. The tick atom is NOT
  *   cleared — it is signal-only, outside the payload block.
  * - **Recording-driven tick:** a fresh `sheetRefreshTickAtom` value targeting
  *   the mounted trial re-uses the exact `load()` path, *superseding* (never

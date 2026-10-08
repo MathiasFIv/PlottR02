@@ -27,6 +27,7 @@ import {
   sheetLastWrittenAtom,
   sheetSelectedAtom,
 } from '../store/atoms';
+import { roleLabel } from '../types';
 
 /**
  * The dedicated full-sheet route (`/trials/:trialId/sheet`, behind
@@ -136,7 +137,7 @@ export function SheetView() {
           {currentUser && (
             <span className="topbar__identity">
               Signed in as <strong>{currentUser.name}</strong>
-              {currentUser.role ? ` (${currentUser.role})` : ''}
+              {currentUser.role ? ` (${roleLabel(currentUser.role)})` : ''}
             </span>
           )}
           <Link className="link-button" to="/record">

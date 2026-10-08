@@ -3,7 +3,8 @@ import type { FormEvent } from 'react';
 import { Button } from './Button';
 import { FormField } from './FormField';
 import { ApiError, api } from '../lib/api';
-import type { CreateUserInput, User } from '../types';
+import type { CreateUserInput, User, UserRole } from '../types';
+import { USER_ROLES } from '../types';
 
 type CreateUserModalProps = {
   open: boolean;
@@ -26,7 +27,7 @@ export function CreateUserModal({
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState('');
+  const [role, setRole] = useState<UserRole | ''>('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -72,7 +73,7 @@ export function CreateUserModal({
       const input: CreateUserInput = {
         name: trimmedName,
         email: trimmedEmail,
-        role: role.trim() || null,
+        role: role || null,
         password,
       };
       const created = await api.createUser(input);
@@ -141,15 +142,22 @@ export function CreateUserModal({
               required: true,
             }}
           />
-          <FormField
-            label="Role (optional)"
-            htmlFor="create-role"
-            inputProps={{
-              value: role,
-              onChange: (e) => setRole(e.target.value),
-              placeholder: 'e.g. Researcher, Trial Manager',
-            }}
-          />
+          <FormField label="Role (optional)" htmlFor="create-role">
+            <select
+              id="create-role"
+              name="create-role"
+              className="input"
+              value={role}
+              onChange={(e) => setRole(e.target.value as UserRole | '')}
+            >
+              <option value="">No role</option>
+              {USER_ROLES.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </FormField>
           <FormField
             label="Password"
             htmlFor="create-password"

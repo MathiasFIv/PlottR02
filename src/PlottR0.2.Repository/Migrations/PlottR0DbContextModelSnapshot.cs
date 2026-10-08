@@ -291,8 +291,8 @@ namespace PlottR0._2.Repository.Migrations
                         .HasColumnType("character varying(100)");
 
                     b.Property<string>("Role")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
 
                     b.Property<DateTime>("UpdatedAt")
                         .ValueGeneratedOnAdd()

@@ -11,7 +11,8 @@ import { currentUserAtom } from '../store/atoms';
 import { useAuth } from '../hooks/useAuth';
 import { useTrials } from '../hooks/useTrials';
 import { useUsers } from '../hooks/useUsers';
-import type { TrialSummary } from '../types';
+import { USER_ROLES, roleLabel } from '../types';
+import type { TrialSummary, UserRole } from '../types';
 
 /**
  * Logged-in dashboard: a "create user" form (POST /api/Users) plus the live
@@ -34,7 +35,7 @@ export function DashboardView() {
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState('');
+  const [role, setRole] = useState<UserRole | ''>('');
   const [password, setPassword] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
@@ -73,7 +74,7 @@ export function DashboardView() {
     const result = await createUser({
       name: trimmed,
       email: trimmedEmail,
-      role: role.trim() || null,
+      role: role || null,
       password,
     });
     setSubmitting(false);
@@ -149,14 +150,11 @@ export function DashboardView() {
           {currentUser && (
             <span className="topbar__identity">
               Signed in as <strong>{currentUser.name}</strong>
-              {currentUser.role ? ` (${currentUser.role})` : ''}
+              {currentUser.role ? ` (${roleLabel(currentUser.role)})` : ''}
             </span>
           )}
           <Link className="link-button" to="/record">
             Record
-          </Link>
-          <Link className="link-button" to="/ratings">
-            Ratings
           </Link>
           <Button variant="secondary" onClick={handleLogout}>
             Log out
@@ -190,15 +188,22 @@ export function DashboardView() {
                 required: true,
               }}
             />
-            <FormField
-              label="Role (optional)"
-              htmlFor="create-role"
-              inputProps={{
-                value: role,
-                onChange: (e) => setRole(e.target.value),
-                placeholder: 'e.g. Researcher',
-              }}
-            />
+            <FormField label="Role (optional)" htmlFor="create-role">
+              <select
+                id="create-role"
+                name="create-role"
+                className="input"
+                value={role}
+                onChange={(e) => setRole(e.target.value as UserRole | '')}
+              >
+                <option value="">No role</option>
+                {USER_ROLES.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </FormField>
             <FormField
               label="Password"
               htmlFor="create-password"
