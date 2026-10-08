@@ -33,6 +33,14 @@ public sealed class TranscriptParserTests
     [InlineData("plot 101 subamble 1 value 7", 101, 1, 7, 0.95)]    // "subamble" alias (owner utterance)
     [InlineData("plot 101 subsamble 1 value 7", 101, 1, 7, 0.95)]   // "subsamble" alias
     [InlineData("Sub 7104, plus 203, value 6.", 203, 7104, 6, 0.95)]  // observed Whisper: "plus" for "plot"
+    [InlineData("plot 101 sub-symbol 1 value 7", 101, 1, 7, 0.95)]   // hyphenated alias: "sub" keyword + "symbol" dropped as noise
+    [InlineData("plot-101-sub-symbol-1-value-7", 101, 1, 7, 0.95)]   // fully hyphen-joined phrase
+    [InlineData("plot 101 sub symbol 1 value 7", 101, 1, 7, 0.95)]   // spaced misread: same tokenization as hyphenated
+    [InlineData("plug 101 sub 1 value 7", 101, 1, 7, 0.95)]          // "plug" plot alias (owner-requested mishear)
+    [InlineData("clot 101 sub 1 value 7", 101, 1, 7, 0.95)]          // "clot" plot alias (p→k mishear)
+    [InlineData("pluts 101 sub 1 value 7", 101, 1, 7, 0.95)]         // "pluts" plot alias
+    [InlineData("blot 101 sub 1 value 7", 101, 1, 7, 0.95)]          // "blot" plot alias (p→b, same class as "clot")
+    [InlineData("clotting 101 sub 1 value 7", null, 1, 7, 0.5)]     // WHOLE-token match only: "clotting" is NOT "clot", so no plot keyword
     [InlineData("plot 101 subsample 1 values 3, 6, 1", 101, 1, 3, 0.95)]  // multi-value labeled form
     [InlineData("plot 101 subsample 1 values 3 6 1", 101, 1, 3, 0.95)]    // multi-value labeled form, spaces
     [InlineData("plot 101 sub 3 value 7", 101, 3, 7, 0.95)]               // "sub" alias, labeled form

@@ -95,9 +95,10 @@ import {
   recordingsNeedingAttentionCountAtom,
   sheetRefreshTickAtom,
   sheetLastWrittenAtom,
+  sheetSelectedAtom,
   trialSheetAtom,
 } from '../store/atoms';
-import type { SheetLastWritten, SheetRefreshTick } from '../store/atoms';
+import type { SheetLastWritten, SheetRefreshTick, SheetSelected } from '../store/atoms';
 import {
   applyCorrection,
   autoSync,
@@ -227,6 +228,9 @@ beforeEach(async () => {
   getDefaultStore().set(recordingsNeedingAttentionCountAtom, 0);
   getDefaultStore().set(sheetRefreshTickAtom, null);
   getDefaultStore().set(sheetLastWrittenAtom, null);
+  // The write anchor is UI state (a tap) — every test starts with none armed,
+  // so a leak from the previous case can never seed a values-only send.
+  getDefaultStore().set(sheetSelectedAtom, null);
   // The next-target resolution is payload-first: seed trial-1's rows so
   // `resolveNextTarget` derives from a real workbook order (the hosts read
   // the same atom; `clearSheetState` never touches it).
@@ -652,6 +656,143 @@ describe('current cell target (N3 highlight atom)', () => {
     });
     // Foreign trial: trial-1's payload never seeds trial-9's next target.
     expect(resolveNextTarget('trial-9')).toBeNull();
+  });
+});
+
+describe('write anchor (tap-to-anchor on an empty cell)', () => {
+  /** A tap on an empty cell: row 102/2, trait column 5 (`values[4]`). */
+  function tappedCell(overrides: Partial<SheetSelected> = {}): SheetSelected {
+    return {
+      trialId: 'trial-1',
+      plot: 102,
+      subsample: 2,
+      traitOrdinal: 5,
+      valuesIndex: 4,
+      ...overrides,
+    };
+  }
+
+  /** The record handed to api.syncRecording for send #`index` (throws if none). */
+  function sentRecord(index = 0): AudioRecording {
+    const call = syncMock.mock.calls[index];
+    if (call === undefined) throw new Error(`no send captured at index ${index}`);
+    return call[0];
+  }
+
+  it('wins over resolveNextTarget and overrides traitOrdinal, without moving the live memory', async () => {
+    const rec = makeRec({ plot: null, subsample: null, value: 5, traitOrdinal: 2 });
+    await saveRecording(rec);
+    // Live memory says the file-derived next target is 101/3 …
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 2 });
+    // … but the operator tapped 102/2 · col 5 instead.
+    getDefaultStore().set(sheetSelectedAtom, tappedCell());
+    // SkippedPresent: nothing is WRITTEN, so the last-written memory must not
+    // move and the assertions below read the state the tap was frozen against.
+    syncMock.mockResolvedValue(
+      syncResponse({ status: 'SkippedPresent', writtenCells: [] }),
+    );
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    // The anchor's pair went out — NOT the fallback 101/3 — and the tapped
+    // column beat the recorder's trait selector (2 → 5).
+    const sent = sentRecord();
+    expect(sent.defaultTarget).toEqual({ plot: 102, subsample: 2 });
+    expect(sent.traitOrdinal).toBe(5);
+    // A tap is an INTENT: it never advances `sheetLastWrittenAtom` /
+    // the persisted pair — auto-continue still derives 101/3.
+    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 2 });
+    expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
+    expect(currentCell()).toBeNull();
+    // The freeze is persisted with the row, ready for the retry path.
+    expect((await getRecordingById(rec.id))?.defaultTarget).toEqual({
+      plot: 102,
+      subsample: 2,
+    });
+  });
+
+  it("ignores another trial's tap and falls back to resolveNextTarget", async () => {
+    const rec = makeRec({ plot: null, subsample: null, value: 5, traitOrdinal: 2 });
+    await saveRecording(rec);
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 2 });
+    // The SAME coordinates, but tapped on a different trial's grid.
+    getDefaultStore().set(
+      sheetSelectedAtom,
+      tappedCell({ trialId: 'trial-2', plot: 105, subsample: 1 }),
+    );
+    syncMock.mockResolvedValue(
+      syncResponse({ status: 'SkippedPresent', writtenCells: [] }),
+    );
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    const sent = sentRecord();
+    expect(sent.defaultTarget).toEqual({ plot: 101, subsample: 3 });
+    // The foreign tap did NOT override the recorder's trait selector either.
+    expect(sent.traitOrdinal).toBe(2);
+  });
+
+  it('retry replays the frozen anchor after the live anchor changes', async () => {
+    const rec = makeRec({ plot: null, subsample: null, value: 5 });
+    await saveRecording(rec);
+    getDefaultStore().set(sheetSelectedAtom, tappedCell());
+    syncMock.mockRejectedValueOnce(new ApiError(500, 'boom'));
+
+    expect(await autoSync(rec.id)).toBe(false);
+    // The first send froze the tap onto the row before the wire failed.
+    expect((await getRecordingById(rec.id))?.defaultTarget).toEqual({
+      plot: 102,
+      subsample: 2,
+    });
+
+    // Meanwhile the operator re-taps elsewhere (or clears the anchor).
+    getDefaultStore().set(
+      sheetSelectedAtom,
+      tappedCell({ plot: 105, subsample: 1, traitOrdinal: 2, valuesIndex: 1 }),
+    );
+    syncMock.mockResolvedValueOnce(
+      syncResponse({ status: 'SkippedPresent', writtenCells: [] }),
+    );
+
+    expect(await autoSync(rec.id)).toBe(true);
+    const retry = sentRecord(1);
+    expect(retry.defaultTarget).toEqual({ plot: 102, subsample: 2 });
+    expect(retry.traitOrdinal).toBe(5);
+  });
+
+  it('a frozen null stays off the wire even when an anchor is live', async () => {
+    const rec = makeRec({ plot: null, subsample: null, value: 5, defaultTarget: null });
+    await saveRecording(rec);
+    // Live memory AND a live anchor both exist — the row's freeze predates them.
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 3 });
+    getDefaultStore().set(sheetSelectedAtom, tappedCell());
+    syncMock.mockResolvedValue(syncResponse());
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    const sent = sentRecord();
+    // Key PRESENT with null → lib/api.ts's `'defaultTarget' in rec` gate
+    // ships no defaultPlot/defaultSubsample, and the anchor never revives it.
+    expect('defaultTarget' in sent).toBe(true);
+    expect(sent.defaultTarget ?? null).toBeNull();
+    expect(sent.traitOrdinal).toBeUndefined();
+  });
+
+  it('an explicit spoken plot/subsample suppresses the anchor entirely', async () => {
+    const rec = makeRec({ plot: 12, subsample: 1, value: 5, traitOrdinal: 3 });
+    await saveRecording(rec);
+    getDefaultStore().set(sheetSelectedAtom, tappedCell());
+    syncMock.mockResolvedValue(syncResponse({ wasTranscriptOnly: false }));
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    const sent = sentRecord();
+    // No snapshot branch at all: no defaultTarget key, the spoken pair stays,
+    // and the recorder's own trait selector is untouched by the tap.
+    expect('defaultTarget' in sent).toBe(false);
+    expect(sent.plot).toBe(12);
+    expect(sent.subsample).toBe(1);
+    expect(sent.traitOrdinal).toBe(3);
   });
 });
 

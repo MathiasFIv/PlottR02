@@ -1,10 +1,20 @@
-import { useAtomValue } from 'jotai';
+import { useAtom, useAtomValue } from 'jotai';
 import { useEffect } from 'react';
 import { useTrialSheet } from '../hooks/useTrialSheet';
 import { deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
+import { decideAnchorTap, isAnchorForTrial } from '../lib/sheetAnchor';
+import type { SheetCellTap } from '../lib/sheetAnchor';
 import { isNonArmSheetError } from '../lib/sheetStatus';
-import { rehydrateSheetTarget, targetHighlight } from '../lib/sheetTarget';
-import { sheetLastWrittenAtom } from '../store/atoms';
+import {
+  rehydrateSheetTarget,
+  targetHighlight,
+  targetSelection,
+} from '../lib/sheetTarget';
+import {
+  sheetAnchorNoticeAtom,
+  sheetLastWrittenAtom,
+  sheetSelectedAtom,
+} from '../store/atoms';
 import { SheetGrid } from './SheetGrid';
 import { SheetMetaStrip } from './SheetMetaStrip';
 import { SheetStates } from './SheetStates';
@@ -36,6 +46,18 @@ type SheetPanelProps = {
  * `targetHighlight` maps it onto the grid, so a refresh or snapshot hydrate
  * re-derives it for free and the persisted pair is re-seeded by the effect
  * below (mount / trial change).
+ *
+ * **Write anchor (tap-to-anchor):** the grid is tappable through
+ * `onSelectCell` below. An EMPTY cell becomes the anchor
+ * (`sheetSelectedAtom`, trial-guarded with `isAnchorForTrial` and mapped
+ * through `targetSelection` — the same identity rules as the highlight); a
+ * FILLED cell is REFUSED with NO state change — the existing anchor (if any)
+ * is left exactly as it was and the `'cell-filled'` notice is raised for the
+ * mic area (`views/RecordView.tsx` renders it — this panel is
+ * a sibling of the mic card, so it never renders the status lines itself).
+ * Tapping the currently-selected cell again clears the anchor. The anchor
+ * atom is NOT cleared by this component's trial change either — that is the
+ * point of declaring it outside the payload block.
  */
 export function SheetPanel({ trialId }: SheetPanelProps) {
   const { sheet, status, source, error, updatedAt, refresh, refreshing } =
@@ -44,6 +66,12 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
   const target = useAtomValue(sheetLastWrittenAtom);
   /** Only THIS trial's pair may tint this trial's grid (plot numbers repeat). */
   const forTrial = target?.trialId === trialId ? target : null;
+  /** Write anchor — read AND written here (tap gesture); syncQueue only reads it. */
+  const [anchor, setAnchor] = useAtom(sheetSelectedAtom);
+  /** Tap feedback raised for RecordView's mic area to render. */
+  const [, setAnchorNotice] = useAtom(sheetAnchorNoticeAtom);
+  /** Only THIS trial's tap may anchor this trial's grid. */
+  const forTrialAnchor = isAnchorForTrial(anchor, trialId);
 
   // Seed / re-seed from the persisted last-written target on mount
   // and on trial change (the atom survives route changes; storage is the
@@ -67,6 +95,30 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
   // (payload-derived — never arithmetic, never a guessed pair).
   const next = rows !== null ? deriveNextTarget(rows, forTrial) : null;
   const endOfSheet = deriveEndOfSheet(rows, forTrial);
+
+  /**
+   * Tap-to-anchor. The DECISION is shared with the `views/SheetView.tsx`
+   * host in `lib/sheetAnchor.ts#decideAnchorTap` (one grid, two hosts — no
+   * duplicated rules); this host only applies it:
+   * - FILLED cell → refuse with NO anchor change, plus the `'cell-filled'`
+   *   notice (a stray tap must never destroy a valid existing anchor);
+   * - empty cell → anchor this trial's tap (it overrides the recorder's
+   *   trait selector — the whole point of tapping a specific cell);
+   * - the currently-selected cell tapped AGAIN → clear the anchor.
+   * The notice is set on a refusal and cleared on an accepted tap.
+   * The tap never touches `sheetLastWrittenAtom`: it is an intent, not a
+   * written fact, so `Next:` / auto-continue cannot move on a gesture.
+   */
+  function handleSelectCell(cell: SheetCellTap): void {
+    const decision = decideAnchorTap(cell, forTrialAnchor, trialId);
+    if (decision.kind === 'refuse-filled') {
+      // Refusal only — `setAnchor` is deliberately NOT called here.
+      setAnchorNotice({ trialId, kind: 'cell-filled' });
+      return;
+    }
+    setAnchorNotice(null); // an accepted tap retires any refusal notice
+    setAnchor(decision.kind === 'clear' ? null : decision.anchor);
+  }
 
   return (
     <div className="sheet-panel">
@@ -97,6 +149,8 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
           columns={columns}
           rows={rows}
           highlight={targetHighlight(next, columns, rows)}
+          selected={targetSelection(forTrialAnchor, columns, rows)}
+          onSelectCell={handleSelectCell}
         />
       )}
 

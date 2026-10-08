@@ -135,6 +135,56 @@ export type SheetLastWritten = { trialId: string; plot: number; subsample: numbe
 export const sheetLastWrittenAtom = atom<SheetLastWritten | null>(null);
 
 // ---------------------------------------------------------------------------
+// Write anchor (tap-to-anchor) — also declared OUTSIDE and ABOVE the
+// trial-sheet payload block, for exactly the same reasons as the atoms
+// above: it SURVIVES route changes (the RecordView panel and
+// `/trials/:trialId/sheet` swap hosts), it is NOT cleared by
+// `clearSheetState()` in `useTrialSheet` (which owns only the payload block),
+// and it is NEVER read by the status pills.
+//
+// Deliberately SEPARATE from `sheetLastWrittenAtom` — never reused, never
+// mutated into it: that atom is a last-written FACT feeding
+// `deriveNextTarget` (the auto-continue cursor), while a tap is an INTENT.
+// Advancing `sheetLastWrittenAtom` from a tap would move `Next:` and the N3
+// highlight on a gesture that has not written anything yet, so the anchor
+// lives here instead. Consumers MUST guard on `trialId`
+// (`lib/sheetAnchor.ts#isAnchorForTrial`) before using it for a given
+// trial's grid; it is cleared ONLY by the UI gesture (tapping the selected
+// cell again) — `lib/syncQueue.ts` reads it but never clears it.
+// ---------------------------------------------------------------------------
+
+/**
+ * The tapped empty cell the next values-only recording writes FROM:
+ * `plot` + `subsample` (row identity — the Excel `SheetRow.row` cross-ref is
+ * never a key), `traitOrdinal` (the tapped column, which wins over the
+ * recorder's trait selector) and `valuesIndex` (the array index into
+ * `columns[]`/`values[]` the cell rendered at — kept for the grid's render
+ * shape; hosts re-derive it from the payload at read time, never from Excel
+ * letter arithmetic).
+ */
+export type SheetSelected = {
+  trialId: string;
+  plot: number;
+  subsample: number;
+  traitOrdinal: number;
+  valuesIndex: number;
+};
+
+export const sheetSelectedAtom = atom<SheetSelected | null>(null);
+
+/**
+ * Transient tap feedback, outside the payload block for the same survival
+ * reasons as the anchor above (and trial-tagged, so a leftover notice from
+ * another trial can never render on this one). Only one kind today:
+ * `'cell-filled'` = the operator tapped a cell that already holds a value,
+ * which is REFUSED (no anchor set) — surfaced by the hosts next to the
+ * anchor line (`views/RecordView.tsx` / `views/SheetView.tsx`).
+ */
+export type SheetAnchorNotice = { trialId: string; kind: 'cell-filled' };
+
+export const sheetAnchorNoticeAtom = atom<SheetAnchorNotice | null>(null);
+
+// ---------------------------------------------------------------------------
 // Trial sheet atoms (N2 — read-only grid)
 //
 // ⚠️ TWO HOSTS, ONE ATOM SET (PLAN_2026-10-07 §11 risk 1): the embedded

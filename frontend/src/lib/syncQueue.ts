@@ -24,7 +24,12 @@ import {
 import { nextTick } from './sheetRefreshTick';
 import { resolveNextTarget } from './nextTarget';
 import { advanceSheetTarget } from './sheetTarget';
-import { recordingsNeedingAttentionCountAtom, sheetRefreshTickAtom } from '../store/atoms';
+import { anchorToWire, isAnchorForTrial } from './sheetAnchor';
+import {
+  recordingsNeedingAttentionCountAtom,
+  sheetRefreshTickAtom,
+  sheetSelectedAtom,
+} from '../store/atoms';
 
 /** Ids with a send currently in flight — guards sweep + UI double-sends. */
 const inFlight = new Set<string>();
@@ -87,20 +92,44 @@ export async function autoSync(recordingId: string): Promise<boolean> {
     /**
      * First-send snapshot (done ONCE, not on retries): for a values-only clip
      * whose row has no snapshot yet (`undefined` = not yet snapshotted, per
-     * `AudioRecording.defaultTarget`), freeze the file-derived next target
-     * (`resolveNextTarget`: last-written pair + the sheet payload's rows[])
-     * onto the row before the wire. Retries then replay the target the clip
-     * was INTENDED for, even when other clips have since advanced the live
-     * memory — a frozen `null` stays null too (an absent key is the ONLY
-     * thing that re-resolves). `defaultTarget` is persisted with the row (the
-     * `status: 'syncing'` update below carries it), so a failure keeps the
-     * snapshot for the fix path. `null` snapshots are also persisted — the
-     * read was done.
+     * `AudioRecording.defaultTarget`), freeze a target onto the row before the
+     * wire, in this resolution order:
+     *
+     *   1. **the write anchor** — a tap on an empty grid cell, but ONLY for
+     *      this clip's trial (`isAnchorForTrial`; plot numbers repeat, so a
+     *      foreign trial's tap must never seed this one). The anchor also
+     *      overrides `traitOrdinal`: the tapped column wins over the
+     *      recorder's trait selector, which is the whole point of tapping a
+     *      specific cell. It rides `defaultTarget` (not `plot`/`subsample`) —
+     *      see `anchorToWire` for why that keeps the confidence review gate
+     *      relaxed;
+     *   2. **`resolveNextTarget`** — the file-derived next target (last-
+     *      written pair + the sheet payload's rows[]);
+     *   3. **null** — nothing to send.
+     *
+     * Retries then replay the target the clip was INTENDED for, even when
+     * other clips have since advanced the live memory OR the operator has
+     * re-tapped elsewhere — a frozen `null` stays null too (an absent key is
+     * the ONLY thing that re-resolves; the `'defaultTarget' in rec` gate in
+     * `lib/api.ts` already keys on that, untouched here). `defaultTarget` is
+     * persisted with the row (the `status: 'syncing'` update below carries
+     * it), so a failure keeps the snapshot for the fix path. `null` snapshots
+     * are also persisted — the read was done. The anchor is READ, never
+     * cleared: clearing it is a UI gesture only (tapping the cell again).
      */
-    const sendRec =
-      !('defaultTarget' in rec) && rec.plot == null && rec.subsample == null
-        ? { ...rec, defaultTarget: resolveNextTarget(rec.trialId ?? '') }
-        : rec;
+    const needsSnapshot =
+      !('defaultTarget' in rec) && rec.plot == null && rec.subsample == null;
+    const anchor = needsSnapshot
+      ? isAnchorForTrial(
+          getDefaultStore().get(sheetSelectedAtom),
+          rec.trialId ?? null,
+        )
+      : null;
+    const sendRec = !needsSnapshot
+      ? rec
+      : anchor !== null
+        ? { ...rec, ...anchorToWire(anchor) }
+        : { ...rec, defaultTarget: resolveNextTarget(rec.trialId ?? '') };
 
     let result: SyncRecordingResponse;
     try {

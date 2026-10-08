@@ -9,6 +9,7 @@ import {
   advanceSheetTarget,
   rehydrateSheetTarget,
   targetHighlight,
+  targetSelection,
 } from './sheetTarget';
 
 const TRIAL = 'trial-1';
@@ -134,6 +135,35 @@ describe('targetHighlight', () => {
 
   it('(h) a null target highlights nothing', () => {
     expect(targetHighlight(null, columns, rows)).toBeNull();
+  });
+});
+
+describe('targetSelection (the write anchor\'s grid shape)', () => {
+  it('(a) narrows targetHighlight to the exact cell for a tapped target', () => {
+    // Shuffled columns again: ordinal 1 → ARRAY index 1, never ordinal − 1.
+    expect(
+      targetSelection({ plot: 101, subsample: 1, traitOrdinal: 1 }, columns, rows),
+    ).toEqual({ row: 12, valuesIndex: 1 });
+    expect(
+      targetSelection({ plot: 101, subsample: 2, traitOrdinal: 3 }, columns, rows),
+    ).toEqual({ row: 57, valuesIndex: 0 });
+  });
+
+  it('(b) a row missing from the payload selects nothing — never a wrap', () => {
+    expect(
+      targetSelection({ plot: 101, subsample: 9, traitOrdinal: 1 }, columns, rows),
+    ).toBeNull();
+    expect(targetSelection(null, columns, rows)).toBeNull();
+  });
+
+  it('(c) a target WITHOUT a column degrades to NO selection, not a row tint', () => {
+    // `targetHighlight` would tint the whole row here; the anchor needs an
+    // exact cell, so the hosts must render no selection instead.
+    expect(targetSelection({ plot: 102, subsample: 1 }, columns, rows)).toBeNull();
+    // Unknown ordinal (in no column of this grid) — same rule.
+    expect(
+      targetSelection({ plot: 101, subsample: 1, traitOrdinal: 9 }, columns, rows),
+    ).toBeNull();
   });
 });
 

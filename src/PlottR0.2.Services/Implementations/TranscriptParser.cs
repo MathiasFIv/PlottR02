@@ -39,7 +39,8 @@ namespace PlottR0._2.Services.Implementations;
 ///   token (<c>"1234567890"</c>) is passed through whole so gate B flags it.</description></item>
 /// </list>
 /// <c>subsample</c> accepts the aliases <c>sub</c>, <c>subsymbol</c>, <c>subsamble</c> and
-/// <c>subamble</c>; <c>plot</c> accepts <c>plut</c>, <c>plod</c> and <c>plus</c>
+/// <c>subamble</c>; <c>plot</c> accepts <c>plut</c>, <c>plod</c>, <c>plus</c>, <c>plug</c>,
+/// <c>clot</c>, <c>pluts</c> and <c>blot</c>
 /// (<c>"plot 5 sub 2 value 10"</c>, the observed <c>"PLUT-104-subsymbol-1-value-6."</c>,
 /// <c>"Sub 7104, plus 203, value 6."</c> and <c>"Plot 101 subsamble 1.Values 398"</c>).
 /// Separators beyond whitespace are supported: hyphens/periods/commas split and a
@@ -113,10 +114,12 @@ public static class TranscriptParser
     /// (<c>"Sub 7104, plus 203, value 6."</c> — first observed in the 9712ac34 trial
     /// recordings, where the intended utterance was "plot 203") and "subamble" for
     /// "subsample" (<c>"Plot 101 subsamble 1.Values 398"</c> — the owner's own utterance,
-    /// where the missing alias used to drop the subsample field entirely). The short forms
+    /// where the missing alias used to drop the subsample field entirely). A second group is
+    /// OWNER-REQUESTED slight mishears of "plot" ("plug", "clot", "pluts" and the same-class
+    /// "blot") added for wider reach when Whisper garbles the keyword itself. The short forms
     /// ("sub") come from the original grammar. Lookups are ordinal (tokens are already
     /// lower-cased) and every entry is EXPLICIT — there is deliberately no fuzzy or
-    /// prefix matching.
+    /// prefix matching, so each of these only ever matches that exact whole token.
     /// </summary>
     private static readonly IReadOnlyDictionary<string, TokenKind> KeywordAliases =
         new Dictionary<string, TokenKind>(StringComparer.Ordinal)
@@ -126,6 +129,14 @@ public static class TranscriptParser
             ["plut"] = TokenKind.Plot,
             ["plod"] = TokenKind.Plot,
             ["plus"] = TokenKind.Plot,
+            // Owner-requested slight mishears of "plot": "plug" (u/i), "clot" (p→k) and
+            // "pluts" (a plural-looking tail). "blot" (p→b) is the same minimal pair class
+            // as "clot" and was added alongside them. Still EXACT whole-token matches only
+            // — the tokenizer strips separators first, so "clotting" is NOT "clot".
+            ["plug"] = TokenKind.Plot,
+            ["clot"] = TokenKind.Plot,
+            ["pluts"] = TokenKind.Plot,
+            ["blot"] = TokenKind.Plot,
             // subsample
             ["subsample"] = TokenKind.Subsample,
             ["subsymbol"] = TokenKind.Subsample,

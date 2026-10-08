@@ -10,11 +10,14 @@ import { useVoiceQueue } from '../hooks/useVoiceQueue';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { getRecordingById } from '../lib/audioDb';
 import { deriveEndOfSheet, deriveNextTarget, resolveNextTarget } from '../lib/nextTarget';
+import { formatAnchor, isAnchorForTrial } from '../lib/sheetAnchor';
 import { summarizeSync } from '../lib/syncQueue';
 import {
   activeTrialIdAtom,
   currentUserAtom,
+  sheetAnchorNoticeAtom,
   sheetLastWrittenAtom,
+  sheetSelectedAtom,
   trialSheetAtom,
 } from '../store/atoms';
 
@@ -41,6 +44,20 @@ export function RecordView() {
   const lastWrittenRaw = useAtomValue(sheetLastWrittenAtom);
   /** The sheet payload on screen — the rows the next target derives from. */
   const sheetPayload = useAtomValue(trialSheetAtom);
+  /**
+   * Write anchor + tap feedback (set by the `SheetPanel` grid below, through
+   * the same default store). Rendered HERE, next to the mic, so the anchored
+   * cell is announced even when the grid is scrolled off screen — that is the
+   * whole point of the line. Trial-guarded: a tap from another trial never
+   * renders for this one.
+   */
+  const anchorRaw = useAtomValue(sheetSelectedAtom);
+  const anchorNoticeRaw = useAtomValue(sheetAnchorNoticeAtom);
+  const anchor = isAnchorForTrial(anchorRaw, activeTrialId);
+  const anchorNotice =
+    anchorNoticeRaw !== null && anchorNoticeRaw.trialId === activeTrialId
+      ? anchorNoticeRaw
+      : null;
 
   const {
     isRecording,
@@ -292,6 +309,26 @@ export function RecordView() {
               Tap to start, tap again to stop. The clip saves and syncs the
               moment the mic stops.
             </p>
+
+            {/* Write anchor status — PERSISTENT and independent of the grid
+                below, so it renders even when the sheet is scrolled off
+                screen. Same `muted record-saved` + role=status convention as
+                the Next / End-of-sheet lines that follow. */}
+            {anchor !== null && (
+              <p className="muted record-saved" role="status">
+                Anchored: {formatAnchor(anchor)} — speak numbers to fill. Tap
+                the cell again to clear.
+              </p>
+            )}
+            {/* Refusal feedback from tapping a cell that already holds a
+                value: the tap is REFUSED with NO state change — it does not
+                clear the anchor — so the anchor line above (if any) still
+                shows alongside this refusal instead of going quiet. */}
+            {anchorNotice !== null && (
+              <p className="muted record-saved sheet-anchor-notice" role="status">
+                Cell already filled
+              </p>
+            )}
 
             {nextTarget !== null ? (
               <p className="muted record-saved" role="status">

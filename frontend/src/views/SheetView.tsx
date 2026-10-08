@@ -1,4 +1,4 @@
-import { useAtomValue } from 'jotai';
+import { useAtom, useAtomValue } from 'jotai';
 import { useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '../components/Button';
@@ -9,9 +9,24 @@ import { SheetStatusPill } from '../components/SheetStatusPill';
 import { useAuth } from '../hooks/useAuth';
 import { useTrialSheet } from '../hooks/useTrialSheet';
 import { deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
+import {
+  decideAnchorTap,
+  formatAnchor,
+  isAnchorForTrial,
+} from '../lib/sheetAnchor';
+import type { SheetCellTap } from '../lib/sheetAnchor';
 import { isNonArmSheetError } from '../lib/sheetStatus';
-import { rehydrateSheetTarget, targetHighlight } from '../lib/sheetTarget';
-import { currentUserAtom, sheetLastWrittenAtom } from '../store/atoms';
+import {
+  rehydrateSheetTarget,
+  targetHighlight,
+  targetSelection,
+} from '../lib/sheetTarget';
+import {
+  currentUserAtom,
+  sheetAnchorNoticeAtom,
+  sheetLastWrittenAtom,
+  sheetSelectedAtom,
+} from '../store/atoms';
 
 /**
  * The dedicated full-sheet route (`/trials/:trialId/sheet`, behind
@@ -45,6 +60,21 @@ export function SheetView() {
    */
   const forTrial = target?.trialId === trialId ? target : null;
 
+  /** Write anchor — read AND written here (tap gesture); syncQueue only reads it. */
+  const [anchor, setAnchor] = useAtom(sheetSelectedAtom);
+  /** Tap feedback ('cell-filled' refusal) rendered next to the grid. */
+  const [anchorNotice, setAnchorNotice] = useAtom(sheetAnchorNoticeAtom);
+  /**
+   * Trial guards: `trialId` is `string | undefined` here. The anchor guard
+   * takes `?? null`, so an id-less route can never match a stored tap; the
+   * notice uses the same identity comparison the last-written pair uses.
+   */
+  const forTrialAnchor = isAnchorForTrial(anchor, trialId ?? null);
+  const forTrialNotice =
+    anchorNotice !== null && anchorNotice.trialId === trialId
+      ? anchorNotice
+      : null;
+
   // Re-seed from the persisted last-written target on mount
   // and on route/trial change (a missing id rehydrates to "no current cell").
   useEffect(() => {
@@ -71,6 +101,27 @@ export function SheetView() {
     columns !== null &&
     rows !== null &&
     !isNonArmSheetError(error);
+
+  /**
+   * Tap-to-anchor — the SAME behaviour as the embedded `SheetPanel` host:
+   * the decision itself is shared in `lib/sheetAnchor.ts#decideAnchorTap`
+   * (one grid, two hosts — no duplicated rules), this host only guards the
+   * id-less route and applies the result: filled → REFUSE with NO anchor
+   * change + `'cell-filled'` notice; empty → anchor THIS trial's tap; the
+   * selected cell tapped again → clear. Never touches
+   * `sheetLastWrittenAtom` (a tap is not a written fact).
+   */
+  function handleSelectCell(cell: SheetCellTap): void {
+    if (trialId === undefined) return; // no trial ⇒ no anchor to set
+    const decision = decideAnchorTap(cell, forTrialAnchor, trialId);
+    if (decision.kind === 'refuse-filled') {
+      // Refusal only — `setAnchor` is deliberately NOT called here.
+      setAnchorNotice({ trialId, kind: 'cell-filled' });
+      return;
+    }
+    setAnchorNotice(null); // an accepted tap retires any refusal notice
+    setAnchor(decision.kind === 'clear' ? null : decision.anchor);
+  }
 
   function handleLogout() {
     logout();
@@ -130,11 +181,30 @@ export function SheetView() {
             rowCount={hasPayload && rows !== null ? rows.length : null}
           />
 
+          {/* Write anchor status — ABOVE the grid so it stays visible while
+              the grid itself is scrolled (same `muted` + role=status
+              convention as the End-of-sheet line below). Deliberately NOT
+              gated on `hasPayload`: the tap survives an offline/failed
+              fetch exactly like the atom does. */}
+          {forTrialAnchor !== null && (
+            <p className="muted" role="status">
+              Anchored: {formatAnchor(forTrialAnchor)} — speak numbers to
+              fill. Tap the cell again to clear.
+            </p>
+          )}
+          {forTrialNotice !== null && (
+            <p className="muted sheet-anchor-notice" role="status">
+              Cell already filled
+            </p>
+          )}
+
           {hasPayload && rows !== null && rows.length > 0 && columns !== null && (
             <SheetGrid
               columns={columns}
               rows={rows}
               highlight={targetHighlight(next, columns, rows)}
+              selected={targetSelection(forTrialAnchor, columns, rows)}
+              onSelectCell={handleSelectCell}
             />
           )}
 

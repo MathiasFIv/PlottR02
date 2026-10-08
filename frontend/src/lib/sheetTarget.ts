@@ -9,6 +9,9 @@
  *   payload. The hosts call it during render (never memoized), so a payload
  *   replacement (refresh / snapshot hydrate / fast-path) is re-derived for
  *   free and a route change can never strand a stale highlight.
+ *   `targetSelection` is that same mapping narrowed to an EXACT cell (the
+ *   write anchor's `SheetGrid` `selected` prop) — same matching, no extra
+ *   arithmetic, so both hosts render the tap identically.
  * - `advanceSheetTarget` / `rehydrateSheetTarget` — the write-through seam:
  *   `lib/syncQueue.ts` records on `status === 'Written'`, the hosts rehydrate
  *   on mount / trial change. Both move the LAST-WRITTEN pair (never a
@@ -78,6 +81,26 @@ export function targetHighlight(
   if (valuesIndex === -1) return { row, valuesIndex: null };
 
   return { row, valuesIndex };
+}
+
+/**
+ * `targetHighlight` narrowed to the WRITE ANCHOR's render shape: the exact
+ * cell (`valuesIndex` is a `number`), or null when the target resolves to no
+ * cell at all (target null, row not in this payload, trait column not in
+ * this payload — an anchor without a column renders no selection rather than
+ * a row tint; the hosts pass the result straight to `SheetGrid`'s `selected`
+ * prop). Same identity matching, no extra arithmetic — the shared seam both
+ * hosts use, so `SheetPanel` and `SheetView` cannot drift apart.
+ */
+export function targetSelection(
+  target: { plot: number; subsample: number; traitOrdinal?: number } | null,
+  columns: SheetColumn[],
+  rows: SheetRow[],
+): { row: number; valuesIndex: number } | null {
+  const highlight = targetHighlight(target, columns, rows);
+  return highlight !== null && highlight.valuesIndex !== null
+    ? { row: highlight.row, valuesIndex: highlight.valuesIndex }
+    : null;
 }
 
 /**
