@@ -98,4 +98,30 @@ public class TrialsController : ControllerBase
         catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
         catch (FileNotFoundException ex) { return NotFound(ex.Message); }
     }
+
+    /// <summary>Returns the read-only ratings sheet for a trial — column identity, ARM
+    /// metadata strip and every key-present data row — plus an opaque <c>version</c>
+    /// token. Echo the token back as <c>?since=</c> to get the ~100-byte
+    /// <c>changed:false</c> fast path while the workbook is untouched; a malformed
+    /// <c>since</c> is ignored (full payload), never an error.</summary>
+    /// <param name="trialId">The trial whose sheet is read.</param>
+    /// <param name="since">Last-seen opaque version; omit for the full payload.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>200 with the sheet payload (full or unchanged); 400 when the workbook has
+    /// no ratings sheet; 404 when the trial or its workbook is missing.</returns>
+    [HttpGet("{trialId:guid}/sheet")]
+    [ProducesResponseType(typeof(TrialSheet), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<TrialSheet>> GetSheet(
+        Guid trialId, [FromQuery] string? since, CancellationToken ct = default)
+    {
+        try
+        {
+            return Ok(await _trialService.GetSheetAsync(trialId, since, ct));
+        }
+        catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+        catch (FileNotFoundException ex) { return NotFound(ex.Message); }
+        catch (InvalidDataException ex) { return BadRequest(ex.Message); }
+    }
 }

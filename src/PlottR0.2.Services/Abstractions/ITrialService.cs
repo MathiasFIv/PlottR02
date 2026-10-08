@@ -22,4 +22,28 @@ public interface ITrialService
     /// The trial exists but no workbook file is left on disk.
     /// </exception>
     Task<WorkbookExport> GetWorkbookExportAsync(Guid trialId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Reads the trial's ratings sheet for the read-only sheet endpoint
+    /// (<c>GET /api/Trials/{trialId}/sheet?since={version}</c>): resolves the current
+    /// workbook and, when <paramref name="since"/> matches its opaque version, returns the
+    /// unchanged fast-path payload WITHOUT opening the workbook. Orchestration only — the
+    /// region read itself is delegated to <c>IRatingRepository.ReadSheetRegion</c>.
+    /// </summary>
+    /// <param name="trialId">The id of the trial whose sheet is read.</param>
+    /// <param name="since">
+    /// The last-seen version echoed back by the client. A non-matching value — including
+    /// malformed input, which is deliberately IGNORED rather than rejected — returns the
+    /// full payload.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The sheet payload: full (<c>Changed = true</c>) or fast path (unchanged).</returns>
+    /// <exception cref="KeyNotFoundException">The trial with <paramref name="trialId"/> does not exist.</exception>
+    /// <exception cref="FileNotFoundException">
+    /// The trial exists but no workbook file is left on disk.
+    /// </exception>
+    /// <exception cref="InvalidDataException">
+    /// The resolved workbook has no "Subsample Plot Data" sheet (non-ARM upload).
+    /// </exception>
+    Task<TrialSheet> GetSheetAsync(Guid trialId, string? since, CancellationToken ct = default);
 }

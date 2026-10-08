@@ -22,6 +22,24 @@ public interface IRatingRepository : IRepository<Rating, Guid>
     IReadOnlyList<RatingCell> ReadPlotColumn(int plot, int traitOrdinal);
 
     /// <summary>
+    /// Reads the WHOLE ratings sheet region of the workbook at <paramref name="workbookPath"/>:
+    /// the column identity strip (rows 3 + 8), the ARM metadata strip (rows 5, 6, 10, 11, 12,
+    /// 20 — read for display, approved 2026-10-07) and every key-present data row from row 22
+    /// onwards, in workbook order. Empty and non-numeric text cells come back as
+    /// <see langword="null"/> (empty ≠ 0 — design.md Rule 2); <c>0</c> is a real value.
+    /// <para/>
+    /// Deliberately synchronous with NO <see cref="CancellationToken"/> — it mirrors
+    /// <see cref="ReadPlotColumn"/>: ClosedXML cannot abort mid-parse, so a token here would
+    /// be a dishonest signature (plan §6).
+    /// </summary>
+    /// <param name="workbookPath">ABSOLUTE path to the workbook to read (e.g. a trial's workbook).</param>
+    /// <returns>The parsed sheet region, including its metadata strip.</returns>
+    /// <exception cref="InvalidDataException">
+    /// The workbook has no "Subsample Plot Data" sheet (non-ARM upload).
+    /// </exception>
+    SheetRegion ReadSheetRegion(string workbookPath);
+
+    /// <summary>
     /// Writes <paramref name="value"/> to the given subsample cells of one plot in one trait
     /// column against a pristine copy of the input workbook, and saves that copy. The write is
     /// idempotent and honours the empty ≠ 0 / metadata read-only / partial-fill rules.

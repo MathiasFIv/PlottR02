@@ -199,7 +199,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ResolveExportPath_NoOutputCopy_ReturnsPristineSource()
+    public async Task ResolveExport_NoOutputCopy_ReturnsPristineSource()
     {
         // Arrange — save a trial workbook but write no *_out_*.xlsx copies.
         var store = CreateStore();
@@ -210,18 +210,19 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         _createdFiles.Add((trialId, relativePath));
 
         // Act
-        var resolved = store.ResolveExportPath(trialId, relativePath);
+        var resolved = store.ResolveExport(trialId, relativePath);
 
         // Assert — the pristine uploaded source is served as the absolute path
-        resolved.Should().Be(
+        resolved.Should().NotBeNull();
+        resolved!.FilePath.Should().Be(
             Path.Combine(_tempRoot, relativePath),
             "with no _out_ copies the pristine uploaded source should be resolved");
-        Path.GetFileName(resolved!).Should().Be(fileName);
-        File.Exists(resolved!).Should().BeTrue("the resolved export path should exist on disk");
+        resolved.FileName.Should().Be(fileName);
+        File.Exists(resolved.FilePath).Should().BeTrue("the resolved export path should exist on disk");
     }
 
     [Fact]
-    public async Task ResolveExportPath_WithOutputCopies_ReturnsNewest()
+    public async Task ResolveExport_WithOutputCopies_ReturnsNewest()
     {
         // Arrange — trial source plus two sync output copies; the newer stamp must win.
         var store = CreateStore();
@@ -240,14 +241,16 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         TrackDirectFile(trialId, newer);
 
         // Act
-        var resolved = store.ResolveExportPath(trialId, relativePath);
+        var resolved = store.ResolveExport(trialId, relativePath);
 
         // Assert — the copy with the greatest _out_ timestamp is served
-        resolved.Should().Be(newer, "the copy with the greatest _out_ timestamp should win");
+        resolved.Should().NotBeNull();
+        resolved!.FilePath.Should().Be(newer, "the copy with the greatest _out_ timestamp should win");
+        resolved.FileName.Should().Be(Path.GetFileName(newer));
     }
 
     [Fact]
-    public void ResolveExportPath_MissingDirAndSource_ReturnsNull()
+    public void ResolveExport_MissingDirAndSource_ReturnsNull()
     {
         // Arrange — a random trial with no working dir and a source path that never existed.
         var store = CreateStore();
@@ -255,14 +258,14 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         var bogusRelativePath = Path.Combine("Working", trialId.ToString(), "never uploaded.xlsx");
 
         // Act
-        var resolved = store.ResolveExportPath(trialId, bogusRelativePath);
+        var resolved = store.ResolveExport(trialId, bogusRelativePath);
 
         // Assert
         resolved.Should().BeNull("neither an output copy nor the source workbook exists");
     }
 
     [Fact]
-    public void ResolveExportPath_ChainedOutputCopy_UsesLastMarker()
+    public void ResolveExport_ChainedOutputCopy_UsesLastMarker()
     {
         // Arrange — a copy created from another output copy carries TWO _out_ markers.
         // The LAST marker must be parsed, so the chained copy beats its own parent.
@@ -277,15 +280,16 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         TrackDirectFile(trialId, chained);
 
         // Act
-        var resolved = store.ResolveExportPath(
+        var resolved = store.ResolveExport(
             trialId, Path.Combine("Working", trialId.ToString(), "chain.xlsx"));
 
         // Assert — the last `_out_` marker is authoritative when names are chained
-        resolved.Should().Be(chained, "the last _out_ marker should be authoritative for chained copies");
+        resolved.Should().NotBeNull();
+        resolved!.FilePath.Should().Be(chained, "the last _out_ marker should be authoritative for chained copies");
     }
 
     [Fact]
-    public async Task ResolveExportPath_OutputCopyWithUnparseableStamp_IsIgnored()
+    public async Task ResolveExport_OutputCopyWithUnparseableStamp_IsIgnored()
     {
         // Arrange — an _out_ name whose trailing stamp cannot parse as yyyyMMdd_HHmmss
         // must be silently ignored, so resolution falls back to the pristine source.
@@ -302,16 +306,17 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         TrackDirectFile(trialId, unparseable);
 
         // Act
-        var resolved = store.ResolveExportPath(trialId, relativePath);
+        var resolved = store.ResolveExport(trialId, relativePath);
 
         // Assert — the garbage stamp does not match, so the pristine upload is served.
-        resolved.Should().Be(
+        resolved.Should().NotBeNull();
+        resolved!.FilePath.Should().Be(
             Path.Combine(_tempRoot, relativePath),
             "copies with unparseable stamps should be silently ignored");
     }
 
     [Fact]
-    public async Task ResolveExportPath_WorkingDirExistsButEmpty_ReturnsPristineSource()
+    public async Task ResolveExport_WorkingDirExistsButEmpty_ReturnsPristineSource()
     {
         // Arrange — SaveAsync creates the working directory; it holds no _out_ copies.
         var store = CreateStore();
@@ -325,14 +330,15 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
             .Should().BeTrue("SaveAsync should create the trial working directory");
 
         // Act
-        var resolved = store.ResolveExportPath(trialId, relativePath);
+        var resolved = store.ResolveExport(trialId, relativePath);
 
         // Assert — empty working dir is not an error; the pristine source wins.
-        resolved.Should().Be(Path.Combine(_tempRoot, relativePath));
+        resolved.Should().NotBeNull();
+        resolved!.FilePath.Should().Be(Path.Combine(_tempRoot, relativePath));
     }
 
     [Fact]
-    public void ResolveExportPath_SourceEscapingServiceRoot_ReturnsNull()
+    public void ResolveExport_SourceEscapingServiceRoot_ReturnsNull()
     {
         // Arrange — a source relative path that climbs out of the Service/ root via `..`.
         // The anchor file EXISTS outside the root, so a null result can only come from
@@ -346,10 +352,63 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         var escapingRelativePath = Path.Combine("..", escapeName);
 
         // Act
-        var resolved = store.ResolveExportPath(trialId, escapingRelativePath);
+        var resolved = store.ResolveExport(trialId, escapingRelativePath);
 
         // Assert — resolved path escapes the Service/ root and must yield null.
         resolved.Should().BeNull("relative source paths must not escape the Service/ directory");
+    }
+
+    [Fact]
+    public async Task ResolveExport_Version_HasOpaqueFormatShapeAndIsDeterministic()
+    {
+        // Arrange — a resolvable workbook (pristine source, no _out_ copies)
+        var store = CreateStore();
+        var trialId = Guid.NewGuid();
+        using var stream = TrialWorkbookFactory.CreateStream();
+        var relativePath = await store.SaveAsync(trialId, "version shape.xlsx", stream);
+        _createdFiles.Add((trialId, relativePath));
+
+        // Act
+        var first = store.ResolveExport(trialId, relativePath);
+        var second = store.ResolveExport(trialId, relativePath);
+
+        // Assert — {sha256hex(absolutePath)[..8]}-{lastWriteTimeUtc.Ticks:x}-{length}
+        first.Should().NotBeNull();
+        first!.Version.Should().MatchRegex(
+            "^[0-9a-f]{8}-[0-9a-f]+-\\d+$",
+            "the opaque version is 8 lowercase hex chars, hex ticks, then decimal length");
+        second!.Version.Should().Be(first.Version, "an unchanged file must produce an identical version");
+    }
+
+    [Fact]
+    public async Task ResolveExport_FileChanged_VersionChangesWithMtimeAndLength()
+    {
+        // Arrange — a resolvable workbook plus its initial version.
+        var store = CreateStore();
+        var trialId = Guid.NewGuid();
+        using var stream = TrialWorkbookFactory.CreateStream();
+        var relativePath = await store.SaveAsync(trialId, "version changes.xlsx", stream);
+        _createdFiles.Add((trialId, relativePath));
+        var absolutePath = Path.Combine(_tempRoot, relativePath);
+
+        var v1 = store.ResolveExport(trialId, relativePath)!.Version;
+
+        // Act 1 — touch only the mtime.
+        File.SetLastWriteTimeUtc(absolutePath, DateTime.UtcNow.AddMinutes(3));
+        var v2 = store.ResolveExport(trialId, relativePath)!.Version;
+
+        // Act 2 — grow the file by one byte, then RESTORE the mtime so ONLY length differs.
+        var touchedMtime = File.GetLastWriteTimeUtc(absolutePath);
+        using (var fs = new FileStream(absolutePath, FileMode.Append, FileAccess.Write))
+        {
+            fs.WriteByte(0);
+        }
+        File.SetLastWriteTimeUtc(absolutePath, touchedMtime);
+        var v3 = store.ResolveExport(trialId, relativePath)!.Version;
+
+        // Assert — both stat components are part of the token (FileInfo only, no open needed)
+        v2.Should().NotBe(v1, "the version embeds lastWriteTimeUtc.Ticks");
+        v3.Should().NotBe(v2, "the version embeds the file length");
     }
 
     /// <summary>

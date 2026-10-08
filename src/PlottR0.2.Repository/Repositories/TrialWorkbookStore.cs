@@ -1,5 +1,8 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using ClosedXML.Excel;
+using PlottR0._2.Contracts.Dtos.Trial;
 using PlottR0._2.Contracts.Repositories;
 
 namespace PlottR0._2.Repository.Repositories;
@@ -112,7 +115,7 @@ public sealed class TrialWorkbookStore : ITrialWorkbookStore
     }
 
     /// <inheritdoc />
-    public string? ResolveExportPath(Guid trialId, string sourceRelativePath)
+    public ResolvedWorkbookExport? ResolveExport(Guid trialId, string sourceRelativePath)
     {
         var serviceDir = _baseDir ?? ResolveServiceDirectory();
         var workingDir = Path.Combine(serviceDir, "Working", trialId.ToString());
@@ -120,27 +123,54 @@ public sealed class TrialWorkbookStore : ITrialWorkbookStore
         // Prefer the newest accumulated sync output (if any): successive syncs chain on
         // earlier copies, so the newest *_out_*.xlsx is the most complete representation.
         var outputCopy = TryGetNewestOutputCopy(workingDir);
+
+        string? filePath;
         if (outputCopy is not null)
         {
-            return outputCopy;
+            filePath = outputCopy;
+        }
+        else
+        {
+            // No sync output yet — fall back to the pristine uploaded workbook.
+            if (string.IsNullOrWhiteSpace(sourceRelativePath))
+            {
+                return null;
+            }
+
+            // Defense-in-depth: the persisted relative path must stay inside the Service/ root,
+            // even if a crafted SourceWorkbookPath ever reaches this store.
+            var fullSource = Path.GetFullPath(Path.Combine(serviceDir, sourceRelativePath));
+            var fullBase = Path.GetFullPath(serviceDir);
+            if (!fullSource.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            filePath = fullSource;
         }
 
-        // No sync output yet — fall back to the pristine uploaded workbook.
-        if (string.IsNullOrWhiteSpace(sourceRelativePath))
+        if (!File.Exists(filePath))
         {
             return null;
         }
 
-        // Defense-in-depth: the persisted relative path must stay inside the Service/ root,
-        // even if a crafted SourceWorkbookPath ever reaches this store.
-        var fullSource = Path.GetFullPath(Path.Combine(serviceDir, sourceRelativePath));
-        var fullBase = Path.GetFullPath(serviceDir);
-        if (!fullSource.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
+        // Version computed in the SAME call as the path (no path/version TOCTOU) — FileInfo
+        // stat only, the file is never opened here (plan §3).
+        var version = ComputeVersion(filePath);
+        return new ResolvedWorkbookExport(filePath, Path.GetFileName(filePath), version);
+    }
 
-        return File.Exists(fullSource) ? fullSource : null;
+    /// <summary>
+    /// Opaque version token: <c>{sha256hex(absolutePath)[..8]}-{lastWriteTimeUtc.Ticks:x}-{length}</c>.
+    /// Derived from <see cref="FileInfo"/> only — resolution stays a stat (the workbook is
+    /// never opened), and any mtime or length change flips the token.
+    /// </summary>
+    private static string ComputeVersion(string absolutePath)
+    {
+        var info = new FileInfo(absolutePath);
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(absolutePath));
+        var prefix = Convert.ToHexString(hash).ToLowerInvariant()[..8];
+        return $"{prefix}-{info.LastWriteTimeUtc.Ticks:x}-{info.Length}";
     }
 
     /// <summary>

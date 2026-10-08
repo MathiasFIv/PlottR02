@@ -103,3 +103,62 @@ export type TrialSummary = {
   createdAt: string;
   createdBy: string | null;
 };
+
+// ---------------------------------------------------------------------------
+// Trial sheet types — mirror the frozen contract for
+// GET /api/Trials/{trialId}/sheet?since={version}
+// (PLAN_2026-10-06 §3 + metadata block per PLAN_2026-10-07 §9 N1).
+//
+// The server NEVER omits nulls: an unchanged (fast-path) response carries
+// `changed: false` with fileName/generatedAt/metadata/columns/rows all
+// PRESENT but null. These fields are therefore required-but-nullable — never
+// optional — so consumers must branch on null instead of on absence.
+// ---------------------------------------------------------------------------
+
+/** One trait column (cols C..K), server-derived from workbook rows 3 (pest) + 8 (part). */
+export type SheetColumn = {
+  /** 1..9 — the value index in `SheetRow.values` is `traitOrdinal - 1`. */
+  traitOrdinal: number;
+  /** Excel column letter, e.g. "C". */
+  column: string;
+  pestCode: string | null;
+  partRated: string | null;
+  /** Display label, e.g. "SEPTTR × LEAF1". */
+  label: string;
+};
+
+/** One workbook data row (Excel rows 22..245) with its typed cells. */
+export type SheetRow = {
+  /** Excel row number — keeps the `C22` ↔ row 22 cross-reference. */
+  row: number;
+  plot: number;
+  subsample: number;
+  /** Index-aligned with `TrialSheet.columns`: `values[traitOrdinal - 1]`.
+   *  `null` = empty/text cell; `0` is a real value (empty ≠ 0). */
+  values: (number | null)[];
+};
+
+/** Workbook-level ARM metadata strip — display-only (values are not ISO, e.g. "16Jun2026"). */
+export type SheetMetadata = {
+  crop: string | null;
+  ratingDate: string | null;
+  ratingType: string | null;
+  unit: string | null;
+  sampleSize: string | null;
+  subsampleCount: string | null;
+};
+
+/** 200 body of GET /api/Trials/{trialId}/sheet — full payload, or fast path. */
+export type TrialSheet = {
+  trialId: string;
+  /** Opaque version token — echo back as `?since=`. */
+  version: string;
+  changed: boolean;
+  /** Null when `changed` is false. */
+  fileName: string | null;
+  /** ISO-8601 UTC; null when `changed` is false. */
+  generatedAt: string | null;
+  metadata: SheetMetadata | null;
+  columns: SheetColumn[] | null;
+  rows: SheetRow[] | null;
+};

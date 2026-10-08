@@ -6,6 +6,7 @@ import type {
   RecordSubsampleRatingsCommand,
   RefreshResponse,
   SubsampleRatingResult,
+  TrialSheet,
   TrialSummary,
   User,
 } from '../types';
@@ -158,6 +159,48 @@ async function requestWithRetry(
   return response;
 }
 
+/**
+ * Reads a failed response's body into a thrown error message (decision A13).
+ *
+ * The API returns errors as plain strings (`BadRequest(ex.Message)`), which
+ * ASP.NET may hand back either raw or as a JSON string literal (`"…"` including
+ * the surrounding quotes). Without this, `jsonRequest` used to discard the body
+ * and every failure read only `API request failed (404): path` — the operator
+ * learned nothing (e.g. every future sheet error).
+ *
+ * Format: the recognisable `API request failed ({status}): {path}` prefix,
+ * followed by ` — ` and the server's own message whenever a non-empty body is
+ * readable. Empty or unreadable bodies fall back to the prefix alone, i.e.
+ * exactly the message thrown before this helper existed.
+ *
+ * Shared by `jsonRequest`, `formRequest` and `downloadWorkbook` so all three
+ * fail identically.
+ */
+export async function readApiErrorMessage(
+  response: Response,
+  path: string,
+): Promise<string> {
+  const fallback = `API request failed (${response.status}): ${path}`;
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    // Body not readable — keep the generic message.
+    return fallback;
+  }
+  if (!text.trim()) return fallback;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (typeof parsed === 'string') {
+      // Serialized plain-string error (quotes included) — unwrap it.
+      return parsed.trim() ? `${fallback} — ${parsed}` : fallback;
+    }
+  } catch {
+    // Not JSON (plain text) — use the raw body below.
+  }
+  return `${fallback} — ${text}`;
+}
+
 async function jsonRequest<T>(
   path: string,
   init?: RequestInit,
@@ -165,10 +208,7 @@ async function jsonRequest<T>(
 ): Promise<T> {
   const response = await requestWithRetry(path, init, withAuth);
   if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      `API request failed (${response.status}): ${path}`,
-    );
+    throw new ApiError(response.status, await readApiErrorMessage(response, path));
   }
   return (await response.json()) as T;
 }
@@ -204,25 +244,9 @@ async function formRequest<T>(
     false, // applyDefaultHeaders — let the browser set Content-Type for FormData
   );
   if (!response.ok) {
-    let message = `API request failed (${response.status}): ${path}`;
-    try {
-      const text = await response.text();
-      if (text) {
-        // ASP.NET Core may serialize a plain-string error as a JSON string
-        // literal (e.g. `"File is too large"` including the surrounding
-        // quotes).  Try to parse so the user sees a clean message.
-        try {
-          const parsed = JSON.parse(text) as unknown;
-          message = typeof parsed === 'string' ? parsed : text;
-        } catch {
-          // Not valid JSON (plain text) — use the raw body.
-          message = text;
-        }
-      }
-    } catch {
-      // response body not readable — keep default message
-    }
-    throw new ApiError(response.status, message);
+    // Same error-body handling as jsonRequest (decision A13): surface the
+    // server's plain-string message, fall back to the generic one.
+    throw new ApiError(response.status, await readApiErrorMessage(response, path));
   }
   return (await response.json()) as T;
 }
@@ -403,24 +427,9 @@ export const api = {
     const response = await requestWithRetry(path, undefined, true);
 
     if (!response.ok) {
-      // Mirror the existing helpers: surface a plain-text (or JSON-string
-      // literal) body message when present, else a generic status message.
-      let message = `API request failed (${response.status}): ${path}`;
-      try {
-        const text = await response.text();
-        if (text) {
-          try {
-            const parsed = JSON.parse(text) as unknown;
-            message = typeof parsed === 'string' ? parsed : text;
-          } catch {
-            // Not valid JSON (plain text) — use the raw body.
-            message = text;
-          }
-        }
-      } catch {
-        // response body not readable — keep default message
-      }
-      throw new ApiError(response.status, message);
+      // Same error-body handling as jsonRequest (decision A13): surface the
+      // server's plain-string message, fall back to the generic one.
+      throw new ApiError(response.status, await readApiErrorMessage(response, path));
     }
 
     const blob = await response.blob();
@@ -443,6 +452,23 @@ export const api = {
 
     return fileName;
   },
+
+  /**
+   * Fetches the read-only ratings sheet for a trial (frozen contract — see
+   * `TrialSheet` in types.ts). Pass the last full payload's `version` as
+   * `since` to use the fast path: when the file hasn't moved the server
+   * answers `changed: false` with every payload field present-but-null, so
+   * consumers branch on `changed` / `columns === null`.
+   *
+   * Lives on the `api` object so it inherits the auth header and the deduped
+   * 401-refresh retry. The optional `signal` flows through `requestWithRetry`
+   * (including the 401-retry leg) for per-tick cancellation by the poller.
+   */
+  getTrialSheet: (trialId: string, since: string | undefined, signal?: AbortSignal) =>
+    jsonRequest<TrialSheet>(
+      `/api/Trials/${trialId}/sheet${since ? `?since=${encodeURIComponent(since)}` : ''}`,
+      { signal },
+    ),
 
   // Recordings (V2E — "Send now") ---------------------------------------
 

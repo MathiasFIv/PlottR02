@@ -1,9 +1,12 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using PlottR0._2.Contracts.Dtos.Trial;
 using PlottR0._2.Contracts.Repositories;
 using PlottR0._2.Domain;
+using PlottR0._2.Repository;
 using PlottR0._2.Repository.Repositories;
 using PlottR0._2.Services.Abstractions;
 using PlottR0._2.Tests.Support;
@@ -194,7 +197,10 @@ public sealed class TrialServiceTests : IAsyncLifetime
             store,
             new FaultingAuditService(),
             _fixture.CurrentUser,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<PlottR0._2.Services.Implementations.TrialService>.Instance);
+            NullLogger<PlottR0._2.Services.Implementations.TrialService>.Instance,
+            new ClosedXmlRatingRepository(
+                Options.Create(new ExcelWorkbookOptions()),
+                NullLogger<ClosedXmlRatingRepository>.Instance));
 
         // We need a trialId to know which Working/<id>/ dir to check. Generate one ourselves.
         var trialId = Guid.NewGuid();
@@ -390,6 +396,160 @@ public sealed class TrialServiceTests : IAsyncLifetime
             var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
             var act = () => service.GetWorkbookExportAsync(trialId);
             await act.Should().ThrowAsync<FileNotFoundException>();
+        }
+    }
+
+    [Fact]
+    public async Task GetSheetAsync_UnknownTrial_ThrowsKeyNotFound()
+    {
+        // Arrange
+        using var scope = _fixture.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+
+        // Act & Assert — maps to 404 with the frozen message
+        var act = () => service.GetSheetAsync(Guid.NewGuid(), since: null);
+        await act.Should().ThrowAsync<KeyNotFoundException>()
+            .WithMessage("Trial '*' was not found.");
+    }
+
+    [Fact]
+    public async Task GetSheetAsync_MatchingVersion_ReturnsUnchangedFastPath()
+    {
+        // Arrange — create a trial, then resolve its current version once.
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = RatingWorkbookFactory.CreateStream();
+        TrialSummary summary;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            summary = await service.CreateTrialAsync(fileName, stream);
+        }
+        var trialId = Guid.Parse(summary.TrialId);
+        _createdTrialIds.Add(trialId);
+
+        string version;
+        using (var scope = _fixture.CreateScope())
+        {
+            var export = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            version = (await export.GetSheetAsync(trialId, since: null)).Version;
+        }
+
+        // Act — echo the version back as `since`
+        TrialSheet unchanged;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            unchanged = await service.GetSheetAsync(trialId, since: version);
+        }
+
+        // Assert — slim unchanged payload; no workbook open needed to answer it
+        unchanged.Changed.Should().BeFalse("the echoed version matches the file, so nothing changed");
+        unchanged.TrialId.Should().Be(trialId.ToString());
+        unchanged.Version.Should().Be(version);
+        unchanged.FileName.Should().BeNull("the fast path carries no payload");
+        unchanged.GeneratedAt.Should().BeNull("the fast path carries no payload");
+        unchanged.Columns.Should().BeNull();
+        unchanged.Rows.Should().BeNull();
+        unchanged.Metadata.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetSheetAsync_MismatchedVersion_ReturnsFullPayload()
+    {
+        // Arrange — create a trial; the default factory emits 16 keyed rows and 9 columns.
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = RatingWorkbookFactory.CreateStream();
+        TrialSummary summary;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            summary = await service.CreateTrialAsync(fileName, stream);
+        }
+        var trialId = Guid.Parse(summary.TrialId);
+        _createdTrialIds.Add(trialId);
+
+        // Act — `since` never seen before ⇒ full payload
+        TrialSheet sheet;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            sheet = await service.GetSheetAsync(trialId, since: "deadbeef-0-0");
+        }
+
+        // Assert — full payload with index-aligned columns and rows
+        sheet.Changed.Should().BeTrue("a stale `since` must trigger a full read");
+        sheet.TrialId.Should().Be(trialId.ToString());
+        sheet.FileName.Should().Be(fileName);
+        sheet.GeneratedAt.Should().NotBeNull();
+        sheet.Version.Should().NotBeNullOrWhiteSpace();
+        sheet.Columns.Should().HaveCount(9, "traits 1..9 map to columns C..K");
+        sheet.Rows.Should().HaveCount(16, "4 plots × 4 subsamples are key-present");
+        sheet.Rows!.Select(r => r.Row).Should().BeInAscendingOrder();
+        foreach (var row in sheet.Rows!)
+        {
+            row.Values.Should().HaveCount(sheet.Columns!.Count, "values[i] ↔ columns[i].traitOrdinal");
+        }
+    }
+
+    [Fact]
+    public async Task GetSheetAsync_MalformedSince_IsIgnoredAndReturnsFullPayload()
+    {
+        // Arrange — create a trial.
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = RatingWorkbookFactory.CreateStream();
+        TrialSummary summary;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            summary = await service.CreateTrialAsync(fileName, stream);
+        }
+        var trialId = Guid.Parse(summary.TrialId);
+        _createdTrialIds.Add(trialId);
+
+        // Act — a poller that hand-edits its query string must never hard-fail: the value is
+        // compared as a plain string, never parsed.
+        TrialSheet sheet;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            sheet = await service.GetSheetAsync(trialId, since: "not a version !!");
+        }
+
+        // Assert — full payload, no exception
+        sheet.Changed.Should().BeTrue("garbage never equals the version, so the full payload wins");
+        sheet.Columns.Should().NotBeNull();
+        sheet.Rows.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task GetSheetAsync_SourceDeletedFromDisk_ThrowsFileNotFound()
+    {
+        // Arrange — create a trial, then remove every workbook file from disk.
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = TrialWorkbookFactory.CreateStream();
+        TrialSummary summary;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            summary = await service.CreateTrialAsync(fileName, stream);
+        }
+        var trialId = Guid.Parse(summary.TrialId);
+        _createdTrialIds.Add(trialId);
+
+        var serviceDir = TrialWorkbookStore.ResolveServiceDirectory();
+        var workingDir = Path.Combine(serviceDir, "Working", trialId.ToString());
+        foreach (var file in Directory.GetFiles(workingDir, "*.xlsx"))
+        {
+            File.Delete(file);
+        }
+
+        // Act & Assert — maps to 404 with the frozen message
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            var act = () => service.GetSheetAsync(trialId, since: null);
+            await act.Should().ThrowAsync<FileNotFoundException>()
+                .WithMessage($"Workbook for trial '{trialId}' was not found on disk.");
         }
     }
 

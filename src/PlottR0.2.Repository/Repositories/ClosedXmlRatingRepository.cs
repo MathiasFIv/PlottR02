@@ -1,6 +1,7 @@
 using ClosedXML.Excel;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using PlottR0._2.Contracts.Dtos.Trial;
 using PlottR0._2.Contracts.Ratings;
 using PlottR0._2.Contracts.Repositories;
 using PlottR0._2.Domain;
@@ -28,6 +29,21 @@ public class ClosedXmlRatingRepository : IRatingRepository
     /// label runs over the nine trait columns, e.g. C:E "LEAF1", F:H "LEAF2", I:K "LEAF3".
     /// </summary>
     private const int PartRatedHeaderRow = 8;
+
+    /// <summary>
+    /// Row 3 carries the per-column Pest Code labels (design.md §5) — the other half of the
+    /// trait identity the sheet view displays. Read for display (Rule 3, approved 2026-10-07).
+    /// </summary>
+    private const int PestHeaderRow = 3;
+
+    // ARM metadata strip rows read for display by ReadSheetRegion (first non-empty cell of
+    // each row, scanning C→K). Never written — design.md Rule 3.
+    private const int CropRow = 5;
+    private const int RatingDateRow = 6;
+    private const int RatingTypeRow = 10;
+    private const int UnitRow = 11;
+    private const int SampleSizeRow = 12;
+    private const int SubsampleCountRow = 20;
 
     private readonly ExcelWorkbookOptions _options;
     private readonly ILogger<ClosedXmlRatingRepository> _logger;
@@ -57,6 +73,73 @@ public class ClosedXmlRatingRepository : IRatingRepository
                 return new RatingCell(plot, subsample, traitOrdinal, ReadInt(cell), cell.Address.ToString() ?? string.Empty);
             })
             .ToList();
+    }
+
+    /// <inheritdoc />
+    public SheetRegion ReadSheetRegion(string workbookPath)
+    {
+        // Path-parameterized open (mirrors WritePlotColumnPreserving) — NEVER OpenInput(),
+        // which reads the global Excel:InputPath rather than this trial's workbook.
+        using var wb = OpenWorkbook(workbookPath);
+        if (!wb.TryGetWorksheet(SheetName, out var sheet) || sheet is null)
+        {
+            // Non-ARM upload: the endpoint maps this to a 400 with a readable body (plan §3).
+            throw new InvalidDataException(
+                $"Sheet '{SheetName}' was not found in workbook '{Path.GetFileName(workbookPath)}'.");
+        }
+
+        var lastRow = sheet.LastRowUsed()?.RowNumber() ?? FirstDataRow;
+
+        // Row-label normalization is shared with the category-block append, so the label
+        // semantics (empty inherits its left neighbour, leading empties inherit the first
+        // non-empty label) cannot diverge between readers.
+        var pestLabels = NormalizeRowLabels(sheet, PestHeaderRow, TraitColumn(1), TraitColumn(9));
+        var partLabels = NormalizeRowLabels(sheet, PartRatedHeaderRow, TraitColumn(1), TraitColumn(9));
+
+        var columns = new List<SheetColumn>(capacity: 9);
+        for (var traitOrdinal = 1; traitOrdinal <= 9; traitOrdinal++)
+        {
+            var index = traitOrdinal - 1; // INVARIANT: values[i] ↔ columns[i].TraitOrdinal = i + 1
+            var column = TraitColumn(traitOrdinal); // TraitColumn(t) = t + 2 (design.md §5)
+            var letter = XLHelper.GetColumnLetterFromNumber(column);
+            var pestCode = EmptyToNull(pestLabels[index]);
+            var partRated = EmptyToNull(partLabels[index]);
+            columns.Add(new SheetColumn(
+                traitOrdinal, letter, pestCode, partRated, BuildColumnLabel(pestCode, partRated, letter)));
+        }
+
+        // Key-present rows only, in workbook order; row number kept for the C22 ↔ row 22
+        // cross-reference (decision A4). Values via ReadIntSafe semantics: int → value,
+        // 0 preserved, empty → null, non-numeric text → null (NOT ReadInt — it throws on text).
+        var rows = new List<SheetRow>();
+        for (var row = FirstDataRow; row <= lastRow; row++)
+        {
+            if (!TryParseSubsampleKey(sheet, row, out var plot, out var subsample))
+            {
+                continue;
+            }
+
+            var values = new int?[9];
+            for (var traitOrdinal = 1; traitOrdinal <= 9; traitOrdinal++)
+            {
+                values[traitOrdinal - 1] = ReadIntSafe(sheet.Cell(row, TraitColumn(traitOrdinal)));
+            }
+
+            rows.Add(new SheetRow(row, plot, subsample, values));
+        }
+
+        return new SheetRegion(columns, rows)
+        {
+            // Workbook-level ARM metadata strip (read-for-display approved 2026-10-07):
+            // first non-empty cell scanning C→K on each metadata row.
+            Metadata = new SheetMetadata(
+                ReadMetadataValue(sheet, CropRow),
+                ReadMetadataValue(sheet, RatingDateRow),
+                ReadMetadataValue(sheet, RatingTypeRow),
+                ReadMetadataValue(sheet, UnitRow),
+                ReadMetadataValue(sheet, SampleSizeRow),
+                ReadMetadataValue(sheet, SubsampleCountRow)),
+        };
     }
 
     /// <inheritdoc />
@@ -358,39 +441,11 @@ public class ClosedXmlRatingRepository : IRatingRepository
     private static List<(int StartColumn, int EndColumn, string Label)> BuildCategoryBlocks(
         IXLWorksheet sheet, int startColumn, int endColumn)
     {
-        var normalized = new List<string>(endColumn - startColumn + 1);
-        var lastNonEmpty = string.Empty;
-        var anyNonEmpty = false;
-        for (var col = startColumn; col <= endColumn; col++)
-        {
-            var raw = sheet.Cell(PartRatedHeaderRow, col).GetValue<string>().Trim();
-            if (raw.Length == 0)
-            {
-                normalized.Add(lastNonEmpty);
-            }
-            else
-            {
-                anyNonEmpty = true;
-                lastNonEmpty = raw;
-                normalized.Add(raw);
-            }
-        }
+        var normalized = NormalizeRowLabels(sheet, PartRatedHeaderRow, startColumn, endColumn);
 
-        if (!anyNonEmpty)
+        if (normalized.All(label => label.Length == 0))
         {
             return new List<(int, int, string)> { (startColumn, endColumn, string.Empty) };
-        }
-
-        // Leading EMPTY labels (nothing non-empty before them) inherit the NEXT non-empty
-        // label, so the region starts as that category instead of declaring an anonymous
-        // single-column block that would drop every multi-value utterance starting at it.
-        if (normalized[0].Length == 0)
-        {
-            var firstNonEmptyIndex = normalized.FindIndex(label => label.Length > 0);
-            for (var i = 0; i < firstNonEmptyIndex; i++)
-            {
-                normalized[i] = normalized[firstNonEmptyIndex];
-            }
         }
 
         var blocks = new List<(int StartColumn, int EndColumn, string Label)>();
@@ -412,9 +467,81 @@ public class ClosedXmlRatingRepository : IRatingRepository
     }
 
     /// <summary>
+    /// Normalizes one ARM label row (row 8 Part Rated, row 3 Pest Code) over
+    /// <paramref name="startColumn"/>..<paramref name="endColumn"/> into one label per column:
+    /// an EMPTY label cell inherits the last non-empty label to its LEFT — the ARM header row
+    /// is decoration, not a category change. When the LEADING label(s) of the region are empty
+    /// but a later column is labelled, they inherit the NEXT non-empty label instead, so the
+    /// region effectively starts as that category. A region with NO non-empty label at all
+    /// yields all-empty labels (callers fall back — e.g. one anonymous block for the category
+    /// scan, null pest/part for the sheet columns). Shared by
+    /// <see cref="BuildCategoryBlocks"/> and <see cref="ReadSheetRegion"/> so the two scans
+    /// can never diverge.
+    /// </summary>
+    private static List<string> NormalizeRowLabels(IXLWorksheet sheet, int row, int startColumn, int endColumn)
+    {
+        var normalized = new List<string>(endColumn - startColumn + 1);
+        var lastNonEmpty = string.Empty;
+        for (var col = startColumn; col <= endColumn; col++)
+        {
+            var raw = sheet.Cell(row, col).GetValue<string>().Trim();
+            if (raw.Length == 0)
+            {
+                normalized.Add(lastNonEmpty);
+            }
+            else
+            {
+                lastNonEmpty = raw;
+                normalized.Add(raw);
+            }
+        }
+
+        // Leading EMPTY labels (nothing non-empty before them) inherit the NEXT non-empty
+        // label, so the region starts as that category instead of declaring an anonymous
+        // single-column block that would drop every multi-value utterance starting at it.
+        // (All-empty → FindIndex returns -1 and the loop never runs; nothing to inherit.)
+        if (normalized.Count > 0 && normalized[0].Length == 0)
+        {
+            var firstNonEmptyIndex = normalized.FindIndex(label => label.Length > 0);
+            for (var i = 0; i < firstNonEmptyIndex; i++)
+            {
+                normalized[i] = normalized[firstNonEmptyIndex];
+            }
+        }
+
+        return normalized;
+    }
+
+    /// <summary>
+    /// Reads and parses the column-B composite key ("{plot} {subsample}") of one row using
+    /// the exact parse rules every key scan shares (<see cref="FindSubsampleRows"/>'s plot
+    /// scan and <see cref="ReadSheetRegion"/>'s full-region scan): trimmed, split on spaces,
+    /// exactly two int-parseable parts. Keys are parsed FROM the file, never hardcoded
+    /// (design.md §5). Returns <see langword="false"/> for empty or malformed keys.
+    /// </summary>
+    private static bool TryParseSubsampleKey(IXLWorksheet sheet, int row, out int plot, out int subsample)
+    {
+        plot = 0;
+        subsample = 0;
+
+        var key = sheet.Cell(row, 2).GetValue<string>().Trim();
+        if (string.IsNullOrEmpty(key))
+        {
+            return false;
+        }
+
+        var parts = key.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 2
+            && int.TryParse(parts[0], out plot)
+            && int.TryParse(parts[1], out subsample);
+    }
+
+    /// <summary>
     /// Builds a map of <c>(plot, subsample) → row</c> for the given plot by parsing the
-    /// composite keys in column B ("{plot} {subsample}"). Keys are parsed FROM the file,
-    /// never hardcoded (design.md §5).
+    /// composite keys in column B ("{plot} {subsample}") via
+    /// <see cref="TryParseSubsampleKey"/> — the SAME parse rules as the full-region scan in
+    /// <see cref="ReadSheetRegion"/>. Keys are parsed FROM the file, never hardcoded
+    /// (design.md §5).
     /// </summary>
     private static Dictionary<int, (int subsample, int row)> FindSubsampleRows(IXLWorksheet sheet, int plot)
     {
@@ -423,16 +550,7 @@ public class ClosedXmlRatingRepository : IRatingRepository
 
         for (var row = FirstDataRow; row <= lastRow; row++)
         {
-            var key = sheet.Cell(row, 2).GetValue<string>().Trim();
-            if (string.IsNullOrEmpty(key))
-            {
-                continue;
-            }
-
-            var parts = key.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length != 2 ||
-                !int.TryParse(parts[0], out var keyPlot) ||
-                !int.TryParse(parts[1], out var subsample))
+            if (!TryParseSubsampleKey(sheet, row, out var keyPlot, out var subsample))
             {
                 continue;
             }
@@ -542,6 +660,43 @@ public class ClosedXmlRatingRepository : IRatingRepository
     /// </summary>
     private static int? ReadIntSafe(IXLCell cell)
         => cell.IsEmpty() || cell.DataType != XLDataType.Number ? null : (int)cell.GetDouble();
+
+    /// <summary>
+    /// Reads one ARM metadata value (display strip) as the FIRST NON-EMPTY cell of
+    /// <paramref name="row"/> scanning C→K — the physical cells repeat per column in the
+    /// real template, so the first occupied one is the logical value (plan §3). Returns
+    /// <see langword="null"/> when the whole row is empty.
+    /// </summary>
+    private static string? ReadMetadataValue(IXLWorksheet sheet, int row)
+    {
+        for (var column = TraitColumn(1); column <= TraitColumn(9); column++)
+        {
+            var raw = sheet.Cell(row, column).GetValue<string>().Trim();
+            if (raw.Length > 0)
+            {
+                return raw;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Builds the display label of one trait column: "<c>PEST × PART</c>" when both halves
+    /// are known; whatever is known alone otherwise; the column letter as the last resort
+    /// (workbooks manufactured without the ARM label rows).
+    /// </summary>
+    private static string BuildColumnLabel(string? pestCode, string? partRated, string columnLetter)
+        => (pestCode, partRated) switch
+        {
+            (not null, not null) => $"{pestCode} × {partRated}",
+            (not null, null) => pestCode,
+            (null, not null) => partRated,
+            _ => columnLetter,
+        };
+
+    private static string? EmptyToNull(string value)
+        => value.Length == 0 ? null : value;
 
     /// <summary>
     /// Saves the (possibly written) workbook as a fresh output copy into the given ABSOLUTE
