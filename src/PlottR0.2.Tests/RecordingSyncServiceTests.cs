@@ -58,6 +58,10 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
         }
 
         await _fixture.ResetDatabaseAsync();
+
+        // This class mutates the shared ICurrentUser to simulate field workers; restore the
+        // default manager actor so sibling test classes in the collection are unaffected.
+        _fixture.CurrentUser.ResetToDefaults();
     }
 
     // ── Happy path: transcript-confident write ───────────────────────────────
@@ -2258,6 +2262,172 @@ await AssertStoredAsync(clientId, row =>
 });
     }
 
+    // ── Per-trial access gate (Increment 3) ───────────────────────────────────
+
+    [Fact]
+    public async Task SyncAsync_UnassignedFieldWorker_ThrowsForbiddenBeforeAnyWrite()
+    {
+        // Arrange — a trial exists, but the actor is not assigned to it.
+        var trialId = await CreateTrialAsync();
+        _fixture.CurrentUser.UserId = await PersistFieldWorkerAsync();
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 3 value 7" });
+
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act & Assert — denied before any transcription, blob, row or workbook write.
+        var act = () => service.SyncAsync(AudioBytes(), "clip.webm", Command(trialId, clientId));
+        await act.Should().ThrowAsync<ForbiddenAccessException>();
+        fake.CallCount.Should().Be(0, "the gate fires before transcription");
+        BlobFiles(trialId).Should().BeEmpty("an unauthorized sync stores no audio");
+        OutputCopies(trialId).Should().BeEmpty("an unauthorized sync writes no workbook");
+        await AssertNotStoredAsync(clientId);
+    }
+
+    [Fact]
+    public async Task SyncAsync_AssignedFieldWorker_Succeeds()
+    {
+        // Arrange — the actor IS assigned to the trial.
+        var trialId = await CreateTrialAsync();
+        var fieldWorkerId = await PersistFieldWorkerAsync();
+        await AssignTrialAsync(trialId, fieldWorkerId);
+        _fixture.CurrentUser.UserId = fieldWorkerId;
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+        var clientId = Guid.NewGuid().ToString();
+
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 3 value 7" }));
+
+        // Act
+        var result = await service.SyncAsync(AudioBytes(), "clip.webm", Command(trialId, clientId));
+
+        // Assert
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        OutputCopies(trialId).Should().ContainSingle();
+        BlobFiles(trialId).Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData(UserRole.SystemAdmin)]
+    [InlineData(UserRole.Researcher)]
+    [InlineData(UserRole.TrialManager)]
+    public async Task SyncAsync_Managers_UnassignedTrial_Succeeds(UserRole role)
+    {
+        // Arrange — a manager who is NOT assigned to the trial still bypasses the gate.
+        var trialId = await CreateTrialAsync();
+        _fixture.CurrentUser.Role = role;
+        var clientId = Guid.NewGuid().ToString();
+
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 3 value 7" }));
+
+        // Act
+        var result = await service.SyncAsync(AudioBytes(), "clip.webm", Command(trialId, clientId));
+
+        // Assert
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+    }
+
+    [Fact]
+    public async Task SyncAsync_UnassignedFieldWorker_Replay_ThrowsForbidden()
+    {
+        // Arrange — a recording already exists (synced by the manager actor).
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        using (var scope = _fixture.CreateScope())
+        {
+            await CreateService(scope, new FakeTranscriptionService(
+                new TranscriptionResult { Text = "plot 101 subsample 3 value 7" }))
+                .SyncAsync(AudioBytes(), "clip.webm", Command(trialId, clientId));
+        }
+
+        // Switch to an unassigned field worker and retry the SAME idempotency key.
+        _fixture.CurrentUser.UserId = await PersistFieldWorkerAsync();
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+
+        using var replayScope = _fixture.CreateScope();
+        var replayFake = new FakeTranscriptionService();
+        var service = CreateService(replayScope, replayFake);
+
+        // Act & Assert — a replay still discloses the trial's outcome, so it is gated too.
+        var act = () => service.SyncAsync(AudioBytes(seed: 42), "clip.webm", Command(trialId, clientId));
+        await act.Should().ThrowAsync<ForbiddenAccessException>();
+        replayFake.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CorrectAsync_UnassignedFieldWorker_ThrowsForbidden()
+    {
+        // Arrange — flag a row as the manager actor.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        using (var scope = _fixture.CreateScope())
+        {
+            var flagged = await CreateService(scope, new FakeTranscriptionService(
+                new TranscriptionResult { Text = "plot 101" }))
+                .SyncAsync(AudioBytes(), "clip.webm",
+                    Command(trialId, clientId, plot: null, subsample: null, value: null));
+            flagged.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        }
+
+        // Switch to an unassigned field worker.
+        _fixture.CurrentUser.UserId = await PersistFieldWorkerAsync();
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+
+        using var correctScope = _fixture.CreateScope();
+        var service = CreateService(correctScope, new FakeTranscriptionService());
+
+        // Act & Assert — denied before the row is touched.
+        var act = () => service.CorrectAsync(clientId, plot: 101, subsample: 3, value: 7, traitOrdinal: 1);
+        await act.Should().ThrowAsync<ForbiddenAccessException>();
+
+        await AssertStoredAsync(clientId, row =>
+        {
+            row.Status.Should().Be(VoiceRecordingStatus.Flagged);
+            row.ConfirmedPlot.Should().BeNull("an unauthorized correction writes nothing");
+        });
+    }
+
+    [Fact]
+    public async Task CorrectAsync_AssignedFieldWorker_Succeeds()
+    {
+        // Arrange — the field worker is assigned to the trial.
+        var trialId = await CreateTrialAsync();
+        var fieldWorkerId = await PersistFieldWorkerAsync();
+        await AssignTrialAsync(trialId, fieldWorkerId);
+        _fixture.CurrentUser.UserId = fieldWorkerId;
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+
+        // Flag a partial row (as the assigned field worker).
+        var clientId = Guid.NewGuid().ToString();
+        using (var scope = _fixture.CreateScope())
+        {
+            var flagged = await CreateService(scope, new FakeTranscriptionService(
+                new TranscriptionResult { Text = "plot 101" }))
+                .SyncAsync(AudioBytes(), "clip.webm",
+                    Command(trialId, clientId, plot: null, subsample: null, value: null));
+            flagged.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        }
+
+        // Act — correct the row (still the assigned field worker).
+        SyncVoiceRecordingResult result;
+        using (var scope = _fixture.CreateScope())
+        {
+            result = await CreateService(scope, new FakeTranscriptionService())
+                .CorrectAsync(clientId, plot: 101, subsample: 3, value: 7, traitOrdinal: 1);
+        }
+
+        // Assert
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.WrittenCells.Should().ContainSingle();
+        OutputCopies(trialId).Should().ContainSingle();
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -2292,6 +2462,38 @@ await AssertStoredAsync(clientId, row =>
 
         _createdTrialIds.Add(trialId);
         return trialId;
+    }
+
+    /// <summary>
+    /// Persists an additional FieldWorker <see cref="User"/> so assignment rows satisfy the
+    /// FK to Users, and returns its id.
+    /// </summary>
+    private async Task<Guid> PersistFieldWorkerAsync()
+    {
+        var userId = Guid.NewGuid();
+        using var scope = _fixture.CreateScope();
+        var userRepo = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+
+        await userRepo.AddAsync(new User
+        {
+            Id = userId,
+            Name = $"Field Worker {userId:N}",
+            Email = $"fieldworker.{userId:N}@plottr02.local",
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword("TestPass123!"),
+            Role = UserRole.FieldWorker,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        });
+
+        return userId;
+    }
+
+    /// <summary>Replaces a trial's assignment set with the single given field worker.</summary>
+    private async Task AssignTrialAsync(Guid trialId, Guid userId)
+    {
+        using var scope = _fixture.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<ITrialRepository>();
+        await repo.SetAssignmentsAsync(trialId, [userId], userId);
     }
 
     /// <summary>Saves a real rating-shaped workbook through the store and returns its relative path.</summary>
@@ -2334,13 +2536,14 @@ await AssertStoredAsync(clientId, row =>
     }
 
     /// <summary>Constructs the sync service manually with a scripted transcription double.</summary>
-    private static RecordingSyncService CreateService(IServiceScope scope, ITranscriptionService transcription)
+    private RecordingSyncService CreateService(IServiceScope scope, ITranscriptionService transcription)
         => new(
             scope.ServiceProvider.GetRequiredService<IVoiceRecordingRepository>(),
             scope.ServiceProvider.GetRequiredService<IVoiceBlobStore>(),
             transcription,
             scope.ServiceProvider.GetRequiredService<ITrialRepository>(),
             scope.ServiceProvider.GetRequiredService<IRatingRepository>(),
+            _fixture.CurrentUser,
             NullLogger<RecordingSyncService>.Instance);
 
     /// <summary>
@@ -2396,6 +2599,15 @@ await AssertStoredAsync(clientId, row =>
         var row = await repo.GetByClientRecordingIdAsync(clientId);
         row.Should().NotBeNull();
         assert(row!);
+    }
+
+    /// <summary>Asserts no VoiceRecording row exists for the given PWA idempotency key.</summary>
+    private async Task AssertNotStoredAsync(string clientId)
+    {
+        using var scope = _fixture.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IVoiceRecordingRepository>();
+        (await repo.GetByClientRecordingIdAsync(clientId)).Should().BeNull(
+            "an unauthorized sync must not persist an audit row");
     }
 
     /// <summary>Strips <c>$</c> signs from a cell address for flexible assertion matching.</summary>

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using PlottR0._2.Contracts;
 using PlottR0._2.Contracts.Dtos.Trial;
+using PlottR0._2.Contracts.Dtos.User;
 using PlottR0._2.Contracts.Mappers;
 using PlottR0._2.Contracts.Repositories;
 using PlottR0._2.Domain;
@@ -11,9 +12,10 @@ namespace PlottR0._2.Services.Implementations;
 
 /// <summary>
 /// Concrete <see cref="ITrialService"/> that orchestrates trial creation (workbook
-/// upload + DB persistence + audit), trial listing, workbook export and the read-only
-/// sheet endpoint. File I/O is delegated to <see cref="ITrialWorkbookStore"/> and
-/// <see cref="IRatingRepository"/>; persistence to <see cref="ITrialRepository"/>.
+/// upload + DB persistence + audit), trial listing, trial-to-user assignment,
+/// workbook export and the read-only sheet endpoint. File I/O is delegated to
+/// <see cref="ITrialWorkbookStore"/> and <see cref="IRatingRepository"/>; persistence
+/// to <see cref="ITrialRepository"/> and <see cref="IUserRepository"/>.
 /// </summary>
 public class TrialService : ITrialService
 {
@@ -23,6 +25,7 @@ public class TrialService : ITrialService
     private readonly ICurrentUser _currentUser;
     private readonly ILogger<TrialService> _logger;
     private readonly IRatingRepository _ratingRepository;
+    private readonly IUserRepository _userRepository;
 
     public TrialService(
         ITrialRepository trialRepository,
@@ -30,7 +33,8 @@ public class TrialService : ITrialService
         IAuditService auditService,
         ICurrentUser currentUser,
         ILogger<TrialService> logger,
-        IRatingRepository ratingRepository)
+        IRatingRepository ratingRepository,
+        IUserRepository userRepository)
     {
         _trialRepository = trialRepository;
         _workbookStore = workbookStore;
@@ -38,6 +42,7 @@ public class TrialService : ITrialService
         _currentUser = currentUser;
         _logger = logger;
         _ratingRepository = ratingRepository;
+        _userRepository = userRepository;
     }
 
     /// <inheritdoc />
@@ -45,6 +50,24 @@ public class TrialService : ITrialService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         ArgumentNullException.ThrowIfNull(content);
+
+        // Role gate — BEFORE any file or DB write. Only researchers, trial managers
+        // and system administrators may create trials; a null role (legacy/anonymous
+        // actor) is denied identically.
+        if (_currentUser.Role is not (UserRole.SystemAdmin or UserRole.Researcher or UserRole.TrialManager))
+        {
+            throw new ForbiddenAccessException(
+                "Only researchers, trial managers, or system administrators can create trials.");
+        }
+
+        // Identity gate — also BEFORE any file or DB write. A privileged role with no user
+        // id (e.g. a stale/malformed token) cannot be attributed: persisting Guid.Empty
+        // would poison CreatedBy and any creator assignment, so fail fast instead.
+        if (_currentUser.UserId is not Guid creatorId)
+        {
+            throw new ForbiddenAccessException(
+                "Your account has no user identifier; re-authenticate.");
+        }
 
         var trialId = Guid.NewGuid();
 
@@ -60,10 +83,32 @@ public class TrialService : ITrialService
             FileName = Path.GetFileName(fileName),
             Status = TrialStatus.Created,
             SourceWorkbookPath = relativePath,
-            CreatedBy = _currentUser.UserId,
+            CreatedBy = creatorId,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
         };
+
+        // A researcher or trial manager is implicitly assigned to their own trial; the row
+        // rides along inside CreateAsync's single SaveChangesAsync — no second round-trip.
+        // A system administrator is "above the matrix" (they bypass every per-trial gate via
+        // IsManager), so the row is pointless and is deliberately omitted. Omitting it also
+        // closes a dead-end: an admin-authored trial used to carry an admin assignment that
+        // the crew UI round-tripped back through AssignTrialUsersAsync, which rejects
+        // SystemAdmin targets → an inescapable 400.
+        if (_currentUser.Role is UserRole.Researcher or UserRole.TrialManager)
+        {
+            trial.Assignments =
+            [
+                new TrialAssignment
+                {
+                    Id = Guid.NewGuid(),
+                    TrialId = trialId,
+                    UserId = creatorId,
+                    AssignedBy = creatorId,
+                    AssignedAt = DateTime.UtcNow,
+                },
+            ];
+        }
 
         try
         {
@@ -102,8 +147,27 @@ public class TrialService : ITrialService
     /// <inheritdoc />
     public async Task<IReadOnlyList<TrialSummary>> ListTrialsAsync(CancellationToken ct = default)
     {
+        // Managers (system administrators, researchers, trial managers) see every trial.
+        if (IsManager(_currentUser.Role))
+        {
+            var all = await _trialRepository.GetAllAsync(ct: ct);
+            return TrialMapper.ToSummaries(all);
+        }
+
+        // Everyone else (a field worker, or a legacy/role-less actor) sees ONLY the trials
+        // they are assigned to. A missing identity is treated as "nothing assigned".
+        if (_currentUser.UserId is not Guid userId)
+            return [];
+
+        var assignedIds = await _trialRepository.GetAssignedTrialIdsAsync(userId, ct);
+        if (assignedIds.Count == 0)
+            return [];
+
+        // The repository exposes no "get many by id" call; trials are a small field set, so
+        // filter the full list in memory while preserving its CreatedAt-descending ordering.
+        var assignedSet = assignedIds.ToHashSet();
         var trials = await _trialRepository.GetAllAsync(ct: ct);
-        return TrialMapper.ToSummaries(trials);
+        return TrialMapper.ToSummaries(trials.Where(t => assignedSet.Contains(t.Id)));
     }
 
     /// <inheritdoc />
@@ -142,12 +206,134 @@ public class TrialService : ITrialService
             region.Columns, region.Rows, region.Metadata);
     }
 
+    /// <inheritdoc />
+    public async Task AssignTrialUsersAsync(Guid trialId, AssignTrialUsersRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // Actor gate first — before any lookup or write.
+        EnsureCanAssignUsers();
+
+        if (!await _trialRepository.ExistsAsync(trialId, ct))
+            throw new KeyNotFoundException($"Trial '{trialId}' was not found.");
+
+        var requestedIds = request.UserIds;
+
+        // Duplicate ids are a client error, not a silent de-dupe.
+        if (requestedIds.Distinct().Count() != requestedIds.Count)
+            throw new ArgumentException("UserIds must be distinct.");
+
+        // Validate every target BEFORE persisting (all-or-nothing). Lookups are
+        // performed in a fixed order; the checks themselves are order-independent.
+        var validatedIds = new List<Guid>(requestedIds.Count);
+        foreach (var userId in requestedIds)
+        {
+            var user = await _userRepository.GetByIdAsync(userId, ct);
+            if (user is null)
+                throw new ArgumentException($"User '{userId}' was not found.");
+
+            if (user.Role is null)
+                throw new ArgumentException(
+                    $"User '{userId}' has no role and cannot be assigned to a trial.");
+
+            if (user.Role == UserRole.SystemAdmin)
+                throw new ArgumentException(
+                    "System administrators are above the matrix and need no trial assignment.");
+
+            if (user.Role is not (UserRole.Researcher or UserRole.TrialManager or UserRole.FieldWorker))
+                throw new ArgumentException(
+                    $"User '{userId}' has role '{user.Role}' which cannot be assigned to a trial.");
+
+            validatedIds.Add(userId);
+        }
+
+        // Replace semantics: the creator's auto-assignment is part of the replaced set,
+        // so it survives only if the caller keeps them in the requested ids.
+        await _trialRepository.SetAssignmentsAsync(
+            trialId, validatedIds, _currentUser.UserId ?? Guid.Empty, ct);
+
+        await _auditService.LogAsync(
+            "Trial.UsersAssigned",
+            "Trial",
+            trialId.ToString(),
+            _currentUser.UserId,
+            _currentUser.Name,
+            JsonSerializer.Serialize(new { trialId, count = validatedIds.Count }),
+            ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<UserResponse>> ListTrialUsersAsync(Guid trialId, CancellationToken ct = default)
+    {
+        EnsureCanAssignUsers();
+
+        if (!await _trialRepository.ExistsAsync(trialId, ct))
+            throw new KeyNotFoundException($"Trial '{trialId}' was not found.");
+
+        var assignments = await _trialRepository.GetAssignmentsAsync(trialId, ct);
+
+        var users = new List<UserResponse>(assignments.Count);
+        foreach (var assignment in assignments)
+        {
+            // Defensive: skip an assignment whose user has since disappeared rather
+            // than failing the whole read.
+            var user = await _userRepository.GetByIdAsync(assignment.UserId, ct);
+            if (user is not null)
+                users.Add(UserMapper.ToResponse(user));
+        }
+
+        return users;
+    }
+
+    /// <summary>
+    /// Shared actor gate for both assignment operations: only system administrators,
+    /// researchers and trial managers may view or change a trial's crew. A null role
+    /// (legacy/anonymous actor) is denied identically.
+    /// </summary>
+    /// <exception cref="ForbiddenAccessException">The caller's role may not manage assignments.</exception>
+    private void EnsureCanAssignUsers()
+    {
+        if (_currentUser.Role is not (UserRole.SystemAdmin or UserRole.Researcher or UserRole.TrialManager))
+        {
+            throw new ForbiddenAccessException(
+                "Only researchers, trial managers, or system administrators can assign users to trials.");
+        }
+    }
+
+    /// <summary>
+    /// True when the actor's role sits above the per-trial assignment matrix: a manager
+    /// sees and may access every trial without an explicit assignment. A null role
+    /// (legacy/anonymous actor) is never a manager.
+    /// </summary>
+    private static bool IsManager(UserRole? role)
+        => role is UserRole.SystemAdmin or UserRole.Researcher or UserRole.TrialManager;
+
+    /// <summary>
+    /// Ensures the current actor may access <paramref name="trialId"/>: managers always may;
+    /// every other actor must be explicitly assigned to the trial. A missing identity or a
+    /// trial the caller is not assigned to is denied identically.
+    /// </summary>
+    /// <exception cref="ForbiddenAccessException">The actor is not permitted to access the trial.</exception>
+    private async Task EnsureCanAccessTrialAsync(Guid trialId, CancellationToken ct)
+    {
+        if (IsManager(_currentUser.Role))
+            return;
+
+        if (_currentUser.UserId is not Guid userId
+            || !await _trialRepository.IsAssignedAsync(trialId, userId, ct))
+        {
+            throw new ForbiddenAccessException(
+                $"You do not have access to trial '{trialId}'.");
+        }
+    }
+
     /// <summary>
     /// Loads the trial and resolves its current workbook export (path + file name + opaque
     /// version) — the ONE place path resolution happens, shared by
     /// <see cref="GetWorkbookExportAsync"/> and <see cref="GetSheetAsync"/>.
     /// </summary>
     /// <exception cref="KeyNotFoundException">The trial does not exist.</exception>
+    /// <exception cref="ForbiddenAccessException">The actor is not permitted to access the trial.</exception>
     /// <exception cref="FileNotFoundException">No workbook file is left on disk for the trial.</exception>
     private async Task<ResolvedWorkbookExport> ResolveExportAsync(Guid trialId, CancellationToken ct)
     {
@@ -156,6 +342,11 @@ public class TrialService : ITrialService
         var trial = await _trialRepository.GetByIdAsync(trialId, ct);
         if (trial is null)
             throw new KeyNotFoundException($"Trial '{trialId}' was not found.");
+
+        // Access gate — an existing trial still requires the caller to be a manager or to be
+        // explicitly assigned to it. The existence check above deliberately runs first so an
+        // unknown trial stays a 404 even for a field worker (no existence disclosure change).
+        await EnsureCanAccessTrialAsync(trial.Id, ct);
 
         ct.ThrowIfCancellationRequested();
 

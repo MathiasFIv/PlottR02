@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   USER_ROLES,
+  assignableCrew,
   assignableRoles,
+  canCreateTrials,
   canCreateUsers,
   canManageUsers,
   roleLabel,
 } from './types';
-import type { UserRole } from './types';
+import type { User, UserRole } from './types';
 
 describe('USER_ROLES', () => {
   it('holds exactly the four contract values, in order', () => {
@@ -103,5 +105,47 @@ describe('canCreateUsers', () => {
   it('denies field workers and no-role actors', () => {
     expect(canCreateUsers('FieldWorker')).toBe(false);
     expect(canCreateUsers(null)).toBe(false);
+  });
+});
+
+describe('canCreateTrials', () => {
+  it('allows system admins, researchers, and trial managers', () => {
+    expect(canCreateTrials('SystemAdmin')).toBe(true);
+    expect(canCreateTrials('Researcher')).toBe(true);
+    expect(canCreateTrials('TrialManager')).toBe(true);
+  });
+
+  it('denies field workers and no-role actors', () => {
+    expect(canCreateTrials('FieldWorker')).toBe(false);
+    expect(canCreateTrials(null)).toBe(false);
+  });
+});
+
+describe('assignableCrew', () => {
+  const users: User[] = [
+    { id: '1', name: 'Admin', email: 'admin@example.com', role: 'SystemAdmin' },
+    { id: '2', name: 'Res', email: 'res@example.com', role: 'Researcher' },
+    { id: '3', name: 'Manager', email: 'manager@example.com', role: 'TrialManager' },
+    { id: '4', name: 'Worker', email: 'worker@example.com', role: 'FieldWorker' },
+    { id: '5', name: 'Legacy', email: 'legacy@example.com', role: null },
+  ];
+
+  it('includes researchers, trial managers, and field workers', () => {
+    expect(assignableCrew(users).map((u) => u.id)).toEqual(['2', '3', '4']);
+  });
+
+  it('excludes system admins (above the matrix) and null-role users', () => {
+    const ids = assignableCrew(users).map((u) => u.id);
+    expect(ids).not.toContain('1');
+    expect(ids).not.toContain('5');
+  });
+
+  it('returns an empty list when no user is assignable', () => {
+    expect(
+      assignableCrew([
+        { id: '1', name: 'Admin', email: 'admin@example.com', role: 'SystemAdmin' },
+        { id: '2', name: 'Legacy', email: 'legacy@example.com', role: null },
+      ]),
+    ).toEqual([]);
   });
 });

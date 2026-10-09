@@ -66,12 +66,40 @@ export function canCreateUsers(actor: UserRole | null): boolean {
   return actor !== null && ASSIGNABLE_ROLES[actor].length > 0;
 }
 
+/**
+ * Roles allowed to upload (create) a trial workbook. Mirrors the backend
+ * permission matrix: system admins, researchers, and trial managers — never
+ * field workers, and never a "no role" actor.
+ */
+export const TRIAL_CREATOR_ROLES: readonly UserRole[] = [
+  'SystemAdmin',
+  'Researcher',
+  'TrialManager',
+] as const;
+
+/** Whether the actor may upload a trial workbook (SystemAdmin, Researcher, TrialManager). */
+export function canCreateTrials(actor: UserRole | null): boolean {
+  return actor !== null && TRIAL_CREATOR_ROLES.includes(actor);
+}
+
 export type User = {
   id: string;
   name: string;
   email: string;
   role: UserRole | null;
 };
+
+/**
+ * Users eligible to be assigned as a trial's crew. System admins sit ABOVE the
+ * permission matrix (they administer the system rather than work trials), and a
+ * null role is a legacy/no-role account — neither may ever be assigned. Everyone
+ * else qualifies: Researcher, TrialManager, and FieldWorker.
+ */
+export function assignableCrew(users: readonly User[]): User[] {
+  return users.filter(
+    (user) => user.role !== null && user.role !== 'SystemAdmin',
+  );
+}
 
 export type CreateUserInput = {
   name: string;

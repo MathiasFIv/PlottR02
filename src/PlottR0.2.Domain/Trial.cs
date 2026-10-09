@@ -15,6 +15,13 @@ public class Trial : AuditableEntity
     public List<Plot> Plots { get; set; } = [];
 
     /// <summary>
+    /// Users assigned to work on this trial. A researcher or trial-manager creator is
+    /// included automatically; a system-administrator creator is not (admins sit above
+    /// the assignment matrix).
+    /// </summary>
+    public List<TrialAssignment> Assignments { get; set; } = [];
+
+    /// <summary>
     /// Navigation property to the <see cref="User"/> who created this trial.
     /// Backed by the inherited <see cref="AuditableEntity.CreatedBy"/> FK column.
     /// </summary>

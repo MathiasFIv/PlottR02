@@ -10,10 +10,11 @@ namespace PlottR0._2.Api.Controllers;
     /// <summary>
     /// REST CRUD endpoints for the <see cref="PlottR0._2.Domain.User"/> resource.
     /// Thin controller — all business logic is delegated to <see cref="IUserService"/>.
-    /// Listing, reading, updating and deleting users is restricted to system admins and
-    /// trial managers (see <see cref="ManageUsersRoles"/>); <c>GetMe</c> stays open to any
-    /// authenticated user and <c>Create</c> is authenticated-only with role assignment
-    /// governed by the role assignment matrix.
+    /// Reading, updating and deleting users is restricted to system admins and
+    /// trial managers (see <see cref="ManageUsersRoles"/>); listing additionally admits
+    /// researchers so the trial-assignment picker can populate its candidate list.
+    /// <c>GetMe</c> stays open to any authenticated user and <c>Create</c> is
+    /// authenticated-only with role assignment governed by the role assignment matrix.
     /// </summary>
 [ApiController]
 [Authorize]
@@ -39,12 +40,14 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>
-    /// Gets all users.
+    /// Gets all users. Also open to researchers (beyond <see cref="ManageUsersRoles"/>)
+    /// so the trial-assignment picker can list candidate users; every other action keeps
+    /// the narrower manager-only gate.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>A list of all users as DTOs.</returns>
     [HttpGet]
-    [Authorize(Roles = ManageUsersRoles)]
+    [Authorize(Roles = ManageUsersRoles + ",Researcher")]
     public async Task<ActionResult<IReadOnlyList<UserResponse>>> GetAll(CancellationToken ct = default)
     {
         var users = await _userService.GetAllResponsesAsync(ct);

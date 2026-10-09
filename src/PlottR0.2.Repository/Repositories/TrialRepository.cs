@@ -63,4 +63,70 @@ public sealed class TrialRepository : ITrialRepository
         await _db.SaveChangesAsync(ct);
         return trial;
     }
+
+    /// <inheritdoc />
+    public async Task SetAssignmentsAsync(
+        Guid trialId,
+        IReadOnlyList<Guid> userIds,
+        Guid assignedById,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(userIds);
+
+        // Replace semantics: clear the trial's current assignment set, then insert
+        // the new one. Both changes commit in a single SaveChangesAsync below.
+        var existing = await _db.Assignments
+            .Where(a => a.TrialId == trialId)
+            .ToListAsync(ct);
+
+        if (existing.Count > 0)
+            _db.Assignments.RemoveRange(existing);
+
+        var assignedAt = DateTime.UtcNow;
+        foreach (var userId in userIds)
+        {
+            _db.Assignments.Add(new TrialAssignment
+            {
+                Id = Guid.NewGuid(),
+                TrialId = trialId,
+                UserId = userId,
+                AssignedBy = assignedById,
+                AssignedAt = assignedAt,
+            });
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<TrialAssignment>> GetAssignmentsAsync(
+        Guid trialId,
+        CancellationToken ct = default)
+    {
+        return await _db.Assignments
+            .Where(a => a.TrialId == trialId)
+            .OrderBy(a => a.AssignedAt)
+            .ToListAsync(ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<Guid>> GetAssignedTrialIdsAsync(
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        return await _db.Assignments
+            .Where(a => a.UserId == userId)
+            .Select(a => a.TrialId)
+            .ToListAsync(ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> IsAssignedAsync(
+        Guid trialId,
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        return await _db.Assignments
+            .AnyAsync(a => a.TrialId == trialId && a.UserId == userId, ct);
+    }
 }

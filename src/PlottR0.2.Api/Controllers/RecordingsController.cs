@@ -34,12 +34,14 @@ public class RecordingsController : ControllerBase
     /// or non-positive plot/subsample and a null value are treated as "not confirmed" so
     /// the transcript becomes authoritative for those fields.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>200 with the sync outcome, 400 on a missing file or invalid form values,
+    /// <returns>200 with the sync outcome; 400 on a missing file or invalid form values;
+    /// 403 when the caller is not a manager and is not assigned to the recording's trial;
     /// or 404 when the referenced trial does not exist.</returns>
     [HttpPost("sync")]
     [Consumes("multipart/form-data")]
     [ProducesResponseType(typeof(SyncVoiceRecordingResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Sync(
         [FromForm] SyncVoiceRecordingRequest request,
@@ -69,6 +71,10 @@ public class RecordingsController : ControllerBase
             var result = await _syncService.SyncAsync(stream, request.File.FileName, command, ct);
             return Ok(result);
         }
+        catch (ForbiddenAccessException)
+        {
+            return Forbid();
+        }
         catch (KeyNotFoundException ex)
         {
             return NotFound(ex.Message);
@@ -84,13 +90,15 @@ public class RecordingsController : ControllerBase
     /// <param name="request">The reviewer-confirmed target (plot, subsample, value) and the
     /// trait ordinal the PWA records against.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>200 with the correction outcome, 400 on an invalid body, 404 when no
+    /// <returns>200 with the correction outcome, 400 on an invalid body, 403 when the
+    /// caller is not a manager and is not assigned to the recording's trial, 404 when no
     /// recording exists for <paramref name="clientRecordingId"/>, or 409 when the recording
     /// is already in the terminal <c>Written</c>/<c>SkippedPresent</c> state.</returns>
     [HttpPost("{clientRecordingId}/correct")]
     [Consumes("application/json")]
     [ProducesResponseType(typeof(SyncVoiceRecordingResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Correct(
@@ -108,6 +116,10 @@ public class RecordingsController : ControllerBase
                 request.TraitOrdinal,
                 ct);
             return Ok(result);
+        }
+        catch (ForbiddenAccessException)
+        {
+            return Forbid();
         }
         catch (KeyNotFoundException ex)
         {

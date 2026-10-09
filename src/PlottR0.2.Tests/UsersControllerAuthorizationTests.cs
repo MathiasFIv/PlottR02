@@ -31,13 +31,21 @@ public sealed class UsersControllerAuthorizationTests
     }
 
     [Theory]
-    [InlineData(nameof(UsersController.GetAll))]
     [InlineData(nameof(UsersController.GetById))]
     [InlineData(nameof(UsersController.Update))]
     [InlineData(nameof(UsersController.Delete))]
     public void AdminActions_RequireSystemAdminOrTrialManager(string methodName)
     {
         MethodAuthorize(methodName).Roles.Should().Be(UsersController.ManageUsersRoles);
+    }
+
+    [Fact]
+    public void ListAction_AlsoAllowsResearchers_SoTheAssignmentPickerCanPopulate()
+    {
+        // The trial-assignment modal lists candidate users, so the list gate is widened
+        // to researchers; every other user action keeps the narrower manager-only gate.
+        MethodAuthorize(nameof(UsersController.GetAll)).Roles
+            .Should().Be(UsersController.ManageUsersRoles + ",Researcher");
     }
 
     [Fact]

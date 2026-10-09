@@ -397,6 +397,21 @@ export const api = {
 
   listTrials: () => jsonRequest<TrialSummary[]>('/api/Trials'),
 
+  /** Current crew assigned to a trial (frozen contract: `User[]`). */
+  listTrialUsers: (trialId: string) =>
+    jsonRequest<User[]>(`/api/Trials/${trialId}/users`),
+
+  /**
+   * Replaces the trial's crew assignment with exactly `userIds` (PUT, 204).
+   * Callers are managers (SystemAdmin/Researcher/TrialManager); the backend
+   * answers 400 validation, 403 not-a-manager, 404 trial missing.
+   */
+  assignTrialUsers: (trialId: string, userIds: string[]) =>
+    noContentRequest(`/api/Trials/${trialId}/users`, {
+      method: 'PUT',
+      body: JSON.stringify({ userIds }),
+    }),
+
   createTrial: (file: File) => {
     const body = new FormData();
     body.append('file', file);

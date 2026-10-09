@@ -18,6 +18,7 @@ public class PlottR0DbContext : DbContext
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<VoiceRecording> VoiceRecordings => Set<VoiceRecording>();
+    public DbSet<TrialAssignment> Assignments => Set<TrialAssignment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -214,6 +215,38 @@ public class PlottR0DbContext : DbContext
                 .IsRequired()
                 .HasMaxLength(20)
                 .HasDefaultValue(VoiceRecordingStatus.Received);
+        });
+
+        // ── TrialAssignment (Trial ↔ User, many-to-many via join entity) ─────
+        modelBuilder.Entity<TrialAssignment>(entity =>
+        {
+            entity.HasKey(a => a.Id);
+
+            // Both FKs are required — an assignment cannot exist without its
+            // trial and user — and both cascade so deleting either end cleans up
+            // the join rows.
+            entity.Property(a => a.TrialId)
+                .IsRequired();
+            entity.Property(a => a.UserId)
+                .IsRequired();
+            entity.Property(a => a.AssignedBy)
+                .IsRequired();
+            entity.Property(a => a.AssignedAt)
+                .IsRequired();
+
+            // A user may be assigned to a given trial at most once.
+            entity.HasIndex(a => new { a.TrialId, a.UserId })
+                .IsUnique();
+
+            entity.HasOne<Trial>()
+                .WithMany(t => t.Assignments)
+                .HasForeignKey(a => a.TrialId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne<User>()
+                .WithMany(u => u.Assignments)
+                .HasForeignKey(a => a.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 

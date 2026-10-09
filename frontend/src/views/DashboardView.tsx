@@ -2,6 +2,7 @@ import { useAtomValue } from 'jotai';
 import { useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { AssignCrewModal } from '../components/AssignCrewModal';
 import { Button } from '../components/Button';
 import { TrialList } from '../components/TrialList';
 import { UserManagementSection } from '../components/UserManagementSection';
@@ -9,15 +10,22 @@ import { api } from '../lib/api';
 import { currentUserAtom } from '../store/atoms';
 import { useAuth } from '../hooks/useAuth';
 import { useTrials } from '../hooks/useTrials';
-import { canCreateUsers, roleLabel } from '../types';
+import { canCreateUsers, canCreateTrials, roleLabel } from '../types';
 import type { TrialSummary } from '../types';
 
 /**
- * Logged-in dashboard: the trials list (visible to every role) plus a
- * user-administration section (create — and, for managers, list, POST/GET
- * /api/Users) shown to any creator (system admins, researchers, trial
- * managers). The user list fetch is managers-only inside
- * UserManagementSection, so create-only actors never trigger it.
+ * Logged-in dashboard: the trials list (visible to every role; the upload form
+ * and per-trial "Assign crew" action are creators-only: system admins,
+ * researchers, trial managers) plus a user-administration section (create —
+ * and, for managers, list, POST/GET /api/Users) shown to any user creator
+ * (system admins, researchers, trial managers). The user list fetch is
+ * managers-only inside UserManagementSection, so create-only actors never
+ * trigger it.
+ *
+ * The empty trials list uses a role-appropriate message: creators see the
+ * default "no trials uploaded yet" line, while non-creators (field workers,
+ * whose list is server-filtered to their assignments) see "No trials assigned
+ * to you yet." instead.
  */
 export function DashboardView() {
   const currentUser = useAtomValue(currentUserAtom);
@@ -26,6 +34,9 @@ export function DashboardView() {
   // Any role allowed to create accounts sees the section; the list within it
   // remains managers-only.
   const showUserManagement = canCreateUsers(currentUser?.role ?? null);
+  // The trials list is read-only for every role; only creators see the upload
+  // form that POSTs to /api/Trials.
+  const showTrialUpload = canCreateTrials(currentUser?.role ?? null);
   const {
     trials,
     loading: trialsLoading,
@@ -49,6 +60,9 @@ export function DashboardView() {
   const [downloadedFileName, setDownloadedFileName] = useState<string | null>(
     null,
   );
+
+  // Per-trial crew-assignment dialog (managers only).
+  const [assigningTrial, setAssigningTrial] = useState<TrialSummary | null>(null);
 
   function handleLogout() {
     logout();
@@ -129,27 +143,33 @@ export function DashboardView() {
             </button>
           </div>
 
-          <form onSubmit={handleUpload}>
-            <div className="field">
-              <label htmlFor="trial-file" className="field__label">
-                Upload .xlsx workbook
-              </label>
-              <input
-                ref={fileInputRef}
-                id="trial-file"
-                type="file"
-                accept=".xlsx"
-                className="input"
-                onChange={handleFileChange}
-              />
-            </div>
-            <Button
-              type="submit"
-              disabled={!selectedFile || uploading}
-            >
-              {uploading ? 'Uploading…' : 'Upload trial'}
-            </Button>
-          </form>
+          {showTrialUpload ? (
+            <form onSubmit={handleUpload}>
+              <div className="field">
+                <label htmlFor="trial-file" className="field__label">
+                  Upload .xlsx workbook
+                </label>
+                <input
+                  ref={fileInputRef}
+                  id="trial-file"
+                  type="file"
+                  accept=".xlsx"
+                  className="input"
+                  onChange={handleFileChange}
+                />
+              </div>
+              <Button
+                type="submit"
+                disabled={!selectedFile || uploading}
+              >
+                {uploading ? 'Uploading…' : 'Upload trial'}
+              </Button>
+            </form>
+          ) : (
+            <p className="muted">
+              Trials are created by researchers and trial managers.
+            </p>
+          )}
 
           {uploadError && <p className="error-text">{uploadError}</p>}
           {uploadedFileName && (
@@ -164,6 +184,10 @@ export function DashboardView() {
             error={trialsError}
             onDownload={handleDownload}
             downloadingTrialId={downloadingTrialId}
+            onAssign={showTrialUpload ? (t) => setAssigningTrial(t) : undefined}
+            emptyMessage={
+              showTrialUpload ? undefined : 'No trials assigned to you yet.'
+            }
           />
 
           {downloadingTrialId && (
@@ -179,6 +203,13 @@ export function DashboardView() {
           )}
         </section>
       </main>
+
+      {assigningTrial && (
+        <AssignCrewModal
+          trial={assigningTrial}
+          onClose={() => setAssigningTrial(null)}
+        />
+      )}
     </div>
   );
 }

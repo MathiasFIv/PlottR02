@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using PlottR0._2.Api.Controllers;
 using PlottR0._2.Contracts.Dtos.Trial;
+using PlottR0._2.Contracts.Dtos.User;
 using PlottR0._2.Services.Abstractions;
 
 namespace PlottR0._2.Tests;
@@ -125,7 +126,7 @@ public sealed class TrialsControllerSheetTests
         typeof(TrialsController).GetCustomAttribute<AuthorizeAttribute>().Should().NotBeNull(
             "the whole controller is behind the auth pipeline");
 
-        // Assert — Swagger documents 200 (with TrialSheet), 400 and 404
+        // Assert — Swagger documents 200 (with TrialSheet), 400, 403 (not assigned) and 404
         var codes = method.GetCustomAttributes<ProducesResponseTypeAttribute>()
             .Select(a => a.StatusCode)
             .ToArray();
@@ -133,6 +134,7 @@ public sealed class TrialsControllerSheetTests
         {
             StatusCodes.Status200OK,
             StatusCodes.Status400BadRequest,
+            StatusCodes.Status403Forbidden,
             StatusCodes.Status404NotFound,
         });
         method.GetCustomAttributes<ProducesResponseTypeAttribute>()
@@ -173,6 +175,12 @@ public sealed class TrialsControllerSheetTests
             => throw new NotSupportedException();
 
         public Task<WorkbookExport> GetWorkbookExportAsync(Guid trialId, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task AssignTrialUsersAsync(Guid trialId, AssignTrialUsersRequest request, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<UserResponse>> ListTrialUsersAsync(Guid trialId, CancellationToken ct = default)
             => throw new NotSupportedException();
     }
 }

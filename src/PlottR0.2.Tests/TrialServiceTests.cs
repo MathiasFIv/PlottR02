@@ -36,6 +36,9 @@ public sealed class TrialServiceTests : IAsyncLifetime
         _fixture.CurrentUser.UserId = DefaultActorUserId;
         _fixture.CurrentUser.Email = "test@plottr02.local";
         _fixture.CurrentUser.Name = "Test Actor";
+        // The create gate requires a privileged role; pin SystemAdmin for the default
+        // actor so every test in this class starts from a permitted identity.
+        _fixture.CurrentUser.Role = UserRole.SystemAdmin;
 
         // Create a User row matching the test actor so the FKCreatedBy constraint is satisfied.
         await EnsureTestUserExistsAsync();
@@ -190,6 +193,9 @@ public sealed class TrialServiceTests : IAsyncLifetime
         var store = new TrialWorkbookStore();
         var faultingRepo = new FaultingTrialRepository();
 
+        using var userScope = _fixture.CreateScope();
+        var userRepository = userScope.ServiceProvider.GetRequiredService<IUserRepository>();
+
         var service = new PlottR0._2.Services.Implementations.TrialService(
             faultingRepo,
             store,
@@ -197,7 +203,8 @@ public sealed class TrialServiceTests : IAsyncLifetime
             _fixture.CurrentUser,
             NullLogger<PlottR0._2.Services.Implementations.TrialService>.Instance,
             new ClosedXmlRatingRepository(
-                NullLogger<ClosedXmlRatingRepository>.Instance));
+                NullLogger<ClosedXmlRatingRepository>.Instance),
+            userRepository);
 
         // We need a trialId to know which Working/<id>/ dir to check. Generate one ourselves.
         var trialId = Guid.NewGuid();
@@ -550,6 +557,421 @@ public sealed class TrialServiceTests : IAsyncLifetime
         }
     }
 
+    // ── Create role gate ──────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(UserRole.SystemAdmin)]
+    [InlineData(UserRole.Researcher)]
+    [InlineData(UserRole.TrialManager)]
+    public async Task CreateTrialAsync_PermittedRoles_Succeeds(UserRole role)
+    {
+        // Arrange — only these three roles may create trials.
+        _fixture.CurrentUser.Role = role;
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = TrialWorkbookFactory.CreateStream();
+
+        // Act
+        TrialSummary summary;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            summary = await service.CreateTrialAsync(fileName, stream);
+        }
+        _createdTrialIds.Add(Guid.Parse(summary.TrialId));
+
+        // Assert
+        summary.TrialId.Should().NotBeNullOrWhiteSpace();
+        summary.FileName.Should().Be(fileName);
+    }
+
+    [Theory]
+    [InlineData(UserRole.FieldWorker)]
+    [InlineData(null)]
+    public async Task CreateTrialAsync_ForbiddenRoles_ThrowForbiddenBeforePersisting(UserRole? role)
+    {
+        // Arrange — FieldWorker and role-less/anonymous actors are denied.
+        _fixture.CurrentUser.Role = role;
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = TrialWorkbookFactory.CreateStream();
+
+        // Act & Assert
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            var act = () => service.CreateTrialAsync(fileName, stream);
+            await act.Should().ThrowAsync<ForbiddenAccessException>();
+        }
+
+        // Assert — the gate fires before any DB write.
+        using (var verifyScope = _fixture.CreateScope())
+        {
+            var repo = verifyScope.ServiceProvider.GetRequiredService<ITrialRepository>();
+            (await repo.CountAsync()).Should().Be(0,
+                "the role gate must reject before anything is persisted");
+        }
+    }
+
+    // ── Creator auto-assignment ───────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(UserRole.Researcher, 1)]
+    [InlineData(UserRole.TrialManager, 1)]
+    [InlineData(UserRole.SystemAdmin, 0)]
+    public async Task CreateTrialAsync_CreatorAssignment_FollowsRole(UserRole role, int expectedRows)
+    {
+        // Arrange
+        _fixture.CurrentUser.Role = role;
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = TrialWorkbookFactory.CreateStream();
+
+        // Act
+        TrialSummary summary;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            summary = await service.CreateTrialAsync(fileName, stream);
+        }
+        var trialId = Guid.Parse(summary.TrialId);
+        _createdTrialIds.Add(trialId);
+
+        // Assert — a researcher/trial-manager creator is auto-assigned exactly once,
+        // persisted atomically with the trial; a system administrator is above the matrix
+        // and carries NO assignment row.
+        using (var scope = _fixture.CreateScope())
+        {
+            var repo = scope.ServiceProvider.GetRequiredService<ITrialRepository>();
+            var assignments = await repo.GetAssignmentsAsync(trialId);
+
+            assignments.Should().HaveCount(expectedRows);
+
+            if (expectedRows == 1)
+            {
+                var only = assignments[0];
+                only.Id.Should().NotBeEmpty();
+                only.TrialId.Should().Be(trialId);
+                only.UserId.Should().Be(DefaultActorUserId);
+                only.AssignedBy.Should().Be(DefaultActorUserId);
+
+                (await repo.IsAssignedAsync(trialId, DefaultActorUserId)).Should().BeTrue();
+                (await repo.GetAssignedTrialIdsAsync(DefaultActorUserId)).Should().Contain(trialId);
+            }
+            else
+            {
+                (await repo.IsAssignedAsync(trialId, DefaultActorUserId)).Should().BeFalse(
+                    "an admin-authored trial carries no creator assignment");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task CreateTrialAsync_NoUserId_ThrowsForbiddenBeforePersisting()
+    {
+        // Arrange — a privileged role but no user id (e.g. a stale/malformed token).
+        // Persisting Guid.Empty would poison CreatedBy and any creator assignment.
+        _fixture.CurrentUser.Role = UserRole.Researcher;
+        _fixture.CurrentUser.UserId = null;
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = TrialWorkbookFactory.CreateStream();
+
+        // Act & Assert
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            var act = () => service.CreateTrialAsync(fileName, stream);
+            await act.Should().ThrowAsync<ForbiddenAccessException>()
+                .WithMessage("*no user identifier*");
+        }
+
+        // Assert — the identity gate fires before any DB write.
+        using (var verifyScope = _fixture.CreateScope())
+        {
+            var repo = verifyScope.ServiceProvider.GetRequiredService<ITrialRepository>();
+            (await repo.CountAsync()).Should().Be(0,
+                "a privileged actor without a user id must be rejected before anything is persisted");
+        }
+    }
+
+    // ── Trial access scoping (Increment 3) ────────────────────────────────────
+
+    [Fact]
+    public async Task ListTrialsAsync_FieldWorker_ReturnsOnlyAssignedTrials()
+    {
+        // Arrange — three trials created by the (manager) default actor, with a field
+        // worker assigned to the first and third only.
+        var trialA = await CreateTrialViaServiceAsync();
+        var trialB = await CreateTrialViaServiceAsync();
+        var trialC = await CreateTrialViaServiceAsync();
+        var fieldWorkerId = await PersistUserAsync(UserRole.FieldWorker);
+        await AssignTrialAsync(trialA, fieldWorkerId);
+        await AssignTrialAsync(trialC, fieldWorkerId);
+
+        _fixture.CurrentUser.UserId = fieldWorkerId;
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+
+        // Act
+        IReadOnlyList<TrialSummary> results;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            results = await service.ListTrialsAsync();
+        }
+
+        // Assert — only the assigned trials, never the unassigned one.
+        results.Select(r => Guid.Parse(r.TrialId)).Should().BeEquivalentTo(new[] { trialA, trialC });
+        results.Select(r => Guid.Parse(r.TrialId)).Should().NotContain(trialB);
+    }
+
+    [Theory]
+    [InlineData(UserRole.SystemAdmin)]
+    [InlineData(UserRole.Researcher)]
+    [InlineData(UserRole.TrialManager)]
+    public async Task ListTrialsAsync_Managers_ReturnAllTrialsRegardlessOfAssignment(UserRole role)
+    {
+        // Arrange — two trials; the actor is deliberately NOT assigned to either.
+        await CreateTrialViaServiceAsync();
+        await CreateTrialViaServiceAsync();
+
+        _fixture.CurrentUser.UserId = Guid.NewGuid();
+        _fixture.CurrentUser.Role = role;
+
+        // Act
+        IReadOnlyList<TrialSummary> results;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            results = await service.ListTrialsAsync();
+        }
+
+        // Assert — managers bypass the assignment filter entirely.
+        results.Should().HaveCount(2);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(UserRole.FieldWorker)]
+    public async Task ListTrialsAsync_NonManagerWithoutAssignments_ReturnsEmpty(UserRole? role)
+    {
+        // Arrange — a trial exists, but the actor has no assignment to it.
+        await CreateTrialViaServiceAsync();
+        var actorId = await PersistUserAsync(UserRole.FieldWorker);
+
+        _fixture.CurrentUser.UserId = actorId;
+        _fixture.CurrentUser.Role = role;
+
+        // Act
+        IReadOnlyList<TrialSummary> results;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            results = await service.ListTrialsAsync();
+        }
+
+        // Assert — an unassigned (or role-less) actor sees an empty list, never everything.
+        results.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetWorkbookExportAsync_AssignedFieldWorker_Succeeds()
+    {
+        // Arrange — a trial with the field worker assigned.
+        var trialId = await CreateTrialViaServiceAsync();
+        var fieldWorkerId = await PersistUserAsync(UserRole.FieldWorker);
+        await AssignTrialAsync(trialId, fieldWorkerId);
+        _fixture.CurrentUser.UserId = fieldWorkerId;
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+
+        // Act
+        WorkbookExport export;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            export = await service.GetWorkbookExportAsync(trialId);
+        }
+
+        // Assert
+        export.FilePath.Should().NotBeNullOrWhiteSpace();
+        File.Exists(export.FilePath).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetWorkbookExportAsync_UnassignedFieldWorker_ThrowsForbidden()
+    {
+        // Arrange — a trial exists, but the actor is not assigned to it.
+        var trialId = await CreateTrialViaServiceAsync();
+        var fieldWorkerId = await PersistUserAsync(UserRole.FieldWorker);
+        _fixture.CurrentUser.UserId = fieldWorkerId;
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+
+        // Act & Assert
+        using var scope = _fixture.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+        var act = () => service.GetWorkbookExportAsync(trialId);
+        await act.Should().ThrowAsync<ForbiddenAccessException>();
+    }
+
+    [Fact]
+    public async Task GetWorkbookExportAsync_UnassignedFieldWorkerUnknownTrial_ThrowsKeyNotFound()
+    {
+        // Arrange — an unassigned field worker asks for a trial that does not exist. The
+        // existence check (404) must win over the assignment check (403) so the response
+        // never discloses whether a trial with that id exists.
+        var fieldWorkerId = await PersistUserAsync(UserRole.FieldWorker);
+        _fixture.CurrentUser.UserId = fieldWorkerId;
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+
+        // Act & Assert
+        using var scope = _fixture.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+        var act = () => service.GetWorkbookExportAsync(Guid.NewGuid());
+        await act.Should().ThrowAsync<KeyNotFoundException>();
+    }
+
+    [Fact]
+    public async Task GetSheetAsync_AssignedFieldWorker_Succeeds()
+    {
+        // Arrange
+        var trialId = await CreateTrialViaServiceAsync(ratingWorkbook: true);
+        var fieldWorkerId = await PersistUserAsync(UserRole.FieldWorker);
+        await AssignTrialAsync(trialId, fieldWorkerId);
+        _fixture.CurrentUser.UserId = fieldWorkerId;
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+
+        // Act
+        TrialSheet sheet;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            sheet = await service.GetSheetAsync(trialId, since: null);
+        }
+
+        // Assert
+        sheet.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task GetSheetAsync_UnassignedFieldWorker_ThrowsForbidden()
+    {
+        // Arrange — a trial exists, but the actor is not assigned to it.
+        var trialId = await CreateTrialViaServiceAsync();
+        var fieldWorkerId = await PersistUserAsync(UserRole.FieldWorker);
+        _fixture.CurrentUser.UserId = fieldWorkerId;
+        _fixture.CurrentUser.Role = UserRole.FieldWorker;
+
+        // Act & Assert
+        using var scope = _fixture.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+        var act = () => service.GetSheetAsync(trialId, since: null);
+        await act.Should().ThrowAsync<ForbiddenAccessException>();
+    }
+
+    // ── SetAssignmentsAsync replace semantics + lookups ───────────────────────
+
+    [Fact]
+    public async Task SetAssignmentsAsync_ReplacesWholeSet_AndLookupsRoundTrip()
+    {
+        // Arrange — a trial created by the default SystemAdmin actor (admins carry no
+        // creator assignment), plus three extra persisted users to assign.
+        _fixture.CurrentUser.Role = UserRole.SystemAdmin;
+        var fileName = TrialFaker.GenerateFileName();
+        Guid trialId;
+        using (var stream = TrialWorkbookFactory.CreateStream())
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            var summary = await service.CreateTrialAsync(fileName, stream);
+            trialId = Guid.Parse(summary.TrialId);
+        }
+        _createdTrialIds.Add(trialId);
+
+        var userA = await PersistUserAsync();
+        var userB = await PersistUserAsync();
+        var userC = await PersistUserAsync();
+
+        using (var scope = _fixture.CreateScope())
+        {
+            var repo = scope.ServiceProvider.GetRequiredService<ITrialRepository>();
+
+            // First set replaces the creator's auto-assignment with A + B.
+            await repo.SetAssignmentsAsync(trialId, [userA, userB], DefaultActorUserId);
+            var first = await repo.GetAssignmentsAsync(trialId);
+            first.Should().HaveCount(2, "SetAssignments replaces the entire set");
+            first.Select(a => a.UserId).Should().BeEquivalentTo([userA, userB]);
+            first.Should().OnlyContain(a => a.AssignedBy == DefaultActorUserId);
+            first.Select(a => a.AssignedAt).Should().BeInAscendingOrder();
+
+            (await repo.IsAssignedAsync(trialId, userA)).Should().BeTrue();
+            (await repo.IsAssignedAsync(trialId, DefaultActorUserId)).Should().BeFalse(
+                "the creator's auto-assignment was part of the replaced set");
+            (await repo.GetAssignedTrialIdsAsync(userA)).Should().Contain(trialId);
+
+            // Second set: B is retained, A is dropped, C is added.
+            await repo.SetAssignmentsAsync(trialId, [userB, userC], DefaultActorUserId);
+            var second = await repo.GetAssignmentsAsync(trialId);
+            second.Should().HaveCount(2);
+            second.Select(a => a.UserId).Should().BeEquivalentTo([userB, userC]);
+
+            (await repo.IsAssignedAsync(trialId, userA)).Should().BeFalse();
+            (await repo.IsAssignedAsync(trialId, userB)).Should().BeTrue();
+            (await repo.GetAssignedTrialIdsAsync(userB)).Should().Contain(trialId);
+            (await repo.GetAssignedTrialIdsAsync(userC)).Should().Contain(trialId);
+
+            // Empty set clears every assignment for the trial.
+            await repo.SetAssignmentsAsync(trialId, [], DefaultActorUserId);
+            (await repo.GetAssignmentsAsync(trialId)).Should().BeEmpty();
+        }
+    }
+
+    /// <summary>
+    /// Creates a trial through the service (as the current manager actor) and registers it
+    /// for Working-directory cleanup. Pass <paramref name="ratingWorkbook"/> to upload the
+    /// rating-layout workbook (needed by the sheet tests) rather than the plain one.
+    /// </summary>
+    private async Task<Guid> CreateTrialViaServiceAsync(bool ratingWorkbook = false)
+    {
+        var fileName = TrialFaker.GenerateFileName();
+        using var stream = ratingWorkbook
+            ? RatingWorkbookFactory.CreateStream()
+            : TrialWorkbookFactory.CreateStream();
+        using var scope = _fixture.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+        var summary = await service.CreateTrialAsync(fileName, stream);
+        var trialId = Guid.Parse(summary.TrialId);
+        _createdTrialIds.Add(trialId);
+        return trialId;
+    }
+
+    /// <summary>Replaces a trial's assignment set with the single given user (creator added by attribution).</summary>
+    private async Task AssignTrialAsync(Guid trialId, Guid userId)
+    {
+        using var scope = _fixture.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<ITrialRepository>();
+        await repo.SetAssignmentsAsync(trialId, [userId], DefaultActorUserId);
+    }
+
+    /// <summary>
+    /// Persists an additional <see cref="User"/> (FieldWorker by default) so assignment
+    /// rows satisfy the FK to Users, and returns its id.
+    /// </summary>
+    private async Task<Guid> PersistUserAsync(UserRole? role = UserRole.FieldWorker)
+    {
+        var userId = Guid.NewGuid();
+        using var scope = _fixture.CreateScope();
+        var userRepo = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+
+        await userRepo.AddAsync(new User
+        {
+            Id = userId,
+            Name = $"Assigned User {userId:N}",
+            Email = $"assigned.{userId:N}@plottr02.local",
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword("TestPass123!"),
+            Role = role,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        });
+
+        return userId;
+    }
+
     /// <summary>
     /// Ensures a User row with the <see cref="DefaultActorUserId"/> exists in the database
     /// so the FKCreatedBy constraint on Trials is satisfied.
@@ -594,6 +1016,18 @@ public sealed class TrialServiceTests : IAsyncLifetime
 
         public Task<int> CountAsync(CancellationToken ct = default)
             => Task.FromResult(0);
+
+        public Task SetAssignmentsAsync(Guid trialId, IReadOnlyList<Guid> userIds, Guid assignedById, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<TrialAssignment>> GetAssignmentsAsync(Guid trialId, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<TrialAssignment>>([]);
+
+        public Task<IReadOnlyList<Guid>> GetAssignedTrialIdsAsync(Guid userId, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<Guid>>([]);
+
+        public Task<bool> IsAssignedAsync(Guid trialId, Guid userId, CancellationToken ct = default)
+            => Task.FromResult(false);
     }
 
     /// <summary>

@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using PlottR0._2.Contracts;
 using PlottR0._2.Contracts.Ratings;
 using PlottR0._2.Contracts.Recordings;
 using PlottR0._2.Contracts.Repositories;
@@ -54,6 +55,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
     private readonly ITranscriptionService _transcriptionService;
     private readonly ITrialRepository _trials;
     private readonly IRatingRepository _ratings;
+    private readonly ICurrentUser _currentUser;
     private readonly ILogger<RecordingSyncService> _logger;
 
     /// <summary>Lowest legal rating value (design.md §9).</summary>
@@ -90,6 +92,10 @@ public sealed class RecordingSyncService : IRecordingSyncService
     /// <param name="transcriptionService">Speech-to-text sidecar gateway.</param>
     /// <param name="trials">Trial repository used for the trial gate and workbook path.</param>
     /// <param name="ratings">Workbook-backed rating repository performing the policy write.</param>
+    /// <param name="currentUser">
+    /// The acting identity, used for the per-trial access gate: a field worker may only sync
+    /// to (or correct) trials they are assigned to.
+    /// </param>
     /// <param name="logger">Logger for sync diagnostics.</param>
     public RecordingSyncService(
         IVoiceRecordingRepository voiceRecordings,
@@ -97,6 +103,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         ITranscriptionService transcriptionService,
         ITrialRepository trials,
         IRatingRepository ratings,
+        ICurrentUser currentUser,
         ILogger<RecordingSyncService> logger)
     {
         _voiceRecordings = voiceRecordings;
@@ -104,6 +111,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         _transcriptionService = transcriptionService;
         _trials = trials;
         _ratings = ratings;
+        _currentUser = currentUser;
         _logger = logger;
     }
 
@@ -155,6 +163,12 @@ public sealed class RecordingSyncService : IRecordingSyncService
         {
             throw new KeyNotFoundException($"Trial '{command.TrialId}' was not found.");
         }
+
+        // Step 3b — Access gate: managers may sync to any trial; a field worker may only
+        // sync to a trial they are assigned to. Ordered AFTER the existence check so an
+        // unknown trial stays a 404 (matching the pre-increment behaviour) and BEFORE any
+        // blob/row/workbook write. (The replay path is gated by ReplayAsync.)
+        await EnsureCanAccessTrialAsync(trial.Id, ct);
 
         var mimeType = MimeTypeFromFileName(fileName);
 
@@ -467,6 +481,11 @@ public sealed class RecordingSyncService : IRecordingSyncService
             throw new KeyNotFoundException($"Voice recording '{clientRecordingId}' was not found.");
         }
 
+        // Access gate: correcting a recording is a write against its trial, so a non-manager
+        // must be assigned to that trial (the recording's own trial id is already loaded, so
+        // this costs one indexed membership check). Ordered before any row update.
+        await EnsureCanAccessTrialAsync(recording.TrialId ?? Guid.Empty, ct);
+
         // Terminal rows are immutable: a Written/SkippedPresent outcome can only be revised
         // by direct workbook editing, not by a correction request.
         if (recording.Status is VoiceRecordingStatus.Written or VoiceRecordingStatus.SkippedPresent)
@@ -598,12 +617,40 @@ public sealed class RecordingSyncService : IRecordingSyncService
     }
 
     /// <summary>
+    /// True when the actor's role sits above the per-trial assignment matrix: a manager may
+    /// record against (or correct) any trial without an explicit assignment. A null role
+    /// (legacy/anonymous actor) is never a manager.
+    /// </summary>
+    private static bool IsManager(UserRole? role)
+        => role is UserRole.SystemAdmin or UserRole.Researcher or UserRole.TrialManager;
+
+    /// <summary>
+    /// Ensures the current actor may touch <paramref name="trialId"/>: managers always may;
+    /// every other actor must be explicitly assigned to the trial. A missing identity or a
+    /// trial the caller is not assigned to is denied identically. Called before any blob,
+    /// row or workbook write so a denied sync leaves no trace.
+    /// </summary>
+    /// <exception cref="ForbiddenAccessException">The actor is not permitted to access the trial.</exception>
+    private async Task EnsureCanAccessTrialAsync(Guid trialId, CancellationToken ct)
+    {
+        if (IsManager(_currentUser.Role))
+            return;
+
+        if (_currentUser.UserId is not Guid userId
+            || !await _trials.IsAssignedAsync(trialId, userId, ct))
+        {
+            throw new ForbiddenAccessException(
+                $"You do not have access to trial '{trialId}'.");
+        }
+    }
+
+    /// <summary>
     /// Answers a repeated sync with <see cref="VoiceRecordingStatus.Replay"/> WITHOUT touching
     /// the stored row: the first submission's terminal status (e.g. Written) must not be
     /// clobbered by a retry, so no <see cref="IVoiceRecordingRepository.UpdateAsync"/> is
     /// performed. No blob, transcription or workbook work happens either.
     /// </summary>
-    private Task<SyncVoiceRecordingResult> ReplayAsync(
+    private async Task<SyncVoiceRecordingResult> ReplayAsync(
         VoiceRecording existing,
         SyncVoiceRecordingCommand command,
         int? cPlot,
@@ -611,11 +658,15 @@ public sealed class RecordingSyncService : IRecordingSyncService
         int? cValue,
         CancellationToken ct)
     {
+        // Access gate: a replay still exposes the committed outcome for the recording's
+        // trial, so a non-manager must remain assigned to that trial. Managers bypass.
+        await EnsureCanAccessTrialAsync(existing.TrialId ?? Guid.Empty, ct);
+
         _logger.LogInformation(
             "Voice recording {ClientRecordingId} is a replay (row {RecordingId}); skipped without transcription, write or row update.",
             command.ClientRecordingId, existing.Id);
 
-        return Task.FromResult(BuildResult(
+        return BuildResult(
             command,
             cPlot, cSubsample, cValue,
             VoiceRecordingStatus.Replay,
@@ -635,7 +686,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
             // retry omits the field (which would otherwise echo the normalized 1). For rows
             // predating the column, the persisted value is null and the anchor is 1 (the only
             // ordinal a pre-migration row could ever have used); the caller's value is never used.
-            traitOrdinal: existing.ResolvedTraitOrdinal ?? 1));
+            traitOrdinal: existing.ResolvedTraitOrdinal ?? 1);
     }
 
     /// <summary>

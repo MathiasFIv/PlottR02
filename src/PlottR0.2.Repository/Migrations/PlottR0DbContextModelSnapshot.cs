@@ -261,6 +261,34 @@ namespace PlottR0._2.Repository.Migrations
                     b.ToTable("Trials");
                 });
 
+            modelBuilder.Entity("PlottR0._2.Domain.TrialAssignment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("AssignedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("AssignedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("TrialId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("TrialId", "UserId")
+                        .IsUnique();
+
+                    b.ToTable("Assignments");
+                });
+
             modelBuilder.Entity("PlottR0._2.Domain.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -437,6 +465,21 @@ namespace PlottR0._2.Repository.Migrations
                     b.Navigation("CreatedByUser");
                 });
 
+            modelBuilder.Entity("PlottR0._2.Domain.TrialAssignment", b =>
+                {
+                    b.HasOne("PlottR0._2.Domain.Trial", null)
+                        .WithMany("Assignments")
+                        .HasForeignKey("TrialId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PlottR0._2.Domain.User", null)
+                        .WithMany("Assignments")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("PlottR0._2.Domain.VoiceRecording", b =>
                 {
                     b.HasOne("PlottR0._2.Domain.Trial", null)
@@ -457,7 +500,14 @@ namespace PlottR0._2.Repository.Migrations
 
             modelBuilder.Entity("PlottR0._2.Domain.Trial", b =>
                 {
+                    b.Navigation("Assignments");
+
                     b.Navigation("Plots");
+                });
+
+            modelBuilder.Entity("PlottR0._2.Domain.User", b =>
+                {
+                    b.Navigation("Assignments");
                 });
 #pragma warning restore 612, 618
         }

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PlottR0._2.Contracts.Dtos.Trial;
+using PlottR0._2.Contracts.Dtos.User;
 using PlottR0._2.Services.Abstractions;
 
 namespace PlottR0._2.Api.Controllers;
@@ -16,6 +17,14 @@ public class TrialsController : ControllerBase
 {
     private const long MaxUploadSizeBytes = 50L * 1024 * 1024; // 50 MB
 
+    /// <summary>
+    /// Roles permitted to create trials, referenced by the
+    /// <see cref="AuthorizeAttribute.Roles"/> gate on <see cref="Create"/> (and
+    /// enforced again in <see cref="ITrialService"/>). Mirrors the gate/error-mapping
+    /// style established by <c>UsersController.ManageUsersRoles</c>.
+    /// </summary>
+    public const string CreateTrialRoles = "SystemAdmin,Researcher,TrialManager";
+
     private readonly ITrialService _trialService;
 
     public TrialsController(ITrialService trialService)
@@ -24,15 +33,21 @@ public class TrialsController : ControllerBase
     }
 
     /// <summary>
-    /// Creates a new trial by uploading an xlsx workbook.
+    /// Creates a new trial by uploading an xlsx workbook. Restricted to system
+    /// administrators, researchers and trial managers. A researcher or trial-manager
+    /// creator is automatically assigned to the new trial by the service; a
+    /// system-administrator creator is not (admins sit above the assignment matrix).
     /// </summary>
     /// <param name="file">The xlsx workbook file from the multipart form.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>201 with the created trial summary and a Location header.</returns>
+    /// <returns>201 with the created trial summary and a Location header, 400 for an
+    /// invalid/oversized/missing file, or 403 when the caller's role may not create trials.</returns>
     [HttpPost]
     [Consumes("multipart/form-data")]
+    [Authorize(Roles = CreateTrialRoles)]
     [ProducesResponseType(typeof(TrialSummary), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<TrialSummary>> Create(IFormFile file, CancellationToken ct = default)
     {
         if (file is null || file.Length == 0)
@@ -53,6 +68,10 @@ public class TrialsController : ControllerBase
 
             return CreatedAtAction(nameof(List), new { }, summary);
         }
+        catch (ForbiddenAccessException)
+        {
+            return Forbid();
+        }
         catch (ArgumentException ex)
         {
             return BadRequest(ex.Message);
@@ -64,10 +83,13 @@ public class TrialsController : ControllerBase
     }
 
     /// <summary>
-    /// Lists all trials, ordered by creation time (newest first).
+    /// Lists the trials visible to the caller, ordered by creation time (newest first).
+    /// Managers (system administrators, researchers and trial managers) receive every
+    /// trial; field workers (and legacy/role-less users) receive only the trials they are
+    /// assigned to, which may be an empty list.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>200 with the list of trial summaries.</returns>
+    /// <returns>200 with the list of visible trial summaries.</returns>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<TrialSummary>), StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<TrialSummary>>> List(CancellationToken ct = default)
@@ -76,10 +98,86 @@ public class TrialsController : ControllerBase
         return Ok(trials);
     }
 
+    /// <summary>
+    /// Replaces the set of users assigned to a trial. Restricted to system administrators,
+    /// researchers and trial managers; the set is validated all-or-nothing, and an empty
+    /// list clears the crew.
+    /// </summary>
+    /// <param name="trialId">The trial whose assignment set is replaced.</param>
+    /// <param name="request">The full desired set of user ids.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>204 on success, 400 for an invalid payload, 403 when the caller's role may
+    /// not assign users, or 404 when the trial does not exist.</returns>
+    [HttpPut("{trialId:guid}/users")]
+    [Consumes("application/json")]
+    [Authorize(Roles = CreateTrialRoles)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> AssignUsers(
+        Guid trialId, [FromBody] AssignTrialUsersRequest request, CancellationToken ct = default)
+    {
+        try
+        {
+            await _trialService.AssignTrialUsersAsync(trialId, request, ct);
+            return NoContent();
+        }
+        catch (ForbiddenAccessException)
+        {
+            return Forbid();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Lists the users assigned to a trial, in assignment order (oldest first).
+    /// Restricted to system administrators, researchers and trial managers.
+    /// </summary>
+    /// <param name="trialId">The trial whose assigned users are read.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>200 with the assigned users, 403 when the caller's role may not view
+    /// assignments, or 404 when the trial does not exist.</returns>
+    [HttpGet("{trialId:guid}/users")]
+    [Authorize(Roles = CreateTrialRoles)]
+    [ProducesResponseType(typeof(IReadOnlyList<UserResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<IReadOnlyList<UserResponse>>> ListUsers(
+        Guid trialId, CancellationToken ct = default)
+    {
+        try
+        {
+            var users = await _trialService.ListTrialUsersAsync(trialId, ct);
+            return Ok(users);
+        }
+        catch (ForbiddenAccessException)
+        {
+            return Forbid();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(ex.Message);
+        }
+    }
+
     /// <summary>Downloads the trial's current workbook — the newest accumulated
-    /// export copy if any syncs have happened, otherwise the uploaded original.</summary>
+    /// export copy if any syncs have happened, otherwise the uploaded original.
+    /// Managers may download any trial; other callers must be assigned to it.</summary>
+    /// <param name="trialId">The trial whose workbook is downloaded.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The xlsx file; 403 when the caller may not access the trial, or 404 when
+    /// the trial or its workbook is missing.</returns>
     [HttpGet("{trialId:guid}/workbook")]
     [ProducesResponseType(typeof(FileResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> DownloadWorkbook(Guid trialId, CancellationToken ct = default)
     {
@@ -95,6 +193,7 @@ public class TrialsController : ControllerBase
                 export.FileName,
                 enableRangeProcessing: true);
         }
+        catch (ForbiddenAccessException) { return Forbid(); }
         catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
         catch (FileNotFoundException ex) { return NotFound(ex.Message); }
     }
@@ -108,10 +207,12 @@ public class TrialsController : ControllerBase
     /// <param name="since">Last-seen opaque version; omit for the full payload.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>200 with the sheet payload (full or unchanged); 400 when the workbook has
-    /// no ratings sheet; 404 when the trial or its workbook is missing.</returns>
+    /// no ratings sheet; 403 when the caller may not access the trial; 404 when the trial
+    /// or its workbook is missing.</returns>
     [HttpGet("{trialId:guid}/sheet")]
     [ProducesResponseType(typeof(TrialSheet), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<TrialSheet>> GetSheet(
         Guid trialId, [FromQuery] string? since, CancellationToken ct = default)
@@ -120,6 +221,7 @@ public class TrialsController : ControllerBase
         {
             return Ok(await _trialService.GetSheetAsync(trialId, since, ct));
         }
+        catch (ForbiddenAccessException) { return Forbid(); }
         catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
         catch (FileNotFoundException ex) { return NotFound(ex.Message); }
         catch (InvalidDataException ex) { return BadRequest(ex.Message); }
