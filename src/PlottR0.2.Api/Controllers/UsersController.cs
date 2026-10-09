@@ -7,15 +7,26 @@ using PlottR0._2.Services.Abstractions;
 
 namespace PlottR0._2.Api.Controllers;
 
-/// <summary>
-/// REST CRUD endpoints for the <see cref="PlottR0._2.Domain.User"/> resource.
-/// Thin controller — all business logic is delegated to <see cref="IUserService"/>.
-/// </summary>
+    /// <summary>
+    /// REST CRUD endpoints for the <see cref="PlottR0._2.Domain.User"/> resource.
+    /// Thin controller — all business logic is delegated to <see cref="IUserService"/>.
+    /// Listing, reading, updating and deleting users is restricted to system admins and
+    /// trial managers (see <see cref="ManageUsersRoles"/>); <c>GetMe</c> stays open to any
+    /// authenticated user and <c>Create</c> is authenticated-only with role assignment
+    /// governed by the role assignment matrix.
+    /// </summary>
 [ApiController]
 [Authorize]
 [Route("api/[controller]")]
 public class UsersController : ControllerBase
 {
+    /// <summary>
+    /// Roles permitted to list, read, update and delete users. Referenced by the
+    /// <see cref="AuthorizeAttribute.Roles"/> gates on those actions and by the
+    /// authorization metadata tests.
+    /// </summary>
+    public const string ManageUsersRoles = "SystemAdmin,TrialManager";
+
     private readonly IUserService _userService;
 
     /// <summary>
@@ -33,6 +44,7 @@ public class UsersController : ControllerBase
     /// <param name="ct">Cancellation token.</param>
     /// <returns>A list of all users as DTOs.</returns>
     [HttpGet]
+    [Authorize(Roles = ManageUsersRoles)]
     public async Task<ActionResult<IReadOnlyList<UserResponse>>> GetAll(CancellationToken ct = default)
     {
         var users = await _userService.GetAllResponsesAsync(ct);
@@ -63,6 +75,7 @@ public class UsersController : ControllerBase
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The matching user DTO, or 404 if none exists.</returns>
     [HttpGet("{id:guid}")]
+    [Authorize(Roles = ManageUsersRoles)]
     public async Task<ActionResult<UserResponse>> GetById(Guid id, CancellationToken ct = default)
     {
         var user = await _userService.GetResponseAsync(id, ct);
@@ -75,18 +88,43 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>
-    /// Creates a new user.
+    /// Creates a new user. This endpoint is authenticated-only — the previous
+    /// login-screen self-registration path is gone, so there are no anonymous
+    /// accounts. The caller must supply a role, and it must fall inside the
+    /// caller's row of the account-creation/assignment matrix (enforced in
+    /// <see cref="IUserService"/>, not here).
     /// </summary>
-    /// <param name="request">The create payload.</param>
+    /// <param name="request">The create payload; <c>Role</c> is required.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>201 with the created user and a Location header to fetch it.</returns>
+    /// <returns>201 with the created user and a Location header to fetch it, 400 for a
+    /// missing/invalid role or payload, 403 when the caller may not assign the role,
+    /// or 409 when the email already belongs to another account.</returns>
     [HttpPost]
-    [AllowAnonymous]
+    [ProducesResponseType(typeof(UserResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<UserResponse>> Create([FromBody] CreateUserRequest request, CancellationToken ct = default)
     {
-        var created = await _userService.CreateAsync(request, ct);
+        try
+        {
+            var created = await _userService.CreateAsync(request, ct);
 
-        return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
+            return CreatedAtAction(nameof(GetById), new { id = created.Id }, created);
+        }
+        catch (ForbiddenAccessException)
+        {
+            return Forbid();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Duplicate email — the only InvalidOperationException CreateAsync throws.
+            return Conflict(ex.Message);
+        }
     }
 
     /// <summary>
@@ -97,15 +135,29 @@ public class UsersController : ControllerBase
     /// <param name="ct">Cancellation token.</param>
     /// <returns>200 with the updated user DTO, or 404 if none exists.</returns>
     [HttpPut("{id:guid}")]
+    [Authorize(Roles = ManageUsersRoles)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<UserResponse>> Update(Guid id, [FromBody] UpdateUserRequest request, CancellationToken ct = default)
     {
-        var updated = await _userService.UpdateAsync(id, request, ct);
-        if (updated is null)
+        try
         {
-            return NotFound();
-        }
+            var updated = await _userService.UpdateAsync(id, request, ct);
+            if (updated is null)
+            {
+                return NotFound();
+            }
 
-        return Ok(updated);
+            return Ok(updated);
+        }
+        catch (ForbiddenAccessException)
+        {
+            return Forbid();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(ex.Message);
+        }
     }
 
     /// <summary>
@@ -115,6 +167,7 @@ public class UsersController : ControllerBase
     /// <param name="ct">Cancellation token.</param>
     /// <returns>204 No Content.</returns>
     [HttpDelete("{id:guid}")]
+    [Authorize(Roles = ManageUsersRoles)]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct = default)
     {
         await _userService.DeleteAsync(id, ct);

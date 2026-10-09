@@ -1,7 +1,5 @@
 using ClosedXML.Excel;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
-using PlottR0._2.Repository;
 using PlottR0._2.Repository.Repositories;
 using PlottR0._2.Tests.Support.WorkbookBuilder;
 
@@ -16,10 +14,7 @@ namespace PlottR0._2.Tests;
 /// cannot fit the current block are dropped and counted. These tests run WITHOUT
 /// Postgres/Docker: they build
 /// workbooks with <see cref="RatingWorkbookFactory"/> in temp directories and exercise the
-/// repository directly with explicit paths (no appsettings /
-/// <c>ExcelWorkbookOptions</c> defaults involved). The existing
-/// <see cref="ClosedXmlRatingRepository.WritePlotColumn"/> behaviour is covered by
-/// <see cref="RatingServiceTests"/> and is intentionally untouched here.
+/// repository directly with explicit paths (no appsettings defaults involved).
 /// </summary>
 public sealed class RatingPolicyWriteTests : IDisposable
 {
@@ -659,11 +654,11 @@ public sealed class RatingPolicyWriteTests : IDisposable
     }
 
     /// <summary>
-    /// The policy write takes explicit paths, so a bare repository with empty
-    /// <see cref="ExcelWorkbookOptions"/> suffices (like <see cref="RatingRepositoryContractTests"/>).
+    /// The policy write takes explicit paths, so a bare repository suffices
+    /// (like <see cref="RatingRepositoryContractTests"/>).
     /// </summary>
     private static ClosedXmlRatingRepository CreateRepository() =>
-        new(Options.Create(new ExcelWorkbookOptions()), NullLogger<ClosedXmlRatingRepository>.Instance);
+        new(NullLogger<ClosedXmlRatingRepository>.Instance);
 
     /// <summary>
     /// Returns the output copies in the given directory, or an empty array when the directory

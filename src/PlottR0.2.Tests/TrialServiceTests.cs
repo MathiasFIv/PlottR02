@@ -2,11 +2,9 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using PlottR0._2.Contracts.Dtos.Trial;
 using PlottR0._2.Contracts.Repositories;
 using PlottR0._2.Domain;
-using PlottR0._2.Repository;
 using PlottR0._2.Repository.Repositories;
 using PlottR0._2.Services.Abstractions;
 using PlottR0._2.Tests.Support;
@@ -199,7 +197,6 @@ public sealed class TrialServiceTests : IAsyncLifetime
             _fixture.CurrentUser,
             NullLogger<PlottR0._2.Services.Implementations.TrialService>.Instance,
             new ClosedXmlRatingRepository(
-                Options.Create(new ExcelWorkbookOptions()),
                 NullLogger<ClosedXmlRatingRepository>.Instance));
 
         // We need a trialId to know which Working/<id>/ dir to check. Generate one ourselves.

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { USER_ROLES, roleLabel } from './types';
+import {
+  USER_ROLES,
+  assignableRoles,
+  canCreateUsers,
+  canManageUsers,
+  roleLabel,
+} from './types';
 import type { UserRole } from './types';
 
 describe('USER_ROLES', () => {
@@ -44,5 +50,58 @@ describe('roleLabel', () => {
 
   it('passes an unknown string through unchanged rather than blanking it', () => {
     expect(roleLabel('LegacyRole')).toBe('LegacyRole');
+  });
+});
+
+describe('canManageUsers', () => {
+  it('allows system admins and trial managers', () => {
+    expect(canManageUsers('SystemAdmin')).toBe(true);
+    expect(canManageUsers('TrialManager')).toBe(true);
+  });
+
+  it('denies researchers, field workers, and no-role users', () => {
+    expect(canManageUsers('Researcher')).toBe(false);
+    expect(canManageUsers('FieldWorker')).toBe(false);
+    expect(canManageUsers(null)).toBe(false);
+  });
+});
+
+describe('assignableRoles', () => {
+  it('lets a system admin assign all four roles, in canonical order', () => {
+    expect(assignableRoles('SystemAdmin')).toEqual([
+      'SystemAdmin',
+      'Researcher',
+      'TrialManager',
+      'FieldWorker',
+    ]);
+  });
+
+  it('lets a researcher assign only trial managers and field workers', () => {
+    expect(assignableRoles('Researcher')).toEqual(['TrialManager', 'FieldWorker']);
+  });
+
+  it('lets a trial manager assign only field workers', () => {
+    expect(assignableRoles('TrialManager')).toEqual(['FieldWorker']);
+  });
+
+  it('lets a field worker assign nothing', () => {
+    expect(assignableRoles('FieldWorker')).toEqual([]);
+  });
+
+  it('lets a no-role actor assign nothing', () => {
+    expect(assignableRoles(null)).toEqual([]);
+  });
+});
+
+describe('canCreateUsers', () => {
+  it('allows system admins, researchers, and trial managers', () => {
+    expect(canCreateUsers('SystemAdmin')).toBe(true);
+    expect(canCreateUsers('Researcher')).toBe(true);
+    expect(canCreateUsers('TrialManager')).toBe(true);
+  });
+
+  it('denies field workers and no-role actors', () => {
+    expect(canCreateUsers('FieldWorker')).toBe(false);
+    expect(canCreateUsers(null)).toBe(false);
   });
 });

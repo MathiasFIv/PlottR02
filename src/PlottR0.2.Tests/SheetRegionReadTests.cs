@@ -1,7 +1,5 @@
 using ClosedXML.Excel;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
-using PlottR0._2.Repository;
 using PlottR0._2.Repository.Repositories;
 using Factory = PlottR0._2.Tests.Support.WorkbookBuilder.RatingWorkbookFactory;
 
@@ -37,7 +35,7 @@ public sealed class SheetRegionReadTests : IDisposable
     }
 
     private static ClosedXmlRatingRepository CreateRepository() =>
-        new(Options.Create(new ExcelWorkbookOptions()), NullLogger<ClosedXmlRatingRepository>.Instance);
+        new(NullLogger<ClosedXmlRatingRepository>.Instance);
 
     private string Workbook(string name) => Path.Combine(_tempDir, name);
 

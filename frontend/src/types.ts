@@ -12,8 +12,8 @@
 /**
  * The role enum shared with the API. The backend validates `role` against
  * exactly these four PascalCase values (anything else is a 400), so this list
- * is the single source of truth for the create-user dropdowns.
- * `null` means "no role" and is still a valid, submittable value.
+ * is the single source of truth for the create-user dropdowns. A role is now
+ * required on create — `null` ("no role") is never submittable.
  */
 export const USER_ROLES = [
   { value: 'SystemAdmin', label: 'System admin' },
@@ -35,6 +35,37 @@ export function roleLabel(role: string | null): string {
   return USER_ROLES.find((r) => r.value === role)?.label ?? role;
 }
 
+/**
+ * Whether a role may list, read, update, or delete users. Only system admins
+ * and trial managers qualify — researchers and field workers never see the
+ * dashboard's user list. Account creation is broader; see `canCreateUsers`.
+ * `null` ("no role") is never allowed.
+ */
+export function canManageUsers(role: UserRole | null): boolean {
+  return role === 'SystemAdmin' || role === 'TrialManager';
+}
+
+/**
+ * Roles a given actor is allowed to assign when creating a new account.
+ * Mirrors the backend permission matrix. No role can ever be assigned.
+ */
+export const ASSIGNABLE_ROLES: Record<UserRole, readonly UserRole[]> = {
+  SystemAdmin: ['SystemAdmin', 'Researcher', 'TrialManager', 'FieldWorker'],
+  Researcher: ['TrialManager', 'FieldWorker'],
+  TrialManager: ['FieldWorker'],
+  FieldWorker: [],
+};
+
+/** Roles the given actor may assign to a new user. Empty for FieldWorker / no-role actors. */
+export function assignableRoles(actor: UserRole | null): UserRole[] {
+  return actor ? [...ASSIGNABLE_ROLES[actor]] : [];
+}
+
+/** Whether the actor may create any account at all (SystemAdmin, Researcher, TrialManager). */
+export function canCreateUsers(actor: UserRole | null): boolean {
+  return actor !== null && ASSIGNABLE_ROLES[actor].length > 0;
+}
+
 export type User = {
   id: string;
   name: string;
@@ -45,8 +76,8 @@ export type User = {
 export type CreateUserInput = {
   name: string;
   email: string;
-  /** Exactly one of the four roles, or null/omitted for "no role". */
-  role?: UserRole | null;
+  /** Exactly one of the four roles — required, never null/omitted. */
+  role: UserRole;
   password: string;
 };
 

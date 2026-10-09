@@ -3,26 +3,29 @@ import { useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '../components/Button';
-import { FormField } from '../components/FormField';
 import { TrialList } from '../components/TrialList';
-import { UserList } from '../components/UserList';
+import { UserManagementSection } from '../components/UserManagementSection';
 import { api } from '../lib/api';
 import { currentUserAtom } from '../store/atoms';
 import { useAuth } from '../hooks/useAuth';
 import { useTrials } from '../hooks/useTrials';
-import { useUsers } from '../hooks/useUsers';
-import { USER_ROLES, roleLabel } from '../types';
-import type { TrialSummary, UserRole } from '../types';
+import { canCreateUsers, roleLabel } from '../types';
+import type { TrialSummary } from '../types';
 
 /**
- * Logged-in dashboard: a "create user" form (POST /api/Users) plus the live
- * user list (GET /api/Users).  Initial fetch of the list happens in useUsers.
+ * Logged-in dashboard: the trials list (visible to every role) plus a
+ * user-administration section (create — and, for managers, list, POST/GET
+ * /api/Users) shown to any creator (system admins, researchers, trial
+ * managers). The user list fetch is managers-only inside
+ * UserManagementSection, so create-only actors never trigger it.
  */
 export function DashboardView() {
   const currentUser = useAtomValue(currentUserAtom);
   const navigate = useNavigate();
   const { logout } = useAuth();
-  const { users, loading, error, fetchUsers, createUser } = useUsers();
+  // Any role allowed to create accounts sees the section; the list within it
+  // remains managers-only.
+  const showUserManagement = canCreateUsers(currentUser?.role ?? null);
   const {
     trials,
     loading: trialsLoading,
@@ -32,14 +35,6 @@ export function DashboardView() {
     fetchTrials,
     createTrial,
   } = useTrials();
-
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [role, setRole] = useState<UserRole | ''>('');
-  const [password, setPassword] = useState('');
-  const [validationError, setValidationError] = useState<string | null>(null);
-  const [created, setCreated] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
 
   // Trial upload state
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -54,51 +49,6 @@ export function DashboardView() {
   const [downloadedFileName, setDownloadedFileName] = useState<string | null>(
     null,
   );
-
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    setValidationError(null);
-
-    const trimmed = name.trim();
-    const trimmedEmail = email.trim();
-    const passwordError = validatePassword(password);
-    if (passwordError) {
-      setValidationError(passwordError);
-      return;
-    }
-    if (!trimmed || !trimmedEmail || submitting) {
-      return;
-    }
-
-    setSubmitting(true);
-    const result = await createUser({
-      name: trimmed,
-      email: trimmedEmail,
-      role: role || null,
-      password,
-    });
-    setSubmitting(false);
-
-    if (result) {
-      setCreated(result.name);
-      setName('');
-      setEmail('');
-      setRole('');
-      setPassword('');
-    }
-  }
-
-  /** Empty and overlong passwords would be rejected by the API (400). */
-  function validatePassword(value: string): string | null {
-    if (!value) {
-      return 'Password is required.';
-    }
-    const byteLength = new TextEncoder().encode(value).length;
-    if (byteLength > 72) {
-      return 'Password must be 72 bytes or fewer.';
-    }
-    return null;
-  }
 
   function handleLogout() {
     logout();
@@ -163,89 +113,9 @@ export function DashboardView() {
       </header>
 
       <main className="dashboard">
-        <section className="card">
-          <h2 className="heading">Create a user</h2>
-          <form onSubmit={handleSubmit}>
-            <FormField
-              label="Name"
-              htmlFor="create-name"
-              inputProps={{
-                value: name,
-                onChange: (e) => setName(e.target.value),
-                placeholder: 'Full name',
-                required: true,
-              }}
-            />
-            <FormField
-              label="Email"
-              htmlFor="create-email"
-              inputProps={{
-                value: email,
-                onChange: (e) => setEmail(e.target.value),
-                placeholder: 'you@example.com',
-                type: 'email',
-                autoComplete: 'email',
-                required: true,
-              }}
-            />
-            <FormField label="Role (optional)" htmlFor="create-role">
-              <select
-                id="create-role"
-                name="create-role"
-                className="input"
-                value={role}
-                onChange={(e) => setRole(e.target.value as UserRole | '')}
-              >
-                <option value="">No role</option>
-                {USER_ROLES.map((r) => (
-                  <option key={r.value} value={r.value}>
-                    {r.label}
-                  </option>
-                ))}
-              </select>
-            </FormField>
-            <FormField
-              label="Password"
-              htmlFor="create-password"
-              inputProps={{
-                value: password,
-                onChange: (e) => setPassword(e.target.value),
-                placeholder: 'Enter a password',
-                type: 'password',
-                autoComplete: 'new-password',
-              }}
-            />
-            <Button
-              type="submit"
-              disabled={!name.trim() || !email.trim() || !password || submitting}
-            >
-              {submitting ? 'Creating…' : 'Create user'}
-            </Button>
-          </form>
-
-          {validationError && <p className="error-text">{validationError}</p>}
-          {created && (
-            <p className="success-text" role="status">
-              Created user “{created}” — the list below has been refreshed.
-              Password stored hashed (BCrypt) — plaintext is never persisted.
-            </p>
-          )}
-          {error && <p className="error-text">{error}</p>}
-        </section>
-
-        <section className="card">
-          <div className="card__header">
-            <h2 className="heading">Users</h2>
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => void fetchUsers()}
-            >
-              Refresh
-            </button>
-          </div>
-          <UserList users={users} loading={loading} error={error} />
-        </section>
+        {showUserManagement && (
+          <UserManagementSection actorRole={currentUser?.role ?? null} />
+        )}
 
         <section className="card">
           <div className="card__header">

@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using PlottR0._2.Contracts;
+using PlottR0._2.Domain;
 
 namespace PlottR0._2.Api;
 
@@ -30,4 +31,17 @@ public sealed class CurrentUser : ICurrentUser
 
     /// <inheritdoc />
     public string? Name => _accessor.HttpContext?.User.FindFirstValue("name");
+
+    /// <inheritdoc />
+    public UserRole? Role
+    {
+        get
+        {
+            // Mirrors JwtBearerConfiguration.RoleClaimName ("role") — the literal
+            // claim name TokenService emits and validation expects. Role-less and
+            // unauthenticated actors both surface as null.
+            var raw = _accessor.HttpContext?.User.FindFirstValue(JwtBearerConfiguration.RoleClaimName);
+            return raw is not null && Enum.TryParse<UserRole>(raw, ignoreCase: true, out var role) ? role : null;
+        }
+    }
 }

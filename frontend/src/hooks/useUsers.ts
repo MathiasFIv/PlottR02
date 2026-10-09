@@ -7,8 +7,13 @@ import type { CreateUserInput, User } from '../types';
 /**
  * Data-access hook for the `/api/Users` resource. Wraps the fetch calls and
  * mirrors their state (list, loading, error) into Jotai atoms.
+ *
+ * Pass `{ fetchOnMount: false }` for actors who may create users but lack the
+ * list permission (GET /api/Users is SystemAdmin + TrialManager only), so
+ * mounting a create-only form never fires a 403-ing list request.
  */
-export function useUsers() {
+export function useUsers(options?: { fetchOnMount?: boolean }) {
+  const { fetchOnMount = true } = options ?? {};
   const [users, setUsers] = useAtom(usersAtom);
   const [loading, setLoading] = useAtom(loadingAtom);
   const [error, setError] = useAtom(errorAtom);
@@ -45,10 +50,12 @@ export function useUsers() {
     [setLoading, setError, setUsersOnly],
   );
 
-  // Load the user list once when the hook is first used.
+  // Load the user list once when the hook is first used, unless the caller is
+  // a create-only actor (see `fetchOnMount`).
   useEffect(() => {
+    if (!fetchOnMount) return;
     void fetchUsers();
-  }, [fetchUsers]);
+  }, [fetchUsers, fetchOnMount]);
 
   return { users, loading, error, fetchUsers, createUser };
 }

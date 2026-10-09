@@ -31,7 +31,7 @@ public static class UserFaker
                 var email = f.Internet.Email();
                 return uniqueEmail ? $"{email.ToLowerInvariant()}.{f.Random.Int(1000, 9999)}" : email;
             })
-            .RuleFor(r => r.Role, f => f.PickRandom(RolesIncludingNull()))
+            .RuleFor(r => r.Role, f => f.PickRandom(Roles()))
             .RuleFor(r => r.Password, f => f.Internet.Password(12));
 
         // Seeds must be applied to the Faker<T> itself (via UseSeed) to be reproducible.
@@ -45,7 +45,7 @@ public static class UserFaker
         var faker = new Faker<UpdateUserRequest>(locale: "en")
             .RuleFor(r => r.Name, f => f.Name.FullName())
             .RuleFor(r => r.Email, f => f.Internet.Email())
-            .RuleFor(r => r.Role, f => f.PickRandom(RolesIncludingNull()));
+            .RuleFor(r => r.Role, f => f.PickRandom(Roles()));
 
         faker.UseSeed(Seed);
         return faker;
@@ -63,16 +63,14 @@ public static class UserFaker
     }
 
     /// <summary>
-    /// The four valid <see cref="UserRole"/> values plus <c>null</c>, so generated
-    /// test data exercises both an assigned role and the "no role" case.
+    /// The four valid <see cref="UserRole"/> values.
     /// </summary>
-    private static UserRole?[] RolesIncludingNull() =>
+    private static UserRole[] Roles() =>
     [
         UserRole.SystemAdmin,
         UserRole.Researcher,
         UserRole.TrialManager,
         UserRole.FieldWorker,
-        null,
     ];
 
     /// <summary>
@@ -92,7 +90,7 @@ public static class UserFaker
             Id = Guid.NewGuid(),
             Name = faker.Name.FullName(),
             Email = email ?? faker.Internet.Email(),
-            Role = faker.PickRandom(RolesIncludingNull()),
+            Role = faker.PickRandom(Roles()),
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(password ?? "ValidPass123!", workFactor: 12),
         };
     }

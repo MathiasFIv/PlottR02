@@ -1,6 +1,4 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
-using PlottR0._2.Repository;
 using PlottR0._2.Repository.Repositories;
 
 namespace PlottR0._2.Tests;
@@ -15,7 +13,7 @@ namespace PlottR0._2.Tests;
 public sealed class RatingRepositoryContractTests
 {
     private static ClosedXmlRatingRepository CreateRepository() =>
-        new(Options.Create(new ExcelWorkbookOptions()), NullLogger<ClosedXmlRatingRepository>.Instance);
+        new(NullLogger<ClosedXmlRatingRepository>.Instance);
 
     [Fact]
     public async Task GetByIdAsync_Always_ThrowsNotSupported()
