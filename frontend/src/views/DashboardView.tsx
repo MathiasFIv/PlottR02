@@ -1,9 +1,9 @@
 import { useAtomValue } from 'jotai';
 import { useRef, useState } from 'react';
-import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AssignCrewModal } from '../components/AssignCrewModal';
 import { Button } from '../components/Button';
+import { RecordLinkPanel } from '../components/RecordLinkPanel';
 import { TopBar } from '../components/TopBar';
 import { TrialList } from '../components/TrialList';
 import { UsersPanel } from '../components/UserManagementSection';
@@ -15,19 +15,17 @@ import { canCreateUsers, canCreateTrials } from '../types';
 import type { TrialSummary } from '../types';
 
 /**
- * Logged-in dashboard: the trials list (visible to every role; the upload form
- * and per-trial "Assign crew" action are creators-only: system admins,
- * researchers, trial managers) plus a consolidated users panel (create —
- * and, for managers, list/edit/delete via /api/Users) shown to any user creator
- * (system admins, researchers, trial managers). The panel is laid out in a
- * responsive 3-column grid: the trials section spans two columns and the users
- * panel sits in the third. The user list fetch is managers-only inside
- * UsersPanel, so create-only actors never trigger it.
+ * Logged-in dashboard: three panels in a responsive 3-column grid capped at
+ * 1280px — the record launcher (FIRST), the trials list, and the users panel
+ * (any account creator; the list inside it is managers-only). Every panel is
+ * the same height on desktop, and each long list (trials, users) scrolls
+ * inside its own panel so the page itself never grows unwieldy.
  *
- * The empty trials list uses a role-appropriate message: creators see the
- * default "no trials uploaded yet" line, while non-creators (field workers,
- * whose list is server-filtered to their assignments) see "No trials assigned
- * to you yet." instead.
+ * The trials panel is read-only for every role. Creators (system admins,
+ * researchers, trial managers) see a single "Upload Trial" button UNDER the
+ * list: it opens the native file picker and uploads the chosen workbook
+ * immediately. Field workers see no upload — their list is server-filtered
+ * to their assignments, with a role-appropriate empty message instead.
  *
  * Creators additionally see an "Assigned to you" badge on trials that include
  * them in the crew (`showAssignedBadge={showTrialUpload}`); field workers'
@@ -40,8 +38,8 @@ export function DashboardView() {
   // Any role allowed to create accounts sees the section; the list within it
   // remains managers-only.
   const showUserManagement = canCreateUsers(currentUser?.role ?? null);
-  // The trials list is read-only for every role; only creators see the upload
-  // form that POSTs to /api/Trials.
+  // The trials list is read-only for every role; only creators see the
+  // upload button that POSTs to /api/Trials.
   const showTrialUpload = canCreateTrials(currentUser?.role ?? null);
   const {
     trials,
@@ -53,9 +51,9 @@ export function DashboardView() {
     createTrial,
   } = useTrials();
 
-  // Trial upload state
+  // Trial upload state — the hidden file input is opened by the "Upload
+  // Trial" button below the list; picking a file uploads it immediately.
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
 
   // Trial workbook download state
@@ -75,25 +73,17 @@ export function DashboardView() {
     navigate('/login', { replace: true });
   }
 
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;
-    setSelectedFile(file);
+    // Reset the native input first so picking the same file again re-fires.
+    e.target.value = '';
     setUploadedFileName(null);
-  }
+    if (!file) return;
 
-  async function handleUpload(event: FormEvent) {
-    event.preventDefault();
-    if (!selectedFile || uploading) return;
-
-    const result = await createTrial(selectedFile);
-    if (result) {
-      setUploadedFileName(result.fileName);
-      setSelectedFile(null);
-      // Reset the native file input so it shows the empty state
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    }
+    // The button is the whole flow: a chosen file uploads right away.
+    void createTrial(file).then((result) => {
+      if (result) setUploadedFileName(result.fileName);
+    });
   }
 
   async function handleDownload(trial: TrialSummary) {
@@ -114,77 +104,66 @@ export function DashboardView() {
 
   return (
     <div>
-      <TopBar links={[{ to: '/record', label: 'Record' }]} onLogout={handleLogout} />
+      <TopBar onLogout={handleLogout} />
 
-      <main className="mx-auto grid max-w-[1280px] gap-6 px-6 py-8 lg:grid-cols-3 items-start">
-        <section
-          className={`card card-border bg-base-100 shadow-sm p-6 ${
-            showUserManagement ? 'lg:col-span-2' : 'lg:col-span-3'
-          }`}
-        >
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold text-base-content">Trials</h2>
-            <button
-              type="button"
-              className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
-              onClick={() => void fetchTrials()}
-            >
-              Refresh
-            </button>
-          </div>
+      <main className="mx-auto grid max-w-[1280px] gap-6 px-6 py-8 lg:grid-cols-3">
+        {/* The record launcher is always the FIRST panel. */}
+        <RecordLinkPanel className="min-w-0 lg:h-[calc(100vh-9rem)]" />
 
-          {showTrialUpload ? (
-            <form onSubmit={handleUpload}>
-              <div className="mb-4">
-                <label
-                  htmlFor="trial-file"
-                  className="block mb-1.5 text-sm font-medium text-base-content/80"
-                >
-                  Upload .xlsx workbook
-                </label>
-                <input
-                  ref={fileInputRef}
-                  id="trial-file"
-                  type="file"
-                  accept=".xlsx"
-                  className="file-input w-full"
-                  onChange={handleFileChange}
-                />
-              </div>
-              <Button
-                type="submit"
-                disabled={!selectedFile || uploading}
-              >
-                {uploading ? 'Uploading…' : 'Upload trial'}
-              </Button>
-            </form>
-          ) : (
+        <section className="card card-border bg-base-100 shadow-sm p-6 min-w-0 flex flex-col lg:h-[calc(100vh-9rem)] lg:overflow-hidden">
+          <h2 className="text-lg font-semibold text-base-content mb-3">
+            Trials
+          </h2>
+
+          {!showTrialUpload && (
             <p className="text-sm text-base-content/70">
               Trials are created by researchers and trial managers.
             </p>
           )}
 
-          {uploadError && (
-            <p className="text-sm mt-3 text-error">{uploadError}</p>
-          )}
-          {uploadedFileName && (
-            <p className="text-sm mt-3 text-success" role="status">
-              Uploaded "{uploadedFileName}" — the list below has been refreshed.
-            </p>
-          )}
+          <div className="flex-1 min-h-0 overflow-y-auto lg:overscroll-contain lg:pr-1">
+            <TrialList
+              trials={trials}
+              loading={trialsLoading}
+              error={trialsError}
+              onDownload={handleDownload}
+              downloadingTrialId={downloadingTrialId}
+              onAssign={showTrialUpload ? (t) => setAssigningTrial(t) : undefined}
+              emptyMessage={
+                showTrialUpload ? undefined : 'No trials assigned to you yet.'
+              }
+              showAssignedBadge={showTrialUpload}
+            />
+          </div>
 
-          <TrialList
-            trials={trials}
-            loading={trialsLoading}
-            error={trialsError}
-            onDownload={handleDownload}
-            downloadingTrialId={downloadingTrialId}
-            onAssign={showTrialUpload ? (t) => setAssigningTrial(t) : undefined}
-            emptyMessage={
-              showTrialUpload ? undefined : 'No trials assigned to you yet.'
-            }
-            showAssignedBadge={showTrialUpload}
-          />
+          {showTrialUpload && (
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              {uploadError && (
+                <p className="text-sm text-error">{uploadError}</p>
+              )}
+              {uploadedFileName && (
+                <p className="text-sm text-success" role="status">
+                  Uploaded "{uploadedFileName}" — the list above has been
+                  refreshed.
+                </p>
+              )}
+              <Button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+              >
+                {uploading ? 'Uploading…' : 'Upload Trial'}
+              </Button>
+              <input
+                ref={fileInputRef}
+                id="trial-file"
+                type="file"
+                accept=".xlsx"
+                className="hidden"
+                onChange={handleFileSelected}
+              />
+            </div>
+          )}
 
           {downloadingTrialId && (
             <p className="text-sm text-base-content/70" role="status">
@@ -202,13 +181,17 @@ export function DashboardView() {
         </section>
 
         {showUserManagement && (
-          <UsersPanel actorRole={currentUser?.role ?? null} />
+          <UsersPanel
+            actorRole={currentUser?.role ?? null}
+            className="min-w-0 lg:h-[calc(100vh-9rem)]"
+          />
         )}
       </main>
 
       {assigningTrial && (
         <AssignCrewModal
           trial={assigningTrial}
+          onSaved={() => void fetchTrials()}
           onClose={() => setAssigningTrial(null)}
         />
       )}

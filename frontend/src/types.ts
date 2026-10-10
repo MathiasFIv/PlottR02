@@ -156,7 +156,9 @@ export type CurrentUser = User;
 //
 // Field workers receive only the trials they are assigned to, so for them
 // `isAssignedToCurrentUser` is always true; creators receive the full list and
-// use the flag to highlight their own assignments.
+// use the flag to highlight their own assignments. `createdBy` is the creator's
+// user id; `createdByName` is their display name (null when the creator has been
+// deleted — the FK is SET NULL — so the UI omits the "by …" line then).
 // ---------------------------------------------------------------------------
 
 /** Summary of a trial workbook uploaded to the backend. */
@@ -167,6 +169,7 @@ export type TrialSummary = {
   status: string;
   createdAt: string;
   createdBy: string | null;
+  createdByName: string | null;
   /**
    * True when the signed-in user is a member of this trial's crew. Computed
    * server-side and ALWAYS present (never omitted — the backend never drops

@@ -22,12 +22,9 @@ export function UserList({ users, loading, error }: UserListProps) {
   }
 
   return (
-    <ul className="list-none m-0 p-0 border border-base-300 rounded-md bg-base-100 overflow-hidden divide-y divide-base-300">
+    <ul className="list">
       {users.map((user) => (
-        <li
-          key={user.id}
-          className="flex items-center justify-between gap-3 px-4 py-3"
-        >
+        <li key={user.id} className="list-row">
           <div>
             <p className="font-medium text-base-content">{user.name}</p>
             {user.email && (
@@ -39,9 +36,6 @@ export function UserList({ users, loading, error }: UserListProps) {
               </p>
             )}
           </div>
-          <code className="text-xs break-all text-base-content/70 font-mono">
-            {user.id}
-          </code>
         </li>
       ))}
     </ul>

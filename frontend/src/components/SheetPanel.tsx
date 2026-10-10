@@ -26,10 +26,10 @@ type SheetPanelProps = {
 
 /**
  * The RecordView embed wrapper (D2 / §6): the sheet is visible *while*
- * recording. It owns its whole lifecycle — status pill, metadata strip,
- * manual Refresh and the grid — from the `trialId` prop alone, so it never
- * reaches into RecordView's state; switching trials in the picker changes the
- * prop, which clears the sheet atoms, refetches and rehydrates the snapshot.
+ * recording. It owns its whole lifecycle — status pill, metadata strip and
+ * the grid — from the `trialId` prop alone, so it never reaches into
+ * RecordView's state; switching trials in the picker changes the prop, which
+ * clears the sheet atoms, refetches and rehydrates the snapshot.
  *
  * **N2 shows ALL rows** (deliberate transitional state — it validates the
  * phone layout one phase early). N3 narrows this to the focused view
@@ -60,8 +60,7 @@ type SheetPanelProps = {
  * point of declaring it outside the payload block.
  */
 export function SheetPanel({ trialId }: SheetPanelProps) {
-  const { sheet, status, source, error, updatedAt, refresh, refreshing } =
-    useTrialSheet(trialId);
+  const { sheet, status, source, error, updatedAt } = useTrialSheet(trialId);
   /** N3 last-written pair — read live; written by the sync engine (non-React set). */
   const target = useAtomValue(sheetLastWrittenAtom);
   /** Only THIS trial's pair may tint this trial's grid (plot numbers repeat). */
@@ -127,14 +126,6 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
           Sheet
         </h2>
         <SheetStatusPill status={status} source={source} savedAt={updatedAt} />
-        <button
-          type="button"
-          className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
-          onClick={refresh}
-          disabled={refreshing}
-        >
-          Refresh
-        </button>
       </div>
 
       {sheet?.metadata != null && <SheetMetaStrip metadata={sheet.metadata} />}

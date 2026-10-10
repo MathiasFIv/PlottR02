@@ -10,6 +10,8 @@ import type { UserRole } from '../types';
 type UsersPanelProps = {
   /** The signed-in actor's role; drives create/manage gating and the role list. */
   actorRole: UserRole | null;
+  /** Extra classes — e.g. grid placement and equal panel height. */
+  className?: string;
 };
 
 /**
@@ -20,7 +22,7 @@ type UsersPanelProps = {
  * the list sit the two entry points: "Create user" (any creator) and "Manage
  * users" (managers only), each opening its own daisyUI dialog.
  */
-export function UsersPanel({ actorRole }: UsersPanelProps) {
+export function UsersPanel({ actorRole, className = '' }: UsersPanelProps) {
   const manage = canManageUsers(actorRole);
   const { users, loading, error, fetchUsers } = useUsers({
     fetchOnMount: manage,
@@ -36,25 +38,15 @@ export function UsersPanel({ actorRole }: UsersPanelProps) {
   }
 
   return (
-    <section className="card card-border bg-base-100 shadow-sm p-6">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold text-base-content">Users</h2>
-        {manage && (
-          <button
-            type="button"
-            className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
-            onClick={() => {
-              setCreatedName(null);
-              void fetchUsers();
-            }}
-          >
-            Refresh
-          </button>
-        )}
-      </div>
+    <section
+      className={`card card-border bg-base-100 shadow-sm p-6 flex flex-col ${className}`}
+    >
+      <h2 className="text-lg font-semibold text-base-content mb-3">Users</h2>
 
       {manage ? (
-        <UserList users={users} loading={loading} error={error} />
+        <div className="flex-1 min-h-0 overflow-y-auto lg:overscroll-contain lg:pr-1">
+          <UserList users={users} loading={loading} error={error} />
+        </div>
       ) : (
         <p className="text-sm text-base-content/70">
           Only system admins and trial managers can manage users.

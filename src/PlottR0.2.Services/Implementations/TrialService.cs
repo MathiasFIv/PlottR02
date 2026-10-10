@@ -141,8 +141,10 @@ public class TrialService : ITrialService
 
             // Mirror the auto-assignment above in the response: a researcher/trial-manager
             // creator is assigned to the new trial (badge on), a system-administrator
-            // creator is above the matrix and carries no assignment (badge off).
-            return TrialMapper.ToSummary(created, creatorIsAssigned);
+            // creator is above the matrix and carries no assignment (badge off). The freshly
+            // created entity's CreatedByUser navigation is not loaded, so the actor's name is
+            // passed explicitly rather than resolved from that (absent) navigation.
+            return TrialMapper.ToSummary(created, creatorIsAssigned, _currentUser.Name);
         }
         catch
         {

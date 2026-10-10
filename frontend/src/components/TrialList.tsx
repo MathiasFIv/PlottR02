@@ -49,14 +49,13 @@ export function TrialList({
   }
 
   return (
-    <ul className="list-none mt-4 p-0 border border-base-300 rounded-md bg-base-100 overflow-hidden divide-y divide-base-300">
+    <ul className="list mt-4">
       {trials.map((trial) => (
-        <li
-          key={trial.trialId}
-          className="flex items-center justify-between gap-3 px-4 py-3"
-        >
+        <li key={trial.trialId} className="list-row">
           <div>
-            <p className="font-medium text-base-content">{trial.fileName}</p>
+            <p className="font-medium text-base-content">
+              {trial.externalId || trial.fileName}
+            </p>
             <div className="flex items-center flex-wrap gap-2.5 mt-0.5">
               <span className="badge badge-info badge-sm text-xs">
                 {trial.status}
@@ -67,20 +66,17 @@ export function TrialList({
                 </span>
               )}
               <span className="text-sm text-base-content/70">
-                {trial.externalId}
-              </span>
-              <span className="text-sm text-base-content/70">
                 {new Date(trial.createdAt).toLocaleString()}
               </span>
-              {trial.createdBy && (
+              {trial.createdByName && (
                 <span className="text-sm text-base-content/70">
-                  by {trial.createdBy}
+                  by {trial.createdByName}
                 </span>
               )}
               {onDownload && (
                 <button
                   type="button"
-                  className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
+                  className="btn btn-link btn-primary btn-sm px-1"
                   disabled={downloadingTrialId === trial.trialId}
                   onClick={() => onDownload(trial)}
                 >
@@ -90,7 +86,7 @@ export function TrialList({
               {onAssign && (
                 <button
                   type="button"
-                  className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
+                  className="btn btn-link btn-primary btn-sm px-1"
                   onClick={() => onAssign(trial)}
                 >
                   Assign crew
@@ -106,9 +102,6 @@ export function TrialList({
               </Link>
             </div>
           </div>
-          <code className="text-xs break-all text-base-content/70 font-mono">
-            {trial.trialId}
-          </code>
         </li>
       ))}
     </ul>

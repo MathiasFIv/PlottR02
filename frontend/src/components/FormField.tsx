@@ -21,11 +21,10 @@ export function FormField({
 }: FormFieldProps) {
   return (
     <div className="mb-4">
-      <label
-        htmlFor={htmlFor}
-        className="block mb-1.5 text-sm font-medium text-base-content/80"
-      >
-        {label}
+      <label htmlFor={htmlFor} className="label">
+        <span className="label-text text-sm font-medium text-base-content/80">
+          {label}
+        </span>
       </label>
       {children ?? <Input id={htmlFor} name={htmlFor} {...inputProps} />}
     </div>

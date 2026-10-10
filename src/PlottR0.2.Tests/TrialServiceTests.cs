@@ -90,6 +90,8 @@ public sealed class TrialServiceTests : IAsyncLifetime
         summary.Status.Should().Be(TrialStatus.Created);
         summary.ExternalId.Should().Be(Path.GetFileNameWithoutExtension(fileName));
         summary.CreatedBy.Should().Be(DefaultActorUserId);
+        summary.CreatedByName.Should().Be("Test Actor",
+            "the create response resolves the actor's display name immediately");
         summary.IsAssignedToCurrentUser.Should().BeFalse(
             "a system-administrator creator is above the matrix and carries no assignment");
 
@@ -290,6 +292,8 @@ public sealed class TrialServiceTests : IAsyncLifetime
             r.TrialId.Should().NotBeNullOrWhiteSpace();
             r.FileName.Should().EndWith(".xlsx");
             r.Status.Should().Be(TrialStatus.Created);
+            r.CreatedByName.Should().Be("Test Actor",
+                "the creator's display name is resolved from the joined user row");
             r.IsAssignedToCurrentUser.Should().BeFalse(
                 "the default SystemAdmin actor is assigned to no trial");
         });
@@ -586,6 +590,8 @@ public sealed class TrialServiceTests : IAsyncLifetime
         // Assert
         summary.TrialId.Should().NotBeNullOrWhiteSpace();
         summary.FileName.Should().Be(fileName);
+        summary.CreatedByName.Should().Be("Test Actor",
+            "every permitted creator's display name is surfaced in the create response");
         summary.IsAssignedToCurrentUser.Should().Be(role != UserRole.SystemAdmin,
             "the create response badges a researcher/trial-manager creator, never an admin");
     }
@@ -644,6 +650,8 @@ public sealed class TrialServiceTests : IAsyncLifetime
         // researcher/trial-manager creator, unflagged for a system-administrator creator.
         summary.IsAssignedToCurrentUser.Should().Be(expectedRows == 1,
             "the returned badge must match the creator auto-assignment row");
+        summary.CreatedByName.Should().Be("Test Actor",
+            "the create response always carries the actor's display name");
 
         // Assert — a researcher/trial-manager creator is auto-assigned exactly once,
         // persisted atomically with the trial; a system administrator is above the matrix
@@ -735,6 +743,10 @@ public sealed class TrialServiceTests : IAsyncLifetime
         // badge is on for every returned row.
         results.Should().OnlyContain(r => r.IsAssignedToCurrentUser,
             "field workers only receive their own assigned trials");
+
+        // Assert — the creator display name is resolved server-side on the same rows.
+        results.Should().OnlyContain(r => r.CreatedByName == "Test Actor",
+            "the list resolves each trial's creator display name from the joined user row");
     }
 
     [Theory]
@@ -762,6 +774,10 @@ public sealed class TrialServiceTests : IAsyncLifetime
         results.Should().HaveCount(2);
         results.Should().OnlyContain(r => !r.IsAssignedToCurrentUser,
             "the manager is deliberately assigned to none of the returned trials");
+
+        // Assert — managers also get each row's resolved creator display name.
+        results.Should().OnlyContain(r => r.CreatedByName == "Test Actor",
+            "the manager list resolves each trial's creator display name server-side");
     }
 
     [Fact]
@@ -850,6 +866,40 @@ public sealed class TrialServiceTests : IAsyncLifetime
 
         // Assert — an unassigned (or role-less) actor sees an empty list, never everything.
         results.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ListTrialsAsync_DeletedCreator_OmitsName()
+    {
+        // Arrange — a trial created by the default (SystemAdmin) actor, whose User row is then
+        // deleted. A system-administrator creator carries no assignment row, so the delete
+        // cascades cleanly; the CreatedBy FK is SetNull on delete, so the trial survives with a
+        // null creator rather than being removed.
+        var trialId = await CreateTrialViaServiceAsync();
+
+        using (var scope = _fixture.CreateScope())
+        {
+            var userRepo = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+            await userRepo.DeleteAsync(DefaultActorUserId);
+        }
+
+        // Act — list as a fresh manager identity (the creator now no longer exists; the read
+        // must not fail on the dangling FK).
+        _fixture.CurrentUser.UserId = Guid.NewGuid();
+        _fixture.CurrentUser.Role = UserRole.SystemAdmin;
+
+        IReadOnlyList<TrialSummary> results;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            results = await service.ListTrialsAsync();
+        }
+
+        // Assert — SetNull cascaded: both the FK and the resolved display name are null, so the
+        // frontend omits the "by" line rather than showing a dangling identifier.
+        var row = results.Single(r => Guid.Parse(r.TrialId) == trialId);
+        row.CreatedBy.Should().BeNull("deleting the creator sets the CreatedBy FK to null");
+        row.CreatedByName.Should().BeNull("the creator row is gone, so no display name resolves");
     }
 
     [Fact]

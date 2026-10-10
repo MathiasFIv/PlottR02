@@ -31,7 +31,11 @@ public sealed class TrialRepository : ITrialRepository
         int? take = null,
         CancellationToken ct = default)
     {
-        IQueryable<Trial> query = _db.Trials.OrderByDescending(t => t.CreatedAt);
+        // LEFT JOIN the creator so a summary's display name resolves in the same query
+        // (null when the creator was deleted — the FK is SetNull — so the nav is absent).
+        IQueryable<Trial> query = _db.Trials
+            .Include(t => t.CreatedByUser)
+            .OrderByDescending(t => t.CreatedAt);
 
         if (skip.HasValue)
             query = query.Skip(skip.Value);

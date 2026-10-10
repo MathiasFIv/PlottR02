@@ -117,17 +117,17 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
             <p className="text-sm text-base-content/70">No users found yet.</p>
           )
         ) : (
-          <ul className="list-none m-0 p-0 border border-base-300 rounded-md bg-base-100 overflow-hidden divide-y divide-base-300">
+          <ul className="list">
             {users.map((user) => {
               const roleOptions = editableRolesFor(actorRole, user.role);
               const hasPreservedRole = roleOptions.some(
                 (option) => option.isPreserved,
               );
               return (
-                <li key={user.id} className="px-4 py-3">
+                <li key={user.id} className="list-row">
                   {editingId === user.id ? (
                     <form
-                      className="flex flex-col"
+                      className="flex flex-col w-full"
                       onSubmit={(e) => void handleSaveEdit(e, user)}
                     >
                       <FormField
@@ -209,7 +209,7 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
                       </div>
                     </form>
                   ) : confirmingDeleteId === user.id ? (
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="flex w-full items-center justify-between gap-3">
                       <p className="text-sm text-base-content">
                         Delete <span className="font-medium">{user.name}</span>?
                       </p>
@@ -233,7 +233,7 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
                       </div>
                     </div>
                   ) : (
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex w-full items-start justify-between gap-3">
                       <div>
                         <p className="font-medium text-base-content">
                           {user.name}

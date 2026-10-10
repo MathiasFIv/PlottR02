@@ -45,7 +45,7 @@ export function SheetView() {
   const navigate = useNavigate();
   const { logout } = useAuth();
   const { trialId } = useParams<{ trialId: string }>();
-  const { sheet, status, source, error, updatedAt, refresh, refreshing } =
+  const { sheet, status, source, error, updatedAt } =
     useTrialSheet(trialId ?? null);
 
   /** N3 last-written pair — read live; written by the sync engine (non-React set). */
@@ -128,13 +128,7 @@ export function SheetView() {
 
   return (
     <div>
-      <TopBar
-        links={[
-          { to: '/record', label: 'Record' },
-          { to: '/', label: 'Dashboard' },
-        ]}
-        onLogout={handleLogout}
-      />
+      <TopBar onLogout={handleLogout} />
 
       <main className="mx-auto grid max-w-[1200px] gap-4 px-4 pt-6 pb-12 content-start">
         <p>
@@ -152,14 +146,6 @@ export function SheetView() {
               Trial sheet
             </h1>
             <SheetStatusPill status={viewStatus} source={source} savedAt={updatedAt} />
-            <button
-              type="button"
-              className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
-              onClick={refresh}
-              disabled={refreshing}
-            >
-              Refresh
-            </button>
           </div>
 
           {sheet?.metadata != null && <SheetMetaStrip metadata={sheet.metadata} />}

@@ -240,7 +240,7 @@ export function RecordView() {
 
   return (
     <div>
-      <TopBar links={[{ to: '/', label: 'Dashboard' }]} onLogout={handleLogout} />
+      <TopBar onLogout={handleLogout} />
 
       <main className="mx-auto grid max-w-[480px] grid-cols-[minmax(0,1fr)] gap-4 px-4 py-6 sheet:max-w-[1200px] sheet:grid-cols-[minmax(0,480px)_minmax(0,1fr)] sheet:items-start">
         {/* One grid column keeps today's 16px stack exactly as it was; the

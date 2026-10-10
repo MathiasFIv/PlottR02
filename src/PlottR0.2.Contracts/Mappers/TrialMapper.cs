@@ -17,13 +17,24 @@ public static class TrialMapper
     /// Whether the acting user is personally assigned to the trial; surfaced to the client
     /// as <see cref="TrialSummary.IsAssignedToCurrentUser"/>. Defaults to <c>false</c>.
     /// </param>
+    /// <param name="createdByName">
+    /// Explicit creator display name to surface as <see cref="TrialSummary.CreatedByName"/>.
+    /// When <c>null</c>, falls back to the loaded <see cref="Trial.CreatedByUser"/> navigation's
+    /// <see cref="User.Name"/> — itself null when the creator row was deleted (the FK is
+    /// SetNull, so the navigation is absent). Pass it explicitly for a freshly created entity
+    /// whose navigation is not loaded.
+    /// </param>
     /// <remarks>
     /// Omitting <paramref name="isAssignedToCurrentUser"/> yields <c>false</c> for the row.
     /// That default is only correct for "unknown actor / no-assignments" call sites — pass
     /// the real flag whenever the acting user's assignment is known, otherwise the returned
-    /// badge silently misreports the actor as unassigned.
+    /// badge silently misreports the actor as unassigned. Omitting
+    /// <paramref name="createdByName"/> falls back to the navigation; when that navigation is
+    /// also absent the summary carries a null name, which the UI renders by omitting the
+    /// "by" line.
     /// </remarks>
-    public static TrialSummary ToSummary(Trial entity, bool isAssignedToCurrentUser = false)
+    public static TrialSummary ToSummary(
+        Trial entity, bool isAssignedToCurrentUser = false, string? createdByName = null)
     {
         ArgumentNullException.ThrowIfNull(entity);
 
@@ -35,6 +46,7 @@ public static class TrialMapper
             Status = entity.Status,
             CreatedAt = entity.CreatedAt,
             CreatedBy = entity.CreatedBy,
+            CreatedByName = createdByName ?? entity.CreatedByUser?.Name,
             IsAssignedToCurrentUser = isAssignedToCurrentUser,
         };
     }

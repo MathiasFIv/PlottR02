@@ -15,6 +15,16 @@ public sealed class TrialSummary
     public Guid? CreatedBy { get; init; }
 
     /// <summary>
+    /// Display name of the user who created this trial, resolved server-side from the
+    /// <c>CreatedBy</c> FK. Null when the creator no longer exists — the FK is configured
+    /// SetNull on delete — in which case the UI omits the "by" line. Serializes as
+    /// <c>createdByName</c> and is always present in the payload (web JSON defaults emit
+    /// <c>null</c> for a nullable reference; there is deliberately no JsonIgnore/omit
+    /// condition).
+    /// </summary>
+    public string? CreatedByName { get; init; }
+
+    /// <summary>
     /// True when the calling actor is personally assigned to this trial. Managers
     /// (system administrators, researchers, trial managers) see every trial and use this
     /// flag to badge the rows they are personally on; field workers only ever receive
