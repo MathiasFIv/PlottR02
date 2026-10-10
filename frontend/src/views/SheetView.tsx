@@ -1,11 +1,11 @@
 import { useAtom, useAtomValue } from 'jotai';
 import { useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Button } from '../components/Button';
 import { SheetGrid } from '../components/SheetGrid';
 import { SheetMetaStrip } from '../components/SheetMetaStrip';
 import { SheetStates } from '../components/SheetStates';
 import { SheetStatusPill } from '../components/SheetStatusPill';
+import { TopBar } from '../components/TopBar';
 import { useAuth } from '../hooks/useAuth';
 import { useTrialSheet } from '../hooks/useTrialSheet';
 import { deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
@@ -22,12 +22,10 @@ import {
   targetSelection,
 } from '../lib/sheetTarget';
 import {
-  currentUserAtom,
   sheetAnchorNoticeAtom,
   sheetLastWrittenAtom,
   sheetSelectedAtom,
 } from '../store/atoms';
-import { roleLabel } from '../types';
 
 /**
  * The dedicated full-sheet route (`/trials/:trialId/sheet`, behind
@@ -44,7 +42,6 @@ import { roleLabel } from '../types';
  * N4 will add polling to the hook; nothing here needs to change for it.
  */
 export function SheetView() {
-  const currentUser = useAtomValue(currentUserAtom);
   const navigate = useNavigate();
   const { logout } = useAuth();
   const { trialId } = useParams<{ trialId: string }>();
@@ -131,41 +128,33 @@ export function SheetView() {
 
   return (
     <div>
-      <header className="topbar">
-        <span className="topbar__brand">PlottR 0.2</span>
-        <div className="topbar__user">
-          {currentUser && (
-            <span className="topbar__identity">
-              Signed in as <strong>{currentUser.name}</strong>
-              {currentUser.role ? ` (${roleLabel(currentUser.role)})` : ''}
-            </span>
-          )}
-          <Link className="link-button" to="/record">
-            Record
-          </Link>
-          <Link className="link-button" to="/">
-            Dashboard
-          </Link>
-          <Button variant="secondary" onClick={handleLogout}>
-            Log out
-          </Button>
-        </div>
-      </header>
+      <TopBar
+        links={[
+          { to: '/record', label: 'Record' },
+          { to: '/', label: 'Dashboard' },
+        ]}
+        onLogout={handleLogout}
+      />
 
-      <main className="sheet-page">
+      <main className="mx-auto grid max-w-[1200px] gap-4 px-4 pt-6 pb-12 content-start">
         <p>
-          <Link className="link-button" to="/">
+          <Link
+            className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
+            to="/"
+          >
             ← Back to dashboard
           </Link>
         </p>
 
-        <section className="card sheet-page__card">
-          <div className="sheet-panel__bar">
-            <h1 className="title sheet-panel__title">Trial sheet</h1>
+        <section className="card card-border bg-base-100 shadow-sm p-6 flex flex-col gap-4 min-w-0">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-[28px] font-bold text-base-content mr-auto">
+              Trial sheet
+            </h1>
             <SheetStatusPill status={viewStatus} source={source} savedAt={updatedAt} />
             <button
               type="button"
-              className="link-button"
+              className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
               onClick={refresh}
               disabled={refreshing}
             >
@@ -188,13 +177,13 @@ export function SheetView() {
               gated on `hasPayload`: the tap survives an offline/failed
               fetch exactly like the atom does. */}
           {forTrialAnchor !== null && (
-            <p className="muted" role="status">
+            <p className="text-sm text-base-content/70" role="status">
               Anchored: {formatAnchor(forTrialAnchor)} — speak numbers to
               fill. Tap the cell again to clear.
             </p>
           )}
           {forTrialNotice !== null && (
-            <p className="muted sheet-anchor-notice" role="status">
+            <p className="text-sm font-medium text-warning" role="status">
               Cell already filled
             </p>
           )}
@@ -210,7 +199,7 @@ export function SheetView() {
           )}
 
           {hasPayload && rows !== null && endOfSheet !== null && (
-            <p className="muted" role="status">
+            <p className="text-sm text-base-content/70" role="status">
               End of sheet — last: Plot {endOfSheet.plot} · Sub {endOfSheet.subsample}
             </p>
           )}

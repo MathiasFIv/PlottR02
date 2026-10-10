@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import headerLight from '../Assets/plottR-header-light-small.png';
+import headerDark from '../Assets/plottR-header-dark-small.png';
 import { Button } from '../components/Button';
 import { FormField } from '../components/FormField';
 import { ApiError } from '../lib/api';
@@ -49,12 +51,21 @@ export function LoginView() {
   }
 
   return (
-    <div className="auth-shell">
-      <div className="card auth-card">
-        <h1 className="title">PlottR 0.2</h1>
-        <p className="muted auth-subtitle">
-          Agricultural trial management
-        </p>
+    <div className="min-h-screen flex items-center justify-center p-6">
+      <div className="card card-border bg-base-100 shadow-sm p-6 w-full max-w-[400px]">
+        {/* Visually hidden so screen readers still get a level-1 heading (the
+            header is an image with alt="PlottR 0.2"). */}
+        <h1 className="sr-only">PlottR 0.2</h1>
+        <img
+          src={headerLight}
+          alt="PlottR 0.2"
+          className="block dark:hidden w-full h-auto mb-6"
+        />
+        <img
+          src={headerDark}
+          alt="PlottR 0.2"
+          className="hidden dark:block w-full h-auto mb-6"
+        />
 
         <form onSubmit={handleSubmit}>
           <FormField
@@ -83,7 +94,7 @@ export function LoginView() {
           />
 
           {error && (
-            <p className="error-text" role="alert">
+            <p className="text-sm mt-3 text-error" role="alert">
               {error}
             </p>
           )}

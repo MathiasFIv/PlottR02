@@ -13,6 +13,12 @@ type TrialListProps = {
   onAssign?: (trial: TrialSummary) => void;
   /** Overrides the default empty-state line when the list has no trials. */
   emptyMessage?: string;
+  /**
+   * When true, rows whose trial is assigned to the signed-in user show an
+   * "Assigned to you" badge. Creators pass this; field workers' lists are
+   * assignments-only, so they would see it on every row.
+   */
+  showAssignedBadge?: boolean;
 };
 
 /** Presentational list of trials fetched from GET /api/Trials. */
@@ -24,38 +30,57 @@ export function TrialList({
   downloadingTrialId,
   onAssign,
   emptyMessage,
+  showAssignedBadge,
 }: TrialListProps) {
   if (loading && trials.length === 0) {
-    return <p className="muted">Loading trials…</p>;
+    return <p className="text-sm text-base-content/70">Loading trials…</p>;
   }
 
   if (error) {
-    return <p className="error-text">Error: {error}</p>;
+    return <p className="text-sm mt-3 text-error">Error: {error}</p>;
   }
 
   if (trials.length === 0) {
-    return <p className="muted">{emptyMessage ?? 'No trials uploaded yet.'}</p>;
+    return (
+      <p className="text-sm text-base-content/70">
+        {emptyMessage ?? 'No trials uploaded yet.'}
+      </p>
+    );
   }
 
   return (
-    <ul className="trial-list">
+    <ul className="list-none mt-4 p-0 border border-base-300 rounded-md bg-base-100 overflow-hidden divide-y divide-base-300">
       {trials.map((trial) => (
-        <li key={trial.trialId} className="trial-list__item">
+        <li
+          key={trial.trialId}
+          className="flex items-center justify-between gap-3 px-4 py-3"
+        >
           <div>
-            <p className="trial-list__name">{trial.fileName}</p>
-            <div className="trial-list__meta">
-              <span className="trial-list__badge">{trial.status}</span>
-              <span className="muted">{trial.externalId}</span>
-              <span className="muted">
+            <p className="font-medium text-base-content">{trial.fileName}</p>
+            <div className="flex items-center flex-wrap gap-2.5 mt-0.5">
+              <span className="badge badge-info badge-sm text-xs">
+                {trial.status}
+              </span>
+              {showAssignedBadge && trial.isAssignedToCurrentUser && (
+                <span className="badge badge-accent badge-sm text-xs">
+                  Assigned to you
+                </span>
+              )}
+              <span className="text-sm text-base-content/70">
+                {trial.externalId}
+              </span>
+              <span className="text-sm text-base-content/70">
                 {new Date(trial.createdAt).toLocaleString()}
               </span>
               {trial.createdBy && (
-                <span className="muted">by {trial.createdBy}</span>
+                <span className="text-sm text-base-content/70">
+                  by {trial.createdBy}
+                </span>
               )}
               {onDownload && (
                 <button
                   type="button"
-                  className="link-button"
+                  className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
                   disabled={downloadingTrialId === trial.trialId}
                   onClick={() => onDownload(trial)}
                 >
@@ -65,7 +90,7 @@ export function TrialList({
               {onAssign && (
                 <button
                   type="button"
-                  className="link-button"
+                  className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
                   onClick={() => onAssign(trial)}
                 >
                   Assign crew
@@ -73,12 +98,17 @@ export function TrialList({
               )}
               {/* Read-only sheet route (N2). A non-ARM workbook renders the
                   dedicated readable state on that page rather than failing. */}
-              <Link className="link-button" to={`/trials/${trial.trialId}/sheet`}>
+              <Link
+                className="link link-primary text-sm font-medium"
+                to={`/trials/${trial.trialId}/sheet`}
+              >
                 View sheet
               </Link>
             </div>
           </div>
-          <code className="muted trial-list__id">{trial.trialId}</code>
+          <code className="text-xs break-all text-base-content/70 font-mono">
+            {trial.trialId}
+          </code>
         </li>
       ))}
     </ul>

@@ -121,13 +121,15 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
   }
 
   return (
-    <div className="sheet-panel">
-      <div className="sheet-panel__bar">
-        <h2 className="heading sheet-panel__title">Sheet</h2>
+    <div className="flex flex-col gap-3 min-w-0 sheet:flex-1 sheet:min-h-0">
+      <div className="flex items-center gap-3 flex-wrap">
+        <h2 className="text-lg font-semibold text-base-content mr-auto">
+          Sheet
+        </h2>
         <SheetStatusPill status={status} source={source} savedAt={updatedAt} />
         <button
           type="button"
-          className="link-button"
+          className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
           onClick={refresh}
           disabled={refreshing}
         >
@@ -155,7 +157,7 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
       )}
 
       {hasPayload && rows !== null && endOfSheet !== null && (
-        <p className="muted" role="status">
+        <p className="text-sm text-base-content/70" role="status">
           End of sheet — last: Plot {endOfSheet.plot} · Sub {endOfSheet.subsample}
         </p>
       )}

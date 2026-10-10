@@ -5,6 +5,7 @@ import type {
   RefreshResponse,
   TrialSheet,
   TrialSummary,
+  UpdateUserInput,
   User,
 } from '../types';
 import type { AudioRecording } from './audioDb';
@@ -384,7 +385,7 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
-  updateUser: (id: string, input: CreateUserInput) =>
+  updateUser: (id: string, input: UpdateUserInput) =>
     jsonRequest<User>(`/api/Users/${id}`, {
       method: 'PUT',
       body: JSON.stringify(input),

@@ -1,1005 +1,124 @@
-:root {
-  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
-  line-height: 1.5;
+/* Tailwind CSS v4 — CSS-first configuration (no tailwind.config.js; v4 reads
+   the design system straight out of this file).
+
+   THEME STRATEGY — two theme ownership.
+   - Two custom daisyUI themes live here: `plottr-light` (default) and
+     `plottr-dark` (`prefersdark`). The active one is selected by the
+     `data-theme` attribute on <html> (set by `lib/theme.ts#applyTheme` and by
+     the anti-FOUC inline script in index.html <head>).
+   - `@custom-variant dark` re-points Tailwind's `dark:` variant at that
+     explicit `data-theme="plottr-dark"` ancestor, NOT at the OS
+     `prefers-color-scheme`. So `dark:hidden` / `dark:block` brand swaps follow
+     the user's toggle, not their system setting.
+
+   STYLES LIVE IN THE COMPONENTS. Apart from this base layer, the file holds no
+   component rules: utility classes sit directly on the JSX (Tailwind) and the
+   handful of themed, token-driven primitives (buttons, inputs, cards) come from
+   daisyUI. The bespoke sheet grid keeps its own co-located
+   `components/SheetGrid.css`. */
+
+@import "tailwindcss";
+
+@plugin "daisyui" {
+  themes: plottr-light --default, plottr-dark --prefersdark;
+}
+
+@custom-variant dark (&:where([data-theme="plottr-dark"], [data-theme="plottr-dark"] *));
+
+@plugin "daisyui/theme" {
+  name: "plottr-light";
+  default: true;
   color-scheme: light;
-  color: #1f2937;
-  background-color: #f3f4f6;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  min-height: 100vh;
-}
-
-#root {
-  min-height: 100vh;
-}
-
-h1,
-h2,
-h3,
-p {
-  margin: 0;
-}
-
-/* ---------- Generic building blocks ---------- */
-
-.title {
-  font-size: 28px;
-  font-weight: 700;
-  color: #111827;
-}
-
-.heading {
-  font-size: 18px;
-  font-weight: 600;
-  color: #111827;
-}
-
-.muted {
-  color: #6b7280;
-  font-size: 14px;
-}
-
-.error-text {
-  color: #dc2626;
-  font-size: 14px;
-  margin-top: 12px;
-}
-
-.success-text {
-  color: #059669;
-  font-size: 14px;
-  margin-top: 12px;
-}
-
-.warning-text {
-  color: #b45309;
-  font-size: 14px;
-  background: #fef3c7;
-  padding: 8px 12px;
-  border-radius: 6px;
-  margin-top: 12px;
-}
-
-.card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 24px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-
-.card__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.field {
-  margin-bottom: 16px;
-}
-
-.field__label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #374151;
-}
-
-.input {
-  width: 100%;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  padding: 8px 12px;
-  font-size: 14px;
-  color: #111827;
-  background: #fff;
-}
-
-.input:focus {
-  outline: none;
-  border-color: #059669;
-  box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.15);
-}
-
-.input::placeholder {
-  color: #9ca3af;
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 6px;
-  padding: 8px 16px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn--primary {
-  background: #059669;
-  color: #fff;
-}
-
-.btn--primary:hover:not(:disabled) {
-  background: #047857;
-}
-
-.btn--secondary {
-  background: #e5e7eb;
-  color: #374151;
-}
-
-.btn--secondary:hover:not(:disabled) {
-  background: #d1d5db;
-}
-
-.w-full {
-  width: 100%;
-}
-
-.link-button {
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: 14px;
-  font-weight: 500;
-  color: #059669;
-  cursor: pointer;
-  text-decoration: underline;
-}
-
-.link-button:hover {
-  color: #047857;
-}
-
-/* ---------- Auth / login screen ---------- */
-
-.auth-shell {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-.auth-card {
-  width: 100%;
-  max-width: 400px;
-}
-
-.auth-subtitle {
-  margin: 4px 0 20px;
-}
-
-.auth-note {
-  margin-top: 20px;
-  font-size: 12px;
-  text-align: center;
-}
-
-.auth-divider {
-  margin: 20px 0 12px;
-  text-align: center;
-  font-size: 13px;
-  color: #6b7280;
-}
-
-/* ---------- Modal ---------- */
-
-.modal {
-  border: none;
-  border-radius: 10px;
-  padding: 0;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
-  max-width: 440px;
-  width: 100%;
-}
-
-.modal::backdrop {
-  background: rgba(17, 24, 39, 0.5);
-}
-
-.modal__panel {
-  padding: 24px;
-}
-
-.modal__title {
-  margin-bottom: 4px;
-}
-
-.modal__subtitle {
-  margin-bottom: 20px;
-}
-
-.modal__actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: 20px;
-}
-
-/* ---------- Dashboard ---------- */
-
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  background: #fff;
-  border-bottom: 1px solid #e5e7eb;
-  padding: 12px 24px;
-}
-
-.topbar__brand {
-  font-weight: 700;
-  font-size: 18px;
-  color: #059669;
-}
-
-.topbar__user {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.topbar__identity {
-  font-size: 14px;
-  color: #374151;
-}
-
-.dashboard {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 32px 24px;
-  display: grid;
-  gap: 24px;
-}
-
-.user-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
-  overflow: hidden;
-}
-
-.user-list__item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-}
-
-.user-list__item + .user-list__item {
-  border-top: 1px solid #e5e7eb;
-}
-
-.user-list__name {
-  font-weight: 500;
-  color: #111827;
-}
-
-.user-list__id {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 12px;
-  word-break: break-all;
-}
-
-/* ---------- Trial list ---------- */
-
-.trial-list {
-  list-style: none;
-  margin: 16px 0 0;
-  padding: 0;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
-  overflow: hidden;
-}
-
-.trial-list__item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-}
-
-.trial-list__item + .trial-list__item {
-  border-top: 1px solid #e5e7eb;
-}
-
-.trial-list__name {
-  font-weight: 500;
-  color: #111827;
-}
-
-.trial-list__meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 2px;
-  flex-wrap: wrap;
-}
-
-.trial-list__badge {
-  display: inline-block;
-  padding: 1px 8px;
-  font-size: 12px;
-  font-weight: 500;
-  border-radius: 9999px;
-  background: #dbeafe;
-  color: #1e40af;
-}
-
-.trial-list__id {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 12px;
-  word-break: break-all;
-}
-
-/* ---------- Voice recorder ---------- */
-
-.record-screen {
-  max-width: 480px;
-  margin: 0 auto;
-  padding: 24px 16px;
-  display: grid;
-  gap: 16px;
-}
-
-.record-trial-field {
-  margin-top: 12px;
-  margin-bottom: 4px;
-}
-
-.record-no-trials {
-  padding: 12px 16px;
-  background: #fff;
-  border: 1px dashed #d1d5db;
-  border-radius: 8px;
-}
-
-.record-mic-card {
-  display: grid;
-  gap: 16px;
-}
-
-.record-mic-area {
-  display: grid;
-  justify-items: center;
-  gap: 14px;
-  padding: 12px 0 4px;
-}
-
-.mic-button {
-  width: 88px;
-  height: 88px;
-  border: none;
-  border-radius: 50%;
-  background: #059669;
-  color: #fff;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  box-shadow: 0 4px 12px rgba(5, 150, 105, 0.35);
-  transition: background-color 0.15s ease, transform 0.1s ease;
-}
-
-.mic-button:hover:not(:disabled) {
-  background: #047857;
-}
-
-.mic-button:active:not(:disabled) {
-  transform: scale(0.96);
-}
-
-.mic-button:disabled {
-  background: #9ca3af;
-  cursor: not-allowed;
-  box-shadow: none;
-}
-
-.mic-button__glyph {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 4px solid currentColor;
-}
-
-.mic-button--recording {
-  background: #dc2626;
-  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.4);
-  animation: pulse 1.2s ease-in-out infinite;
-}
-
-.mic-button--recording .mic-button__glyph {
-  border-radius: 4px;
-  border-width: 0;
-  background: #fff;
-}
 
-@keyframes pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
-  }
-  70% {
-    box-shadow: 0 0 0 14px rgba(220, 38, 38, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
+  --color-base-100: #ffffff;
+  --color-base-200: #f3f4f6;
+  --color-base-300: #e5e7eb;
+  --color-base-content: #111827;
+
+  --color-primary: #059669;
+  --color-primary-content: #ffffff;
+  --color-secondary: #e5e7eb;
+  --color-secondary-content: #374151;
+  --color-accent: #059669;
+  --color-accent-content: #ffffff;
+  --color-neutral: #111827;
+  --color-neutral-content: #f9fafb;
+
+  --color-info: #2563eb;
+  --color-info-content: #ffffff;
+  --color-success: #059669;
+  --color-success-content: #ffffff;
+  --color-warning: #b45309;
+  --color-warning-content: #ffffff;
+  --color-error: #dc2626;
+  --color-error-content: #ffffff;
+
+  --radius-selector: 0.25rem;
+  --radius-field: 0.375rem;
+  --radius-box: 0.5rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "plottr-dark";
+  prefersdark: true;
+  color-scheme: dark;
+
+  --color-base-100: #1f2937;
+  --color-base-200: #111827;
+  --color-base-300: #374151;
+  --color-base-content: #f3f4f6;
+
+  --color-primary: #10b981;
+  --color-primary-content: #052e16;
+  --color-secondary: #374151;
+  --color-secondary-content: #e5e7eb;
+  --color-accent: #10b981;
+  --color-accent-content: #052e16;
+  --color-neutral: #374151;
+  --color-neutral-content: #f9fafb;
+
+  --color-info: #60a5fa;
+  --color-info-content: #0b1220;
+  --color-success: #34d399;
+  --color-success-content: #052e16;
+  --color-warning: #fbbf24;
+  --color-warning-content: #3b2400;
+  --color-error: #f87171;
+  --color-error-content: #450a0a;
+
+  --radius-selector: 0.25rem;
+  --radius-field: 0.375rem;
+  --radius-box: 0.5rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@theme {
+  --font-sans: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  --breakpoint-sheet: 60rem;
+
+  --animate-rec-pulse: rec-pulse 1.2s ease-out infinite;
+  @keyframes rec-pulse {
+    0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-error) 55%, transparent); }
+    100% { box-shadow: 0 0 0 18px transparent; }
   }
 }
 
-.record-duration {
-  font-size: 28px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: #111827;
-}
-
-.record-status {
-  display: grid;
-  justify-items: center;
-}
-
-.record-saved {
-  margin-top: 0;
-}
-
-.record-unsupported {
-  text-align: center;
-  max-width: 32ch;
-}
-
-.record-error {
-  text-align: center;
-  margin-top: 0;
-}
-
-.pending-badge {
-  display: inline-block;
-  justify-self: center;
-  padding: 4px 12px;
-  font-size: 13px;
-  font-weight: 500;
-  border-radius: 9999px;
-  background: #dbeafe;
-  color: #1e40af;
-}
-
-/* ---------- Confirm card ---------- */
-
-.confirm-card__playback {
-  display: block;
-  width: 100%;
-  margin-bottom: 16px;
-}
-
-.confirm-card__playback-hint {
-  margin: 0 0 16px;
-}
-
-.confirm-card__field {
-  font-size: 20px;
-  padding: 12px;
-}
-
-.input--error,
-.input--error:focus {
-  border-color: #dc2626;
-  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12);
-}
-
-.confirm-card__field-error {
-  margin-top: 4px;
-  font-size: 13px;
-  color: #dc2626;
-}
-
-.value-chips {
-  display: grid;
-  /* 6 columns on wide screens; chips stay >=44px wide (no clipping) on
-     narrow ones, where the 11th chip would otherwise be squeezed. */
-  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
-  gap: 8px;
-}
-
-.value-chips__chip {
-  min-height: 44px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: #fff;
-  color: #111827;
-  font-size: 18px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
-}
-
-.value-chips__chip:hover:not(:disabled) {
-  background: #ecfdf5;
-  border-color: #059669;
-}
-
-.value-chips__chip--active,
-.value-chips__chip--active:hover {
-  background: #059669;
-  border-color: #059669;
-  color: #fff;
-}
-
-.value-chips__hint {
-  margin-top: 6px;
-  font-size: 13px;
-}
-
-.confirm-card__actions {
-  display: flex;
-  gap: 12px;
-  align-items: stretch;
-  margin-top: 4px;
-}
-
-.confirm-card__actions .confirm-card__confirm {
-  flex: 1;
-  padding: 12px 16px;
-  font-size: 16px;
-}
-
-.confirm-card__error {
-  margin-bottom: 16px;
-}
-
-/* ---------- PWA update / offline toast ---------- */
-
-.pwa-toast {
-  position: fixed;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  max-width: calc(100vw - 32px);
-  padding: 12px 16px;
-  border-radius: 8px;
-  background: #111827;
-  color: #fff;
-  font-size: 14px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-}
-
-.pwa-toast__message {
-  flex: 1;
-}
-
-.pwa-toast__actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.pwa-toast__refresh {
-  border: none;
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  background: #059669;
-  color: #fff;
-}
-
-.pwa-toast__refresh:hover {
-  background: #047857;
-}
-
-.pwa-toast__dismiss {
-  border: 1px solid #4b5563;
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  background: transparent;
-  color: #d1d5db;
-}
-
-.pwa-toast__dismiss:hover {
-  background: #1f2937;
-}
-
-/* ---------- Read-only sheet (N2) -------------------------------------------
-   Shared by both hosts: the embedded RecordView panel and the
-   /trials/:trialId/sheet route. Plain semantic <table>, CSS-only — sticky
-   header/column instead of virtualization, no JS scroll listeners.
-   ------------------------------------------------------------------------ */
-
-/* The grid child may be wider than the viewport (table is min-width:
-   max-content). Pinning the track to minmax(0, 1fr) keeps that overflow
-   inside .sheet-scroll and stops the PAGE from scrolling horizontally. */
-.record-screen {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-/* The sheet is a SIBLING of the existing stack, so this column carries the
-   exact 16px gap the record screen already had. */
-.record-col {
-  display: grid;
-  gap: 16px;
-  min-width: 0;
-}
-
-.sheet-page {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 24px 16px 48px;
-  display: grid;
-  gap: 16px;
-  align-content: start;
-}
-
-.sheet-page__card {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-}
-
-.sheet-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-}
-
-.sheet-panel__bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.sheet-panel__title {
-  margin-right: auto;
-}
-
-/* --- status pill ---------------------------------------------------------- */
-
-.sheet-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 10px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.sheet-pill--muted {
-  background: #f3f4f6;
-  border-color: #e5e7eb;
-  color: #6b7280;
-}
-
-.sheet-pill--ok {
-  background: #ecfdf5;
-  border-color: #a7f3d0;
-  color: #047857;
-}
-
-.sheet-pill--warn {
-  background: #fef3c7;
-  border-color: #fde68a;
-  color: #b45309;
-}
-
-.sheet-pill--error {
-  background: #fef2f2;
-  border-color: #fecaca;
-  color: #dc2626;
-}
-
-/* --- metadata strip ------------------------------------------------------- */
-
-.sheet-meta {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px 16px;
-  margin: 0;
-  padding: 12px;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-}
-
-.sheet-meta__item {
-  margin: 0;
-  min-width: 0;
-}
-
-.sheet-meta__label {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: #6b7280;
-}
-
-.sheet-meta__value {
-  margin: 0;
-  font-size: 14px;
-  color: #111827;
-  overflow-wrap: anywhere;
-}
-
-/* --- non-grid states ------------------------------------------------------ */
-
-.sheet-state {
-  padding: 24px 16px;
-  text-align: center;
-  background: #f9fafb;
-  border: 1px dashed #d1d5db;
-  border-radius: 8px;
-  color: #6b7280;
-  font-size: 14px;
-}
-
-/* --- grid -----------------------------------------------------------------
-   --sheet-head-h fixes tier 1's height so tier 2 can stick exactly below it
-   (no JS measurement, no scroll listener). It inherits down to the cells.
-   ------------------------------------------------------------------------ */
-
-.sheet-scroll {
-  --sheet-head-h: 32px;
-  overflow: auto;
-  max-height: min(55vh, 480px);
-  -webkit-overflow-scrolling: touch;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.sheet-grid {
-  min-width: max-content;
-  /* separate (not collapse) — collapsed borders break position: sticky in
-     Safari/Chrome; each cell draws its own edge instead. */
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: 13px;
-}
-
-.sheet-grid thead th {
-  position: sticky;
-  z-index: 2;
-  height: var(--sheet-head-h);
-  padding: 6px 10px;
-  background: #f9fafb;
-  color: #374151;
-  font-size: 12px;
-  font-weight: 600;
-  text-align: left;
-  white-space: nowrap;
-  border-bottom: 1px solid #e5e7eb;
-  border-right: 1px solid #f3f4f6;
-}
-
-/* tier 1 — Part Rated runs */
-.sheet-head--part {
-  top: 0;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* tier 2 — Pest Code, one cell per column, sticky under tier 1 */
-.sheet-head--pest {
-  top: var(--sheet-head-h);
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: #6b7280;
-}
-
-/* corner — sticky in BOTH directions and above the other header cells
-   (PLAN_2026-10-06 §11 risk 6). Scoped through `.sheet-grid thead` so the rule
-   outranks the generic `.sheet-grid thead th` (0-2-1 vs 0-1-2); a bare
-   `.sheet-head--corner` (0-1-0) loses there and the corner would paint at
-   z-index 2 with the generic background/border — a horizontally scrolled
-   header cell then covers "Plot (Sub)". */
-.sheet-grid thead .sheet-head--corner {
-  left: 0;
-  top: 0;
-  z-index: 4;
-  background: #f3f4f6;
-  border-right: 1px solid #e5e7eb;
-}
-
-.sheet-grid tbody th,
-.sheet-grid tbody td {
-  border-bottom: 1px solid #f3f4f6;
-  border-right: 1px solid #f3f4f6;
-  padding: 6px 10px;
-  white-space: nowrap;
-}
-
-/* D5 channel 1 — structural: the locked key column (column B). */
-.sheet-grid__key,
-.sheet-col--key {
-  background: #f9fafb;
-  color: #374151;
-}
-
-.sheet-grid__key {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 600;
-  text-align: left;
-}
-
-/* D5 channel 2 — value: rated cells are solid, empty cells stay blank. */
-.sheet-col--value {
-  background: #fff;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.sheet-cell--filled {
-  color: #111827;
-}
-
-/* Empty ≠ 0 (design.md Rule 2): no number, only a quiet "available" dot. */
-.sheet-cell--empty {
-  color: #9ca3af;
-}
-
-.sheet-cell--empty::after {
-  content: '';
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #d1d5db;
-  vertical-align: middle;
-}
-
-/* --- RecordView embed ----------------------------------------------------- */
-
-.record-sheet-card {
-  min-width: 0;
-}
-
-/* ≥960px — two columns: mic + correction on the left (thumb reach), the sheet
-   sticky on the right so it stays visible while recording. The left track is
-   capped at 480px (PLAN_2026-10-07 §6.2) so it keeps today's 480px stack
-   instead of widening to ~600px; the right track takes the remainder. */
-@media (min-width: 960px) {
-  .record-screen {
-    max-width: 1200px;
-    grid-template-columns: minmax(0, 480px) minmax(0, 1fr);
-    align-items: start;
+@layer base {
+  html { font-family: var(--font-sans); }
+  body {
+    min-height: 100vh;
+    background-color: var(--color-base-200);
+    color: var(--color-base-content);
   }
-
-  .record-sheet-card {
-    position: sticky;
-    top: 16px;
-    display: flex;
-    flex-direction: column;
-    max-height: calc(100vh - 32px);
-    overflow: hidden;
-  }
-
-  .record-sheet-card .sheet-panel {
-    flex: 1;
-    min-height: 0;
-  }
-
-  /* The card stops shrinking here; the grid scroller owns the scroll. */
-  .record-sheet-card .sheet-scroll {
-    max-height: none;
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-}
-
-.sheet-grid tbody tr.sheet-row--current > th,
-.sheet-grid tbody tr.sheet-row--current > td { background: #fef3c7; }
-.sheet-grid tbody tr.sheet-row--current > .sheet-cell--current { background: #fde68a; }
-
-/* --- write anchor (tap an empty cell) -------------------------------------
-   Two VISUAL CHANNELS, deliberately different strengths:
-   - `.sheet-row--current` / `.sheet-cell--current` (above) = the SOFT amber
-     auto-continue cursor — where the run will go NEXT (derived, no intent);
-   - `.sheet-row--selected` / `.sheet-cell--selected` (below) = the cell the
-     operator TAPPED — a real accent border (inset 2px, so no box-model /
-     layout change on the sticky table) + a stronger tint + a slow "live"
-     pulse, so it reads as armed even on a 5px dot of a screen.
-   These rules come AFTER the current-cell ones and carry equal-or-higher
-   specificity, so on the rare overlap the anchor wins on its own cell while
-   the row tint stays coexistable (both row classes can be present).
-   Tokens reused from this file: brand green #059669 / #047857 (buttons,
-   links, focus rings), the emerald surface #ecfdf5 (`.value-chips` hover,
-   `.sheet-pill--ok` background) and #a7f3d0 (`.sheet-pill--ok` border).
-   No new palette, no new dependency.
-   ------------------------------------------------------------------------ */
-
-/* Row tint so a scrolled-to anchor is still findable by its key column. */
-.sheet-grid tbody tr.sheet-row--selected > th,
-.sheet-grid tbody tr.sheet-row--selected > td {
-  background: #ecfdf5;
-}
-
-/* The anchor cell itself: accent border + tint + pulse (keyframes below). */
-.sheet-grid tbody tr.sheet-row--selected > .sheet-cell--selected {
-  background: #a7f3d0;
-  box-shadow: inset 0 0 0 2px #059669;
-  animation: sheet-cell-anchor 1.6s ease-in-out infinite;
-}
-
-/* Slow "it's live" breath — 1.6s, ease-in-out, infinite (mic-button--recording
-   is the existing pulse precedent in this file). */
-@keyframes sheet-cell-anchor {
-  0%,
-  100% {
-    box-shadow: inset 0 0 0 2px #059669;
-    background: #a7f3d0;
-  }
-  50% {
-    box-shadow: inset 0 0 0 2px rgba(5, 150, 105, 0.4);
-    background: #ecfdf5;
-  }
-}
-
-/* Reduced motion: drop the animation, KEEP the static accent (border +
-   tint) — the cell must still be unmistakable, just not moving. */
-@media (prefers-reduced-motion: reduce) {
-  .sheet-grid tbody tr.sheet-row--selected > .sheet-cell--selected {
-    animation: none;
-  }
-}
-
-/* Affordance: value cells are tappable only when a host wired the handler
-   (the key column and headers never are — they carry no click handler). */
-.sheet-grid--selectable tbody td.sheet-col--value {
-  cursor: pointer;
-}
-
-/* "Cell already filled" refusal — the muted base stays, the message picks up
-   the existing warning token (#b45309, as `.warning-text` does) so it is
-   read as a refusal rather than status copy. Declared after `.muted` (equal
-   specificity) so the colour wins. */
-.sheet-anchor-notice {
-  color: #b45309;
-  font-weight: 500;
+  #root { min-height: 100vh; }
 }

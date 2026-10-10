@@ -90,6 +90,8 @@ public sealed class TrialServiceTests : IAsyncLifetime
         summary.Status.Should().Be(TrialStatus.Created);
         summary.ExternalId.Should().Be(Path.GetFileNameWithoutExtension(fileName));
         summary.CreatedBy.Should().Be(DefaultActorUserId);
+        summary.IsAssignedToCurrentUser.Should().BeFalse(
+            "a system-administrator creator is above the matrix and carries no assignment");
 
         // Assert — PERSISTED in DB: re-read via fresh scope/repository
         string? savedSourceWorkbookPath = null;
@@ -288,6 +290,8 @@ public sealed class TrialServiceTests : IAsyncLifetime
             r.TrialId.Should().NotBeNullOrWhiteSpace();
             r.FileName.Should().EndWith(".xlsx");
             r.Status.Should().Be(TrialStatus.Created);
+            r.IsAssignedToCurrentUser.Should().BeFalse(
+                "the default SystemAdmin actor is assigned to no trial");
         });
     }
 
@@ -582,6 +586,8 @@ public sealed class TrialServiceTests : IAsyncLifetime
         // Assert
         summary.TrialId.Should().NotBeNullOrWhiteSpace();
         summary.FileName.Should().Be(fileName);
+        summary.IsAssignedToCurrentUser.Should().Be(role != UserRole.SystemAdmin,
+            "the create response badges a researcher/trial-manager creator, never an admin");
     }
 
     [Theory]
@@ -633,6 +639,11 @@ public sealed class TrialServiceTests : IAsyncLifetime
         }
         var trialId = Guid.Parse(summary.TrialId);
         _createdTrialIds.Add(trialId);
+
+        // Assert — the create response mirrors the persisted auto-assignment: badged for a
+        // researcher/trial-manager creator, unflagged for a system-administrator creator.
+        summary.IsAssignedToCurrentUser.Should().Be(expectedRows == 1,
+            "the returned badge must match the creator auto-assignment row");
 
         // Assert — a researcher/trial-manager creator is auto-assigned exactly once,
         // persisted atomically with the trial; a system administrator is above the matrix
@@ -719,6 +730,11 @@ public sealed class TrialServiceTests : IAsyncLifetime
         // Assert — only the assigned trials, never the unassigned one.
         results.Select(r => Guid.Parse(r.TrialId)).Should().BeEquivalentTo(new[] { trialA, trialC });
         results.Select(r => Guid.Parse(r.TrialId)).Should().NotContain(trialB);
+
+        // Assert — every trial a field worker can see is one they are assigned to, so the
+        // badge is on for every returned row.
+        results.Should().OnlyContain(r => r.IsAssignedToCurrentUser,
+            "field workers only receive their own assigned trials");
     }
 
     [Theory]
@@ -744,6 +760,72 @@ public sealed class TrialServiceTests : IAsyncLifetime
 
         // Assert — managers bypass the assignment filter entirely.
         results.Should().HaveCount(2);
+        results.Should().OnlyContain(r => !r.IsAssignedToCurrentUser,
+            "the manager is deliberately assigned to none of the returned trials");
+    }
+
+    [Fact]
+    public async Task ListTrialsAsync_Manager_FlagsOnlyPersonallyAssignedTrials()
+    {
+        // Arrange — three trials created by the default (SystemAdmin) actor, so none carries
+        // a creator assignment. A researcher (a manager role) is then assigned to the first
+        // and third only, and lists as a manager: they see every trial, but the badge marks
+        // exactly the rows they are personally on.
+        var trialA = await CreateTrialViaServiceAsync();
+        var trialB = await CreateTrialViaServiceAsync();
+        var trialC = await CreateTrialViaServiceAsync();
+        var managerId = await PersistUserAsync(UserRole.Researcher);
+        await AssignTrialAsync(trialA, managerId);
+        await AssignTrialAsync(trialC, managerId);
+
+        _fixture.CurrentUser.UserId = managerId;
+        _fixture.CurrentUser.Role = UserRole.Researcher;
+
+        // Act
+        IReadOnlyList<TrialSummary> results;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            results = await service.ListTrialsAsync();
+        }
+
+        // Assert — a manager still sees every trial, but the per-row badge reflects only the
+        // trials the manager is personally assigned to.
+        results.Should().HaveCount(3);
+        results.Single(r => Guid.Parse(r.TrialId) == trialA).IsAssignedToCurrentUser
+            .Should().BeTrue("the manager is assigned to trial A");
+        results.Single(r => Guid.Parse(r.TrialId) == trialB).IsAssignedToCurrentUser
+            .Should().BeFalse("the manager is not assigned to trial B");
+        results.Single(r => Guid.Parse(r.TrialId) == trialC).IsAssignedToCurrentUser
+            .Should().BeTrue("the manager is assigned to trial C");
+    }
+
+    [Fact]
+    public async Task ListTrialsAsync_ManagerWithoutUserId_ReturnsAllUnflagged()
+    {
+        // Arrange — two trials exist (created by the default SystemAdmin actor, so neither
+        // carries a creator assignment). The actor is then a manager (Researcher) with a
+        // missing identity (null UserId), which must not fail the read.
+        await CreateTrialViaServiceAsync();
+        await CreateTrialViaServiceAsync();
+
+        _fixture.CurrentUser.UserId = null;
+        _fixture.CurrentUser.Role = UserRole.Researcher;
+
+        // Act
+        IReadOnlyList<TrialSummary> results;
+        using (var scope = _fixture.CreateScope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<ITrialService>();
+            results = await service.ListTrialsAsync();
+        }
+
+        // Assert — a manager still sees every trial (the assignment filter is bypassed), and
+        // every row stays unflagged: a missing identity is the documented "assigned to
+        // nothing" case, so the badge must never claim an assignment.
+        results.Should().HaveCount(2);
+        results.Should().OnlyContain(r => !r.IsAssignedToCurrentUser,
+            "a manager with no user id is assigned to nothing, so no row may be badged");
     }
 
     [Theory]

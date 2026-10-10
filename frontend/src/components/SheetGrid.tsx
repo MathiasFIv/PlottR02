@@ -2,6 +2,7 @@ import { sheetCellState, sheetCellValue } from '../lib/sheetCell';
 import { buildSheetHeader } from '../lib/sheetHeader';
 import type { SheetHighlight } from '../lib/sheetTarget';
 import type { SheetColumn, SheetRow } from '../types';
+import './SheetGrid.css';
 
 type SheetGridProps = {
   columns: SheetColumn[];

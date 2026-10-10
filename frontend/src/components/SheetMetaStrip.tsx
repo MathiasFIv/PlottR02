@@ -31,11 +31,15 @@ export function SheetMetaStrip({ metadata }: SheetMetaStripProps) {
   if (visible.length === 0) return null;
 
   return (
-    <dl className="sheet-meta">
+    <dl className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-x-4 gap-y-2 m-0 p-3 bg-base-200 border border-base-300 rounded-lg">
       {visible.map((field) => (
-        <div className="sheet-meta__item" key={field.label}>
-          <dt className="sheet-meta__label">{field.label}</dt>
-          <dd className="sheet-meta__value">{field.value}</dd>
+        <div className="m-0 min-w-0" key={field.label}>
+          <dt className="m-0 text-[11px] font-semibold tracking-[0.04em] uppercase text-base-content/70">
+            {field.label}
+          </dt>
+          <dd className="m-0 text-sm text-base-content [overflow-wrap:anywhere]">
+            {field.value}
+          </dd>
         </div>
       ))}
     </dl>

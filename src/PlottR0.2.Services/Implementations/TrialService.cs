@@ -88,6 +88,12 @@ public class TrialService : ITrialService
             UpdatedAt = DateTime.UtcNow,
         };
 
+        // Computed once and reused for both the persisted auto-assignment and the response
+        // badge: a researcher or trial manager creator IS assigned to their own trial; a
+        // system administrator is not.
+        var creatorIsAssigned =
+            _currentUser.Role is UserRole.Researcher or UserRole.TrialManager;
+
         // A researcher or trial manager is implicitly assigned to their own trial; the row
         // rides along inside CreateAsync's single SaveChangesAsync — no second round-trip.
         // A system administrator is "above the matrix" (they bypass every per-trial gate via
@@ -95,7 +101,7 @@ public class TrialService : ITrialService
         // closes a dead-end: an admin-authored trial used to carry an admin assignment that
         // the crew UI round-tripped back through AssignTrialUsersAsync, which rejects
         // SystemAdmin targets → an inescapable 400.
-        if (_currentUser.Role is UserRole.Researcher or UserRole.TrialManager)
+        if (creatorIsAssigned)
         {
             trial.Assignments =
             [
@@ -133,7 +139,10 @@ public class TrialService : ITrialService
                 }),
                 ct);
 
-            return TrialMapper.ToSummary(created);
+            // Mirror the auto-assignment above in the response: a researcher/trial-manager
+            // creator is assigned to the new trial (badge on), a system-administrator
+            // creator is above the matrix and carries no assignment (badge off).
+            return TrialMapper.ToSummary(created, creatorIsAssigned);
         }
         catch
         {
@@ -151,7 +160,21 @@ public class TrialService : ITrialService
         if (IsManager(_currentUser.Role))
         {
             var all = await _trialRepository.GetAllAsync(ct: ct);
-            return TrialMapper.ToSummaries(all);
+
+            // Managers see every trial regardless of assignment, but the per-row badge must
+            // reflect their OWN assignments: load the actor's assigned trial ids and let the
+            // mapper compute membership per row. A missing identity (legacy/malformed token)
+            // means "assigned to nothing", so every row stays false rather than failing the read.
+            //
+            // SystemAdmin is deliberately skipped: the assignment write path rejects
+            // SystemAdmin targets outright (AssignTrialUsersAsync) and trial creation never
+            // writes an admin assignment row, so an admin can never hold one — the query
+            // would always come back empty. Leaving the set null yields all-false for free.
+            IReadOnlySet<Guid>? assignedTrialIds = null;
+            if (_currentUser.Role is not UserRole.SystemAdmin && _currentUser.UserId is Guid managerId)
+                assignedTrialIds = (await _trialRepository.GetAssignedTrialIdsAsync(managerId, ct)).ToHashSet();
+
+            return TrialMapper.ToSummaries(all, assignedTrialIds);
         }
 
         // Everyone else (a field worker, or a legacy/role-less actor) sees ONLY the trials
@@ -165,9 +188,13 @@ public class TrialService : ITrialService
 
         // The repository exposes no "get many by id" call; trials are a small field set, so
         // filter the full list in memory while preserving its CreatedAt-descending ordering.
+        // Every row this branch returns is one the actor is assigned to, so pass the same set
+        // as the badge source (the flag is true for all of them, by construction).
         var assignedSet = assignedIds.ToHashSet();
         var trials = await _trialRepository.GetAllAsync(ct: ct);
-        return TrialMapper.ToSummaries(trials.Where(t => assignedSet.Contains(t.Id)));
+        // The Where filter already guarantees membership, so the mapper's per-row membership
+        // re-check can only re-affirm true — it never filters a row back out.
+        return TrialMapper.ToSummaries(trials.Where(t => assignedSet.Contains(t.Id)), assignedSet);
     }
 
     /// <inheritdoc />

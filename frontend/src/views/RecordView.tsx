@@ -1,9 +1,9 @@
 import { useAtom, useAtomValue } from 'jotai';
 import { useEffect, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { Button } from '../components/Button';
+import { useNavigate } from 'react-router-dom';
 import { ConfirmCard } from '../components/ConfirmCard';
 import { SheetPanel } from '../components/SheetPanel';
+import { TopBar } from '../components/TopBar';
 import { useAuth } from '../hooks/useAuth';
 import { useTrials } from '../hooks/useTrials';
 import { useVoiceQueue } from '../hooks/useVoiceQueue';
@@ -14,13 +14,11 @@ import { formatAnchor, isAnchorForTrial } from '../lib/sheetAnchor';
 import { summarizeSync } from '../lib/syncQueue';
 import {
   activeTrialIdAtom,
-  currentUserAtom,
   sheetAnchorNoticeAtom,
   sheetLastWrittenAtom,
   sheetSelectedAtom,
   trialSheetAtom,
 } from '../store/atoms';
-import { roleLabel } from '../types';
 
 /** Formats a whole-second count as m:ss (e.g. 7 → 0:07, 83 → 1:23). */
 function formatDuration(totalSeconds: number): string {
@@ -36,7 +34,6 @@ function formatDuration(totalSeconds: number): string {
  * the server flags the clip (`needs-attention`) or the sync failed (retry).
  */
 export function RecordView() {
-  const currentUser = useAtomValue(currentUserAtom);
   const navigate = useNavigate();
   const { logout } = useAuth();
   const { trials, loading, error: trialsError } = useTrials();
@@ -236,46 +233,33 @@ export function RecordView() {
    * warning instead of dropping the message.
    */
   function bannerClassName(variant: 'success' | 'warning' | 'error'): string {
-    if (variant === 'success') return 'success-text';
-    if (variant === 'error') return 'error-text';
-    return 'warning-text';
+    if (variant === 'success') return 'text-sm text-success mt-0';
+    if (variant === 'error') return 'text-sm text-error mt-0';
+    return 'text-sm text-warning bg-warning/15 rounded-md px-3 py-2 mt-0';
   }
 
   return (
     <div>
-      <header className="topbar">
-        <span className="topbar__brand">PlottR 0.2</span>
-        <div className="topbar__user">
-          {currentUser && (
-            <span className="topbar__identity">
-              Signed in as <strong>{currentUser.name}</strong>
-              {currentUser.role ? ` (${roleLabel(currentUser.role)})` : ''}
-            </span>
-          )}
-          <Link className="link-button" to="/">
-            Dashboard
-          </Link>
-          <Button variant="secondary" onClick={handleLogout}>
-            Log out
-          </Button>
-        </div>
-      </header>
+      <TopBar links={[{ to: '/', label: 'Dashboard' }]} onLogout={handleLogout} />
 
-      <main className="record-screen">
+      <main className="mx-auto grid max-w-[480px] grid-cols-[minmax(0,1fr)] gap-4 px-4 py-6 sheet:max-w-[1200px] sheet:grid-cols-[minmax(0,480px)_minmax(0,1fr)] sheet:items-start">
         {/* One grid column keeps today's 16px stack exactly as it was; the
             sheet panel below is a SIBLING of this column, not a new card
             inside it (PLAN_2026-10-07 §6.1). */}
-        <div className="record-col">
-          <section className="card">
-            <h2 className="heading">Trial</h2>
-            <div className="field record-trial-field">
-              <label className="field__label" htmlFor="record-trial">
+        <div className="grid gap-4 min-w-0">
+          <section className="card card-border bg-base-100 shadow-sm p-6">
+            <h2 className="text-lg font-semibold text-base-content">Trial</h2>
+            <div className="mt-3 mb-1">
+              <label
+                className="block mb-1.5 text-sm font-medium text-base-content/80"
+                htmlFor="record-trial"
+              >
                 Work on
               </label>
               <select
                 id="record-trial"
                 name="record-trial"
-                className="input"
+                className="select w-full"
                 value={activeTrialId ?? ''}
                 onChange={(e) => setActiveTrialId(e.target.value)}
                 disabled={loading}
@@ -290,20 +274,23 @@ export function RecordView() {
                 ))}
               </select>
             </div>
-            <p className="muted">Recordings are synced under this trial.</p>
+            <p className="text-sm text-base-content/70">Recordings are synced under this trial.</p>
           </section>
 
           {!loading && trials.length === 0 && (
-            <p className="muted record-no-trials" role="status">
+            <p
+              className="text-sm text-base-content/70 px-4 py-3 bg-base-100 border border-dashed border-base-300 rounded-lg"
+              role="status"
+            >
               No trials yet — upload a workbook from the Dashboard and they will
               show up here.
             </p>
           )}
-          {trialsError && <p className="error-text">{trialsError}</p>}
+          {trialsError && <p className="text-sm mt-3 text-error">{trialsError}</p>}
 
-          <section className="card record-mic-card">
-            <h2 className="heading">Voice note</h2>
-            <p className="muted">
+          <section className="card card-border bg-base-100 shadow-sm p-6 grid gap-4">
+            <h2 className="text-lg font-semibold text-base-content">Voice note</h2>
+            <p className="text-sm text-base-content/70">
               Tap to start, tap again to stop. The clip saves and syncs the
               moment the mic stops.
             </p>
@@ -313,7 +300,7 @@ export function RecordView() {
                 screen. Same `muted record-saved` + role=status convention as
                 the Next / End-of-sheet lines that follow. */}
             {anchor !== null && (
-              <p className="muted record-saved" role="status">
+              <p className="text-sm text-base-content/70 mt-0" role="status">
                 Anchored: {formatAnchor(anchor)} — speak numbers to fill. Tap
                 the cell again to clear.
               </p>
@@ -323,66 +310,77 @@ export function RecordView() {
                 clear the anchor — so the anchor line above (if any) still
                 shows alongside this refusal instead of going quiet. */}
             {anchorNotice !== null && (
-              <p className="muted record-saved sheet-anchor-notice" role="status">
+              <p className="text-sm font-medium text-warning mt-0" role="status">
                 Cell already filled
               </p>
             )}
 
             {nextTarget !== null ? (
-              <p className="muted record-saved" role="status">
+              <p className="text-sm text-base-content/70 mt-0" role="status">
                 Next: Plot {nextTarget.plot} · Sub {nextTarget.subsample}
               </p>
             ) : endOfSheetTarget !== null &&
               activeTrialId !== null &&
               sheetPayload?.trialId === activeTrialId ? (
-              <p className="muted record-saved" role="status">
+              <p className="text-sm text-base-content/70 mt-0" role="status">
                 End of sheet - last: Plot {endOfSheetTarget.plot} · Sub{' '}
                 {endOfSheetTarget.subsample}
               </p>
             ) : null}
 
-            <div className="record-mic-area">
+            <div className="grid justify-items-center gap-3.5 pt-3 pb-1">
               <button
                 type="button"
-                className={`mic-button${isRecording ? ' mic-button--recording' : ''}`}
+                className={`w-[88px] h-[88px] rounded-full grid place-items-center transition-colors cursor-pointer disabled:bg-base-300 disabled:text-base-content/40 disabled:shadow-none disabled:cursor-not-allowed${
+                  isRecording
+                    ? ' bg-error text-error-content motion-safe:animate-rec-pulse'
+                    : ' bg-primary text-primary-content shadow-[0_4px_12px_rgba(5,150,105,0.35)] hover:bg-primary/90 active:scale-[0.96]'
+                }`}
                 onClick={() => (isRecording ? stopRecording() : handleStart())}
                 disabled={micDisabled}
                 aria-label={isRecording ? 'Stop recording' : 'Start recording'}
                 aria-pressed={isRecording}
               >
-                <span className="mic-button__glyph" aria-hidden="true" />
+                <span
+                  className={
+                    isRecording
+                      ? 'w-[22px] h-[22px] rounded-[4px] border-0 bg-error-content'
+                      : 'w-[22px] h-[22px] rounded-full border-4 border-current'
+                  }
+                  aria-hidden="true"
+                />
               </button>
 
               {isRecording && (
-                <p className="record-duration" role="timer" aria-live="off">
+                <p className="text-[28px] font-bold tabular-nums text-base-content" role="timer" aria-live="off">
                   {formatDuration(durationSeconds)}
                 </p>
               )}
 
               {permissionState === 'unsupported' && (
-                <p className="muted record-unsupported" role="status">
+                <p className="text-sm text-base-content/70 text-center max-w-[32ch]" role="status">
                   Microphone recording is not supported in this browser — try a
                   recent version of Chrome, Edge, Safari, or Firefox.
                 </p>
               )}
 
               {recorderError && !isRecording && (
-                <p className="error-text record-error" role="alert">
+                <p className="text-sm text-error text-center mt-0" role="alert">
                   {recorderError}
                 </p>
               )}
 
               {audioBlob !== null && !isRecording && pendingRec === null && (
                 saving ? (
-                  <p className="muted record-saved" role="status">
+                  <p className="text-sm text-base-content/70 mt-0" role="status">
                     Saving…
                   </p>
                 ) : (
-                  <p className="error-text record-saved" role="alert">
+                  <p className="text-sm text-error mt-0" role="alert">
                     {queueError ?? 'The recording could not be saved.'}{' '}
                     <button
                       type="button"
-                      className="link-button"
+                      className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
                       onClick={clearHeldClip}
                     >
                       Retry — reset and re-record
@@ -395,7 +393,7 @@ export function RecordView() {
               {pendingRec !== null && !isRecording && (
                 <>
                   {(pendingStatus === 'pending' || pendingStatus === 'syncing') && (
-                    <p className="muted record-saved" role="status">
+                    <p className="text-sm text-base-content/70 mt-0" role="status">
                       Syncing…
                     </p>
                   )}
@@ -403,7 +401,7 @@ export function RecordView() {
                   {pendingStatus === 'synced' &&
                     (pendingRec.lastError != null ? (
                       <p
-                        className={`warning-text record-saved`}
+                        className="text-sm text-warning bg-warning/15 rounded-md px-3 py-2 mt-0"
                         role="status"
                       >
                         {pendingRec.lastError}
@@ -413,7 +411,7 @@ export function RecordView() {
                         const { lines, variant } = summarizeSync(pendingRec.lastResult);
                         return (
                           <div
-                            className={`${bannerClassName(variant)} record-saved`}
+                            className={bannerClassName(variant)}
                             role="status"
                           >
                             {lines.map((line, i) => (
@@ -428,7 +426,7 @@ export function RecordView() {
             </div>
 
             {attentionCount > 0 && (
-              <p className="pending-badge" role="status">
+              <p className="badge badge-info justify-self-center" role="status">
                 {attentionCount} clip{attentionCount === 1 ? '' : 's'}{' '}
                 {attentionCount === 1 ? 'needs' : 'need'} attention
               </p>
@@ -456,7 +454,7 @@ export function RecordView() {
             owns its own fetch/snapshot lifecycle — switching trials changes
             the prop, which clears the sheet atoms and refetches. */}
         {activeTrialId !== null && (
-          <section className="card record-sheet-card">
+          <section className="record-sheet-card card card-border bg-base-100 shadow-sm p-6 min-w-0 sheet:sticky sheet:top-4 sheet:flex sheet:flex-col sheet:max-h-[calc(100vh-2rem)] sheet:overflow-hidden">
             <SheetPanel trialId={activeTrialId} />
           </section>
         )}

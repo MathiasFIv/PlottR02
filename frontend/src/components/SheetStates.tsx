@@ -32,9 +32,14 @@ export function SheetStates({
   if (!hasPayload) {
     if (nonArm) {
       return (
-        <div className="sheet-state" role="status">
-          <p className="heading">No ratings sheet in this workbook</p>
-          <p className="muted">
+        <div
+          className="px-4 py-6 text-center bg-base-200 border border-dashed border-base-300 rounded-lg text-sm text-base-content/70"
+          role="status"
+        >
+          <p className="text-lg font-semibold text-base-content">
+            No ratings sheet in this workbook
+          </p>
+          <p className="text-sm text-base-content/70">
             The sheet “Subsample Plot Data” was not found in this workbook, so
             there is nothing to show. This is not a server fault — upload an ARM
             ratings workbook to see the grid here.
@@ -44,7 +49,7 @@ export function SheetStates({
     }
     if (status === 'not-found') {
       return (
-        <p className="error-text" role="alert">
+        <p className="text-sm mt-3 text-error" role="alert">
           This trial or its workbook could not be found.
         </p>
       );
@@ -55,21 +60,21 @@ export function SheetStates({
         ? error
         : 'Could not load the sheet.';
       return (
-        <p className="error-text" role="alert">
+        <p className="text-sm mt-3 text-error" role="alert">
           {detail}
         </p>
       );
     }
     if (status === 'loading') {
       return (
-        <p className="muted" role="status">
+        <p className="text-sm text-base-content/70" role="status">
           Loading sheet…
         </p>
       );
     }
     if (status === 'idle') {
       return (
-        <p className="muted" role="status">
+        <p className="text-sm text-base-content/70" role="status">
           The sheet is not loaded yet.
         </p>
       );
@@ -78,7 +83,10 @@ export function SheetStates({
     // behind it — the hook can mark `live` without ever receiving a payload
     // (useTrialSheet.ts fast path). Never an empty screen under a green pill.
     return (
-      <div className="sheet-state" role="status">
+      <div
+        className="px-4 py-6 text-center bg-base-200 border border-dashed border-base-300 rounded-lg text-sm text-base-content/70"
+        role="status"
+      >
         <p>Nothing to show for this sheet yet.</p>
       </div>
     );
@@ -89,14 +97,18 @@ export function SheetStates({
   const messages: ReactNode[] = [];
   if (status === 'offline') {
     messages.push(
-      <p className="warning-text" role="status" key="offline">
+      <p
+        className="text-sm mt-3 text-warning bg-warning/15 rounded-md px-3 py-2"
+        role="status"
+        key="offline"
+      >
         Could not reach the server — showing the saved copy.
       </p>,
     );
   }
   if (rowCount === 0) {
     messages.push(
-      <p className="muted" role="status" key="empty">
+      <p className="text-sm text-base-content/70" role="status" key="empty">
         This sheet has no rating rows yet.
       </p>,
     );

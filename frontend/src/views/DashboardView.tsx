@@ -1,31 +1,37 @@
 import { useAtomValue } from 'jotai';
 import { useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { AssignCrewModal } from '../components/AssignCrewModal';
 import { Button } from '../components/Button';
+import { TopBar } from '../components/TopBar';
 import { TrialList } from '../components/TrialList';
-import { UserManagementSection } from '../components/UserManagementSection';
+import { UsersPanel } from '../components/UserManagementSection';
 import { api } from '../lib/api';
 import { currentUserAtom } from '../store/atoms';
 import { useAuth } from '../hooks/useAuth';
 import { useTrials } from '../hooks/useTrials';
-import { canCreateUsers, canCreateTrials, roleLabel } from '../types';
+import { canCreateUsers, canCreateTrials } from '../types';
 import type { TrialSummary } from '../types';
 
 /**
  * Logged-in dashboard: the trials list (visible to every role; the upload form
  * and per-trial "Assign crew" action are creators-only: system admins,
- * researchers, trial managers) plus a user-administration section (create —
- * and, for managers, list, POST/GET /api/Users) shown to any user creator
- * (system admins, researchers, trial managers). The user list fetch is
- * managers-only inside UserManagementSection, so create-only actors never
- * trigger it.
+ * researchers, trial managers) plus a consolidated users panel (create —
+ * and, for managers, list/edit/delete via /api/Users) shown to any user creator
+ * (system admins, researchers, trial managers). The panel is laid out in a
+ * responsive 3-column grid: the trials section spans two columns and the users
+ * panel sits in the third. The user list fetch is managers-only inside
+ * UsersPanel, so create-only actors never trigger it.
  *
  * The empty trials list uses a role-appropriate message: creators see the
  * default "no trials uploaded yet" line, while non-creators (field workers,
  * whose list is server-filtered to their assignments) see "No trials assigned
  * to you yet." instead.
+ *
+ * Creators additionally see an "Assigned to you" badge on trials that include
+ * them in the crew (`showAssignedBadge={showTrialUpload}`); field workers'
+ * lists are assignments-only, so the badge would be noise on every row.
  */
 export function DashboardView() {
   const currentUser = useAtomValue(currentUserAtom);
@@ -108,35 +114,19 @@ export function DashboardView() {
 
   return (
     <div>
-      <header className="topbar">
-        <span className="topbar__brand">PlottR 0.2</span>
-        <div className="topbar__user">
-          {currentUser && (
-            <span className="topbar__identity">
-              Signed in as <strong>{currentUser.name}</strong>
-              {currentUser.role ? ` (${roleLabel(currentUser.role)})` : ''}
-            </span>
-          )}
-          <Link className="link-button" to="/record">
-            Record
-          </Link>
-          <Button variant="secondary" onClick={handleLogout}>
-            Log out
-          </Button>
-        </div>
-      </header>
+      <TopBar links={[{ to: '/record', label: 'Record' }]} onLogout={handleLogout} />
 
-      <main className="dashboard">
-        {showUserManagement && (
-          <UserManagementSection actorRole={currentUser?.role ?? null} />
-        )}
-
-        <section className="card">
-          <div className="card__header">
-            <h2 className="heading">Trials</h2>
+      <main className="mx-auto grid max-w-[1280px] gap-6 px-6 py-8 lg:grid-cols-3 items-start">
+        <section
+          className={`card card-border bg-base-100 shadow-sm p-6 ${
+            showUserManagement ? 'lg:col-span-2' : 'lg:col-span-3'
+          }`}
+        >
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-base-content">Trials</h2>
             <button
               type="button"
-              className="link-button"
+              className="link link-primary text-sm font-medium bg-transparent border-0 p-0"
               onClick={() => void fetchTrials()}
             >
               Refresh
@@ -145,8 +135,11 @@ export function DashboardView() {
 
           {showTrialUpload ? (
             <form onSubmit={handleUpload}>
-              <div className="field">
-                <label htmlFor="trial-file" className="field__label">
+              <div className="mb-4">
+                <label
+                  htmlFor="trial-file"
+                  className="block mb-1.5 text-sm font-medium text-base-content/80"
+                >
                   Upload .xlsx workbook
                 </label>
                 <input
@@ -154,7 +147,7 @@ export function DashboardView() {
                   id="trial-file"
                   type="file"
                   accept=".xlsx"
-                  className="input"
+                  className="file-input w-full"
                   onChange={handleFileChange}
                 />
               </div>
@@ -166,14 +159,16 @@ export function DashboardView() {
               </Button>
             </form>
           ) : (
-            <p className="muted">
+            <p className="text-sm text-base-content/70">
               Trials are created by researchers and trial managers.
             </p>
           )}
 
-          {uploadError && <p className="error-text">{uploadError}</p>}
+          {uploadError && (
+            <p className="text-sm mt-3 text-error">{uploadError}</p>
+          )}
           {uploadedFileName && (
-            <p className="success-text" role="status">
+            <p className="text-sm mt-3 text-success" role="status">
               Uploaded "{uploadedFileName}" — the list below has been refreshed.
             </p>
           )}
@@ -188,20 +183,27 @@ export function DashboardView() {
             emptyMessage={
               showTrialUpload ? undefined : 'No trials assigned to you yet.'
             }
+            showAssignedBadge={showTrialUpload}
           />
 
           {downloadingTrialId && (
-            <p className="muted" role="status">
+            <p className="text-sm text-base-content/70" role="status">
               Downloading workbook…
             </p>
           )}
-          {downloadError && <p className="error-text">{downloadError}</p>}
+          {downloadError && (
+            <p className="text-sm mt-3 text-error">{downloadError}</p>
+          )}
           {downloadedFileName && (
-            <p className="success-text" role="status">
+            <p className="text-sm mt-3 text-success" role="status">
               Downloaded "{downloadedFileName}"
             </p>
           )}
         </section>
+
+        {showUserManagement && (
+          <UsersPanel actorRole={currentUser?.role ?? null} />
+        )}
       </main>
 
       {assigningTrial && (

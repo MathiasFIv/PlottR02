@@ -1,4 +1,5 @@
 import { atom } from 'jotai';
+import type { Theme } from '../lib/theme';
 import type { TrialSheetSource, TrialSheetStatus } from '../lib/sheetStatus';
 import type {
   CurrentUser,
@@ -6,6 +7,16 @@ import type {
   TrialSummary,
   User,
 } from '../types';
+
+/**
+ * The active UI theme (`plottr-light` / `plottr-dark`). A PURE literal
+ * initializer on purpose: this module is imported by node-only test files
+ * (nextTarget, sheetAnchor, sheetTarget, syncQueue), so there must be no
+ * `window` / `localStorage` / `matchMedia` access at module evaluation.
+ * `main.tsx` bootstraps the real initial value with `resolveInitialTheme()`
+ * (matching the anti-FOUC inline script in index.html) before React mounts.
+ */
+export const themeAtom = atom<Theme>('plottr-light');
 
 /** The authenticated user profile (populated on login or session restore). */
 export const currentUserAtom = atom<CurrentUser | null>(null);

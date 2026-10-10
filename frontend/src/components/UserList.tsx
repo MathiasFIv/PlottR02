@@ -10,29 +10,38 @@ type UserListProps = {
 /** Presentational list of users fetched from GET /api/Users. */
 export function UserList({ users, loading, error }: UserListProps) {
   if (loading && users.length === 0) {
-    return <p className="muted">Loading users…</p>;
+    return <p className="text-sm text-base-content/70">Loading users…</p>;
   }
 
   if (error) {
-    return <p className="error-text">Error: {error}</p>;
+    return <p className="text-sm mt-3 text-error">Error: {error}</p>;
   }
 
   if (users.length === 0) {
-    return <p className="muted">No users found yet.</p>;
+    return <p className="text-sm text-base-content/70">No users found yet.</p>;
   }
 
   return (
-    <ul className="user-list">
+    <ul className="list-none m-0 p-0 border border-base-300 rounded-md bg-base-100 overflow-hidden divide-y divide-base-300">
       {users.map((user) => (
-        <li key={user.id} className="user-list__item">
+        <li
+          key={user.id}
+          className="flex items-center justify-between gap-3 px-4 py-3"
+        >
           <div>
-            <p className="user-list__name">{user.name}</p>
-            {user.email && <p className="muted user-list__email">{user.email}</p>}
+            <p className="font-medium text-base-content">{user.name}</p>
+            {user.email && (
+              <p className="text-sm text-base-content/70">{user.email}</p>
+            )}
             {user.role && (
-              <p className="muted user-list__role">{roleLabel(user.role)}</p>
+              <p className="text-sm text-base-content/70">
+                {roleLabel(user.role)}
+              </p>
             )}
           </div>
-          <code className="muted user-list__id">{user.id}</code>
+          <code className="text-xs break-all text-base-content/70 font-mono">
+            {user.id}
+          </code>
         </li>
       ))}
     </ul>

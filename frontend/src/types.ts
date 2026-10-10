@@ -3,8 +3,8 @@
  *
  *   GET  /api/Users          -> User[]
  *   GET  /api/Users/{id}     -> User | 404
- *   POST /api/Users          -> 201 User     (body: CreateUserInput)
- *   PUT  /api/Users/{id}     -> 200 User     (body: CreateUserInput)
+ *   POST /api/Users          -> 201 User     (body: CreateUserInput — password required)
+ *   PUT  /api/Users/{id}     -> 200 User     (body: UpdateUserInput — NO password)
  *   DELETE /api/Users/{id}   -> 204
  *   POST /api/Auth/login     -> 200 LoginResponse | 401 (body: LoginRequest)
  */
@@ -109,6 +109,22 @@ export type CreateUserInput = {
   password: string;
 };
 
+/**
+ * Update body for `PUT /api/Users/{id}` — mirrors the backend
+ * `UpdateUserRequest`. Deliberately password-free: this endpoint edits the
+ * profile (name/email/role) only, so it must never carry a password field.
+ */
+export type UpdateUserInput = {
+  name: string;
+  email: string;
+  /**
+   * A role value, or `null` to keep a legacy no-role user role-less. A null
+   * update is rejected by the API for any user that currently HAS a role, so
+   * callers only send `null` to echo a no-role row unchanged.
+   */
+  role: UserRole | null;
+};
+
 export type LoginRequest = {
   email: string;
   password: string;
@@ -135,8 +151,12 @@ export type CurrentUser = User;
 // ---------------------------------------------------------------------------
 // Trial types — mirror the ASP.NET Core WebAPI DTOs:
 //
-//   GET  /api/Trials          -> TrialSummary[]
+//   GET  /api/Trials          -> TrialSummary[]  (each carries isAssignedToCurrentUser)
 //   POST /api/Trials          -> 201 TrialSummary  (multipart/form-data, field: file)
+//
+// Field workers receive only the trials they are assigned to, so for them
+// `isAssignedToCurrentUser` is always true; creators receive the full list and
+// use the flag to highlight their own assignments.
 // ---------------------------------------------------------------------------
 
 /** Summary of a trial workbook uploaded to the backend. */
@@ -147,6 +167,12 @@ export type TrialSummary = {
   status: string;
   createdAt: string;
   createdBy: string | null;
+  /**
+   * True when the signed-in user is a member of this trial's crew. Computed
+   * server-side and ALWAYS present (never omitted — the backend never drops
+   * null/false fields), so consumers may read it directly.
+   */
+  isAssignedToCurrentUser: boolean;
 };
 
 // ---------------------------------------------------------------------------

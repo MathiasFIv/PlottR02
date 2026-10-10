@@ -82,74 +82,55 @@ export function AssignCrewModal({ trial, onClose }: AssignCrewModalProps) {
   const canSave = !loading && !loadError && candidates.length > 0;
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(17, 24, 39, 0.5)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 24,
-        zIndex: 1000,
-      }}
-    >
+    <div className="modal modal-open">
       <div
-        className="card"
+        className="modal-box max-w-[440px]"
         role="dialog"
         aria-modal="true"
         aria-labelledby="assign-crew-title"
-        style={{
-          width: '100%',
-          maxWidth: 440,
-          maxHeight: '90vh',
-          overflowY: 'auto',
-        }}
       >
-        <div className="card__header">
-          <h2 id="assign-crew-title" className="heading">
+        <div className="flex items-center justify-between mb-3">
+          <h2
+            id="assign-crew-title"
+            className="text-lg font-semibold text-base-content"
+          >
             Assign crew
           </h2>
         </div>
-        <p className="muted" style={{ marginBottom: 16 }}>
-          {trial.fileName}
-        </p>
+        <p className="text-sm text-base-content/70 mb-4">{trial.fileName}</p>
 
-        {loading && <p className="muted">Loading crew…</p>}
+        {loading && <p className="text-sm text-base-content/70">Loading crew…</p>}
 
-        {!loading && loadError && <p className="error-text">{loadError}</p>}
+        {!loading && loadError && (
+          <p className="text-sm mt-3 text-error">{loadError}</p>
+        )}
 
         {!loading && !loadError && candidates.length === 0 && (
-          <p className="muted">No users can be assigned yet.</p>
+          <p className="text-sm text-base-content/70">
+            No users can be assigned yet.
+          </p>
         )}
 
         {!loading && !loadError && candidates.length > 0 && (
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+          <ul className="list-none m-0 p-0">
             {candidates.map((user) => (
-              <li key={user.id} style={{ marginBottom: 8 }}>
-                <label
-                  style={{
-                    display: 'flex',
-                    gap: 8,
-                    alignItems: 'flex-start',
-                    cursor: 'pointer',
-                  }}
-                >
+              <li key={user.id} className="mb-2">
+                <label className="flex gap-2 items-start cursor-pointer">
                   <input
                     type="checkbox"
+                    className="checkbox checkbox-sm mt-0.5"
                     checked={selectedIds.has(user.id)}
                     onChange={() => toggle(user.id)}
-                    style={{ marginTop: 3 }}
                   />
                   <span>
-                    <span style={{ fontWeight: 500, color: '#111827' }}>
+                    <span className="font-medium text-base-content">
                       {user.name}
                     </span>
-                    <span className="muted" style={{ display: 'block' }}>
+                    <span className="block text-sm text-base-content/70">
                       {user.email}
                     </span>
                     {user.role && (
-                      <span className="muted" style={{ display: 'block' }}>
+                      <span className="block text-sm text-base-content/70">
                         {roleLabel(user.role)}
                       </span>
                     )}
@@ -160,9 +141,9 @@ export function AssignCrewModal({ trial, onClose }: AssignCrewModalProps) {
           </ul>
         )}
 
-        {saveError && <p className="error-text">{saveError}</p>}
+        {saveError && <p className="text-sm mt-3 text-error">{saveError}</p>}
 
-        <div className="modal__actions">
+        <div className="flex justify-end gap-3 mt-5">
           <Button
             variant="secondary"
             type="button"

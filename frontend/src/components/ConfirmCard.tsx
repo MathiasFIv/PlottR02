@@ -169,47 +169,49 @@ export function ConfirmCard({
   const transcript = lastResult?.transcript.trim() ?? '';
 
   return (
-    <section className="card confirm-card">
-      <h2 className="heading">
+    <section className="card card-border bg-base-100 shadow-sm p-6">
+      <h2 className="text-lg font-semibold text-base-content">
         {status === 'failed' ? 'Sync failed' : 'Check rating'}
       </h2>
 
       {audioUrl ? (
         <audio
-          className="confirm-card__playback"
+          className="block w-full mb-4"
           controls
           src={audioUrl}
           preload="metadata"
           aria-label="Recorded voice note"
         />
       ) : (
-        <p className="muted confirm-card__playback-hint" role="status">
+        <p className="text-sm text-base-content/70 mb-4" role="status">
           Playback unavailable for this clip.
         </p>
       )}
 
       {/* What Whisper heard — the worker validates the transcript, not a guess. */}
       {transcript !== '' ? (
-        <p className="muted confirm-card__transcript" role="status">
+        <p className="text-sm text-base-content/70" role="status">
           Whisper heard: «{transcript}»
         </p>
       ) : (
-        <p className="muted confirm-card__transcript" role="status">
+        <p className="text-sm text-base-content/70" role="status">
           No transcript — the server could not transcribe this clip. Check the
           audio before sending.
         </p>
       )}
 
-      <div className="field">
-        <label className="field__label" htmlFor="confirm-plot">
+      <div className="mb-4">
+        <label
+          className="block mb-1.5 text-sm font-medium text-base-content/80"
+          htmlFor="confirm-plot"
+        >
           Plot
         </label>
         <input
           id="confirm-plot"
           className={[
-            'input',
-            'confirm-card__field',
-            showPlotError ? 'input--error' : '',
+            'input input-lg w-full text-xl',
+            showPlotError ? 'input-error' : '',
           ]
             .filter(Boolean)
             .join(' ')}
@@ -220,22 +222,24 @@ export function ConfirmCard({
           onChange={(e) => setPlot(e.target.value)}
         />
         {showPlotError && (
-          <p className="confirm-card__field-error" role="alert">
+          <p className="mt-1 text-[13px] text-error" role="alert">
             {INTEGER_HINT}
           </p>
         )}
       </div>
 
-      <div className="field">
-        <label className="field__label" htmlFor="confirm-subsample">
+      <div className="mb-4">
+        <label
+          className="block mb-1.5 text-sm font-medium text-base-content/80"
+          htmlFor="confirm-subsample"
+        >
           Subsample
         </label>
         <input
           id="confirm-subsample"
           className={[
-            'input',
-            'confirm-card__field',
-            showSubsampleError ? 'input--error' : '',
+            'input input-lg w-full text-xl',
+            showSubsampleError ? 'input-error' : '',
           ]
             .filter(Boolean)
             .join(' ')}
@@ -246,18 +250,21 @@ export function ConfirmCard({
           onChange={(e) => setSubsample(e.target.value)}
         />
         {showSubsampleError && (
-          <p className="confirm-card__field-error" role="alert">
+          <p className="mt-1 text-[13px] text-error" role="alert">
             {INTEGER_HINT}
           </p>
         )}
       </div>
 
-      <div className="field">
-        <span className="field__label" id="confirm-value-label">
+      <div className="mb-4">
+        <span
+          className="block mb-1.5 text-sm font-medium text-base-content/80"
+          id="confirm-value-label"
+        >
           Value
         </span>
         <div
-          className="value-chips"
+          className="grid grid-cols-[repeat(auto-fill,minmax(44px,1fr))] gap-2"
           role="group"
           aria-labelledby="confirm-value-label"
         >
@@ -265,7 +272,12 @@ export function ConfirmCard({
             <button
               key={option}
               type="button"
-              className={`value-chips__chip${value === option ? ' value-chips__chip--active' : ''}`}
+              className={[
+                'min-h-[44px] border rounded-md text-lg font-semibold cursor-pointer transition-colors',
+                value === option
+                  ? 'bg-primary border-primary text-primary-content'
+                  : 'border-base-300 bg-base-100 text-base-content hover:bg-primary/10 hover:border-primary',
+              ].join(' ')}
               aria-pressed={value === option}
               onClick={() => setValue(option)}
             >
@@ -274,20 +286,22 @@ export function ConfirmCard({
           ))}
         </div>
         {value === null && (
-          <p className="muted value-chips__hint">Tap a score 0–10 to select it.</p>
+          <p className="mt-1.5 text-[13px] text-base-content/70">
+            Tap a score 0–10 to select it.
+          </p>
         )}
       </div>
 
       {/* Queue-level error (save/discard) */}
       {error && (
-        <p className="error-text confirm-card__error" role="alert">
+        <p className="text-sm mt-3 text-error mb-4" role="alert">
           {error}
         </p>
       )}
 
       {/* Sync / correction error */}
       {sendError && (
-        <p className="error-text confirm-card__error" role="alert">
+        <p className="text-sm mt-3 text-error mb-4" role="alert">
           {sendError}
         </p>
       )}
@@ -297,10 +311,10 @@ export function ConfirmCard({
         const { lines, variant } = summarizeSync(result);
         const className =
           variant === 'success'
-            ? 'success-text'
+            ? 'text-sm mt-3 text-success'
             : variant === 'error'
-              ? 'error-text'
-              : 'warning-text';
+              ? 'text-sm mt-3 text-error'
+              : 'text-sm mt-3 text-warning bg-warning/15 rounded-md px-3 py-2';
         return (
           <div className={className} role="status">
             {lines.map((line, i) => (
@@ -310,10 +324,10 @@ export function ConfirmCard({
         );
       })()}
 
-      <div className="confirm-card__actions">
+      <div className="flex gap-3 items-stretch mt-1">
         {status === 'needs-attention' && (
           <Button
-            className="confirm-card__confirm"
+            className="flex-1 py-3 px-4 text-base"
             onClick={() => void handleFix()}
             disabled={!canFix}
           >
@@ -323,7 +337,7 @@ export function ConfirmCard({
 
         {status === 'failed' && (
           <Button
-            className="confirm-card__confirm"
+            className="flex-1 py-3 px-4 text-base"
             onClick={() => void handleRetry()}
             disabled={!canRetry}
           >

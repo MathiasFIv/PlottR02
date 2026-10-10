@@ -1,11 +1,23 @@
 import { describeSheetStatus } from '../lib/sheetStatus';
-import type { TrialSheetSource, TrialSheetStatus } from '../lib/sheetStatus';
+import type {
+  TrialSheetSource,
+  TrialSheetStatus,
+  SheetStatusTone,
+} from '../lib/sheetStatus';
 
 type SheetStatusPillProps = {
   status: TrialSheetStatus;
   source: TrialSheetSource;
   /** ISO timestamp backing the `saved …` detail (payload's last update or the snapshot's `savedAt`). */
   savedAt: string | null;
+};
+
+/** Tone → daisyUI badge modifier (old `.sheet-pill--{tone}` → `badge-soft badge-*`). */
+const TONE_BADGE: Record<SheetStatusTone, string> = {
+  muted: 'badge-ghost',
+  ok: 'badge-success',
+  warn: 'badge-warning',
+  error: 'badge-error',
 };
 
 /**
@@ -20,7 +32,7 @@ export function SheetStatusPill({ status, source, savedAt }: SheetStatusPillProp
   const { label, tone, detail } = describeSheetStatus(status, source, savedAt);
   return (
     <span
-      className={`sheet-pill sheet-pill--${tone}`}
+      className={`badge badge-sm badge-soft text-xs font-semibold whitespace-nowrap ${TONE_BADGE[tone]}`}
       role="status"
       aria-live="polite"
     >

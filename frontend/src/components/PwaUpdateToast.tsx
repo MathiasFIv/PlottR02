@@ -38,16 +38,21 @@ export function PwaUpdateToast() {
 
   if (needRefresh) {
     return (
-      <div className="pwa-toast" role="status">
-        <span className="pwa-toast__message">New version available.</span>
-        <div className="pwa-toast__actions">
-          <button
-            type="button"
-            className="pwa-toast__refresh"
-            onClick={() => void updateSW(true)}
-          >
-            Refresh
-          </button>
+      <div className="toast toast-center toast-bottom z-[1000]" role="status">
+        {/* daisyUI 5 has no `alert-neutral`; the old toast was a dark chip
+            (#111827 / #fff), so we style it explicitly with `bg-neutral
+            text-neutral-content` rather than `.alert`. */}
+        <div className="bg-neutral text-neutral-content rounded-lg shadow-lg flex items-center gap-4 px-4 py-3 text-sm max-w-[calc(100vw-2rem)]">
+          <span className="flex-1">New version available.</span>
+          <div className="flex gap-2 shrink-0">
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => void updateSW(true)}
+            >
+              Refresh
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -55,18 +60,18 @@ export function PwaUpdateToast() {
 
   if (offlineReady) {
     return (
-      <div className="pwa-toast" role="status">
-        <span className="pwa-toast__message">
-          PlottR is ready to work offline.
-        </span>
-        <div className="pwa-toast__actions">
-          <button
-            type="button"
-            className="pwa-toast__dismiss"
-            onClick={() => setOfflineReady(false)}
-          >
-            Dismiss
-          </button>
+      <div className="toast toast-center toast-bottom z-[1000]" role="status">
+        <div className="bg-neutral text-neutral-content rounded-lg shadow-lg flex items-center gap-4 px-4 py-3 text-sm max-w-[calc(100vw-2rem)]">
+          <span className="flex-1">PlottR is ready to work offline.</span>
+          <div className="flex gap-2 shrink-0">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setOfflineReady(false)}
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       </div>
     );
