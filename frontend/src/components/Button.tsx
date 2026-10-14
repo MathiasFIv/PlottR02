@@ -12,9 +12,11 @@ export function Button({
   className = '',
   ...rest
 }: ButtonProps) {
+  const variantClass = variant === 'primary' ? 'btn-primary' : '';
+
   return (
     <button
-      className={`btn btn--${variant} ${className}`}
+      className={`btn ${variantClass} ${className}`}
       {...rest}
     >
       {children}

@@ -17,6 +17,8 @@ public class PlottR0DbContext : DbContext
     public DbSet<Rating> Ratings => Set<Rating>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<VoiceRecording> VoiceRecordings => Set<VoiceRecording>();
+    public DbSet<TrialAssignment> Assignments => Set<TrialAssignment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -26,6 +28,7 @@ public class PlottR0DbContext : DbContext
         ConfigureAuditableEntity<Plot>(modelBuilder);
         ConfigureAuditableEntity<Subsample>(modelBuilder);
         ConfigureAuditableEntity<Rating>(modelBuilder);
+        ConfigureAuditableEntity<VoiceRecording>(modelBuilder);
 
         modelBuilder.Entity<User>(entity =>
         {
@@ -38,8 +41,13 @@ public class PlottR0DbContext : DbContext
                 .HasMaxLength(320);
             entity.HasIndex(u => u.Email)
                 .IsUnique();
+            // Role is a nullable enum persisted AS A STRING so the existing
+            // character varying column is only narrowed (100 → 20) instead of
+            // being dropped/recreated — RefreshToken.UserId and Trial.CreatedBy
+            // reference the Users table and must keep their FKs intact.
             entity.Property(u => u.Role)
-                .HasMaxLength(100);
+                .HasConversion<string>()
+                .HasMaxLength(20);
             entity.Property(u => u.PasswordHash)
                 .IsRequired()
                 .HasMaxLength(100);
@@ -53,6 +61,12 @@ public class PlottR0DbContext : DbContext
                 .HasMaxLength(500);
             entity.Property(t => t.FileName)
                 .IsRequired()
+                .HasMaxLength(500);
+            entity.Property(t => t.Status)
+                .IsRequired()
+                .HasMaxLength(20)
+                .HasDefaultValue(TrialStatus.Created);
+            entity.Property(t => t.SourceWorkbookPath)
                 .HasMaxLength(500);
 
             // Trial 1 -> N Plot. Plot has no TrialId property, so EF materializes
@@ -166,6 +180,73 @@ public class PlottR0DbContext : DbContext
 
             entity.HasIndex(a => a.Timestamp);
             entity.HasIndex(a => new { a.EntityType, a.EntityId });
+        });
+
+        // ── VoiceRecording (Voice-to-Excel) ─────────────────────────────────
+        modelBuilder.Entity<VoiceRecording>(entity =>
+        {
+            entity.HasKey(v => v.Id);
+
+            // ClientRecordingId is the PWA-emitted idempotency key
+            // (crypto.randomUUID); unique so a duplicate upload replays the
+            // existing row instead of creating a duplicate.
+            entity.Property(v => v.ClientRecordingId)
+                .IsRequired()
+                .HasMaxLength(100);
+            entity.HasIndex(v => v.ClientRecordingId)
+                .IsUnique();
+
+            // TrialId FK → Trial. SetNull on delete so recordings survive a
+            // trial deletion (audit evidence is preserved). Nullable for the
+            // same reason — recordings may be orphaned intentionally.
+            entity.HasOne<Trial>()
+                .WithMany()
+                .HasForeignKey(v => v.TrialId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            entity.Property(v => v.BlobPath)
+                .IsRequired()
+                .HasMaxLength(500);
+            entity.Property(v => v.MimeType)
+                .IsRequired()
+                .HasMaxLength(100);
+
+            entity.Property(v => v.Status)
+                .IsRequired()
+                .HasMaxLength(20)
+                .HasDefaultValue(VoiceRecordingStatus.Received);
+        });
+
+        // ── TrialAssignment (Trial ↔ User, many-to-many via join entity) ─────
+        modelBuilder.Entity<TrialAssignment>(entity =>
+        {
+            entity.HasKey(a => a.Id);
+
+            // Both FKs are required — an assignment cannot exist without its
+            // trial and user — and both cascade so deleting either end cleans up
+            // the join rows.
+            entity.Property(a => a.TrialId)
+                .IsRequired();
+            entity.Property(a => a.UserId)
+                .IsRequired();
+            entity.Property(a => a.AssignedBy)
+                .IsRequired();
+            entity.Property(a => a.AssignedAt)
+                .IsRequired();
+
+            // A user may be assigned to a given trial at most once.
+            entity.HasIndex(a => new { a.TrialId, a.UserId })
+                .IsUnique();
+
+            entity.HasOne<Trial>()
+                .WithMany(t => t.Assignments)
+                .HasForeignKey(a => a.TrialId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne<User>()
+                .WithMany(u => u.Assignments)
+                .HasForeignKey(a => a.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 

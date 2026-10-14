@@ -235,6 +235,17 @@ namespace PlottR0._2.Repository.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<string>("SourceWorkbookPath")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Created");
+
                     b.Property<DateTime>("UpdatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -248,6 +259,34 @@ namespace PlottR0._2.Repository.Migrations
                     b.HasIndex("CreatedBy");
 
                     b.ToTable("Trials");
+                });
+
+            modelBuilder.Entity("PlottR0._2.Domain.TrialAssignment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("AssignedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("AssignedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("TrialId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("TrialId", "UserId")
+                        .IsUnique();
+
+                    b.ToTable("Assignments");
                 });
 
             modelBuilder.Entity("PlottR0._2.Domain.User", b =>
@@ -280,8 +319,8 @@ namespace PlottR0._2.Repository.Migrations
                         .HasColumnType("character varying(100)");
 
                     b.Property<string>("Role")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
 
                     b.Property<DateTime>("UpdatedAt")
                         .ValueGeneratedOnAdd()
@@ -297,6 +336,90 @@ namespace PlottR0._2.Repository.Migrations
                         .IsUnique();
 
                     b.ToTable("Users");
+                });
+
+            modelBuilder.Entity("PlottR0._2.Domain.VoiceRecording", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("BlobPath")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("ClientRecordingId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<double?>("Confidence")
+                        .HasColumnType("double precision");
+
+                    b.Property<int?>("ConfirmedPlot")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("ConfirmedSubsample")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("ConfirmedValue")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("MimeType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<int?>("ParsedPlot")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("ParsedSubsample")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("ParsedValue")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("ResolvedTraitOrdinal")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Received");
+
+                    b.Property<string>("Transcript")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("TrialId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClientRecordingId")
+                        .IsUnique();
+
+                    b.HasIndex("TrialId");
+
+                    b.ToTable("VoiceRecordings");
                 });
 
             modelBuilder.Entity("PlottR0._2.Domain.Plot", b =>
@@ -342,6 +465,29 @@ namespace PlottR0._2.Repository.Migrations
                     b.Navigation("CreatedByUser");
                 });
 
+            modelBuilder.Entity("PlottR0._2.Domain.TrialAssignment", b =>
+                {
+                    b.HasOne("PlottR0._2.Domain.Trial", null)
+                        .WithMany("Assignments")
+                        .HasForeignKey("TrialId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("PlottR0._2.Domain.User", null)
+                        .WithMany("Assignments")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("PlottR0._2.Domain.VoiceRecording", b =>
+                {
+                    b.HasOne("PlottR0._2.Domain.Trial", null)
+                        .WithMany()
+                        .HasForeignKey("TrialId")
+                        .OnDelete(DeleteBehavior.SetNull);
+                });
+
             modelBuilder.Entity("PlottR0._2.Domain.Plot", b =>
                 {
                     b.Navigation("Subsamples");
@@ -354,7 +500,14 @@ namespace PlottR0._2.Repository.Migrations
 
             modelBuilder.Entity("PlottR0._2.Domain.Trial", b =>
                 {
+                    b.Navigation("Assignments");
+
                     b.Navigation("Plots");
+                });
+
+            modelBuilder.Entity("PlottR0._2.Domain.User", b =>
+                {
+                    b.Navigation("Assignments");
                 });
 #pragma warning restore 612, 618
         }

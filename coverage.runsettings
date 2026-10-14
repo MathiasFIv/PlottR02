@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+          <Exclude>[PlottR0.2.Tests]*,[PlottR0.2.Repository]*Migrations*,[*]*Program*,[*]*Startup*,[*]*ExcludeFromCodeCoverage*,[*]*CompilerGenerated*</Exclude>
+          <Include>[PlottR0.2.Api]*,[PlottR0.2.Domain]*,[PlottR0.2.Contracts]*,[PlottR0.2.Repository]*,[PlottR0.2.Services]*</Include>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

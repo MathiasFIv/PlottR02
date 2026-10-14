@@ -31,13 +31,27 @@ public static class ServiceCollectionExtensions
         {
             services.AddOptions<TokenOptions>()
                 .Bind(configuration.GetSection(TokenOptions.SectionName));
+
+            services.AddOptions<FasterWhisperOptions>()
+                .Bind(configuration.GetSection(FasterWhisperOptions.SectionName));
         }
 
         services.AddScoped<IUserService, UserService>();
-        services.AddScoped<IRecordRatingsService, RecordRatingsService>();
         services.AddScoped<IAuditService, AuditService>();
         services.AddScoped<ITokenService, TokenService>();
         services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<ITrialService, TrialService>();
+        services.AddScoped<IRecordingSyncService, RecordingSyncService>();
+
+        // IHttpClientFactory plumbing (managed sockets/DNS) + a plain transient
+        // registration for the transcription service. NOT a typed
+        // AddHttpClient<ITranscriptionService, ...> registration: the implementation's
+        // constructor takes IHttpClientFactory (it builds per-request clients and
+        // enforces FasterWhisperOptions.TimeoutSeconds itself), whereas typed-client
+        // activation requires a constructor accepting an HttpClient and would throw
+        // at runtime.
+        services.AddHttpClient();
+        services.AddTransient<ITranscriptionService, HttpFasterWhisperTranscriptionService>();
 
         return services;
     }

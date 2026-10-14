@@ -1,3 +1,5 @@
+using PlottR0._2.Domain;
+
 namespace PlottR0._2.Contracts;
 
 /// <summary>
@@ -16,4 +18,7 @@ public interface ICurrentUser
 
     /// <summary>The authenticated user's display name from the JWT "name" claim, or null.</summary>
     string? Name { get; }
+
+    /// <summary>The authenticated user's role from the JWT "role" claim, or null if unauthenticated or role-less.</summary>
+    UserRole? Role { get; }
 }

@@ -24,11 +24,25 @@ public sealed class UserServiceTests : IAsyncLifetime
 
     public Task InitializeAsync() => Task.CompletedTask;
 
-    /// <summary>Wipes the shared DB after each test so tests never pollute each other.</summary>
-    public Task DisposeAsync() => _fixture.ResetDatabaseAsync();
+    /// <summary>Wipes the shared DB and restores the default test actor after each
+    /// test, so neither rows nor actor identity leak into the next test.</summary>
+    public Task DisposeAsync()
+    {
+        _fixture.CurrentUser.ResetToDefaults();
+        return _fixture.ResetDatabaseAsync();
+    }
 
     private IUserService Service(IServiceScope scope) =>
         scope.ServiceProvider.GetRequiredService<IUserService>();
+
+    /// <summary>The four valid <see cref="UserRole"/> values, for exhaustive matrix theories.</summary>
+    private static readonly UserRole[] AllRoles =
+    [
+        UserRole.SystemAdmin,
+        UserRole.Researcher,
+        UserRole.TrialManager,
+        UserRole.FieldWorker,
+    ];
 
     // ── CreateAsync ───────────────────────────────────────────────────────────
 
@@ -90,6 +104,82 @@ public sealed class UserServiceTests : IAsyncLifetime
         await act.Should().ThrowAsync<ArgumentNullException>();
     }
 
+    // ── CreateAsync role-assignment matrix ──
+
+    [Theory]
+    [InlineData(UserRole.SystemAdmin, UserRole.SystemAdmin, true)]
+    [InlineData(UserRole.SystemAdmin, UserRole.Researcher, true)]
+    [InlineData(UserRole.SystemAdmin, UserRole.TrialManager, true)]
+    [InlineData(UserRole.SystemAdmin, UserRole.FieldWorker, true)]
+    [InlineData(UserRole.Researcher, UserRole.SystemAdmin, false)]
+    [InlineData(UserRole.Researcher, UserRole.Researcher, false)]
+    [InlineData(UserRole.Researcher, UserRole.TrialManager, true)]
+    [InlineData(UserRole.Researcher, UserRole.FieldWorker, true)]
+    [InlineData(UserRole.TrialManager, UserRole.SystemAdmin, false)]
+    [InlineData(UserRole.TrialManager, UserRole.Researcher, false)]
+    [InlineData(UserRole.TrialManager, UserRole.TrialManager, false)]
+    [InlineData(UserRole.TrialManager, UserRole.FieldWorker, true)]
+    public async Task CreateAsync_RoleAssignmentMatrix_AllowsOnlyAssignablePairs(UserRole actorRole, UserRole requestedRole, bool shouldAllow)
+    {
+        _fixture.CurrentUser.Role = actorRole;
+
+        var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+        request.Role = requestedRole;
+
+        using var scope = _fixture.CreateScope();
+        var service = Service(scope);
+
+        if (shouldAllow)
+        {
+            var result = await service.CreateAsync(request);
+            result.Role.Should().Be(requestedRole);
+        }
+        else
+        {
+            var act = () => service.CreateAsync(request);
+            await act.Should().ThrowAsync<ForbiddenAccessException>()
+                .WithMessage("*Cannot assign role*");
+        }
+    }
+
+    [Theory]
+    [InlineData(UserRole.FieldWorker)]
+    [InlineData(null)]
+    public async Task CreateAsync_WithoutAssignableRights_DeniedForEveryRole(UserRole? actorRole)
+    {
+        // FieldWorkers and no-role/anonymous actors have no assignable rights and are
+        // denied regardless of the requested role — the gate short-circuits before the
+        // per-role matrix even runs.
+        _fixture.CurrentUser.UserId = null;
+        _fixture.CurrentUser.Role = actorRole;
+
+        foreach (var requestedRole in AllRoles)
+        {
+            var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+            request.Role = requestedRole;
+
+            using var scope = _fixture.CreateScope();
+            var service = Service(scope);
+
+            var act = () => service.CreateAsync(request);
+            await act.Should().ThrowAsync<ForbiddenAccessException>()
+                .WithMessage("*not allowed to create users*");
+        }
+    }
+
+    [Fact]
+    public async Task CreateAsync_NullRole_ThrowsArgumentException()
+    {
+        var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+        request.Role = null;
+        using var scope = _fixture.CreateScope();
+        var service = Service(scope);
+
+        var act = () => service.CreateAsync(request);
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*Role is required*");
+    }
+
     // ── LoginAsync ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -105,7 +195,7 @@ public sealed class UserServiceTests : IAsyncLifetime
             Name = "Valid Login User",
             Email = email,
             Password = password,
-            Role = "Agronomist",
+            Role = UserRole.Researcher,
         });
 
         var result = await service.LoginAsync(new LoginRequest { Email = email, Password = password });
@@ -128,7 +218,7 @@ public sealed class UserServiceTests : IAsyncLifetime
             Name = "Wrong Pass User",
             Email = email,
             Password = "CorrectPass123!",
-            Role = null,
+            Role = UserRole.FieldWorker,
         });
 
         var act = () => service.LoginAsync(new LoginRequest { Email = email, Password = "WrongPass123!" });
@@ -418,10 +508,168 @@ public sealed class UserServiceTests : IAsyncLifetime
             [nameof(UserResponse.Id), nameof(UserResponse.Name), nameof(UserResponse.Email), nameof(UserResponse.Role)]);
     }
 
+    // ── Role round-trip (typed enum contract) ─────────────────────────────────
+
+    [Fact]
+    public async Task CreateAndUpdateAsync_Role_RoundTripsThroughDatabaseAsEnum()
+    {
+        var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+        request.Role = UserRole.TrialManager;
+        using var scope = _fixture.CreateScope();
+        var service = Service(scope);
+
+        var created = await service.CreateAsync(request);
+
+        created.Role.Should().Be(UserRole.TrialManager);
+
+        // Persisted entity must materialise the enum from the string column.
+        var repo = scope.ServiceProvider
+            .GetRequiredService<PlottR0._2.Contracts.Repositories.IUserRepository>();
+        var persisted = await repo.GetByEmailAsync(request.Email);
+        persisted!.Role.Should().Be(UserRole.TrialManager);
+
+        // Update to a different member and confirm it survives the round-trip.
+        var updated = await service.UpdateAsync(created.Id, new UpdateUserRequest
+        {
+            Name = created.Name,
+            Email = created.Email,
+            Role = UserRole.FieldWorker,
+        });
+
+        updated!.Role.Should().Be(UserRole.FieldWorker);
+    }
+
+    // ── UpdateAsync role policy ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task UpdateAsync_RoleChange_ByTrialManager_AllowedOnlyForFieldWorker()
+    {
+        // A TrialManager may only move a user to FieldWorker (its sole assignable role).
+        _fixture.CurrentUser.Role = UserRole.SystemAdmin;
+        var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+        request.Role = UserRole.TrialManager;
+
+        using var scope = _fixture.CreateScope();
+        var service = Service(scope);
+        var trialManager = await service.CreateAsync(request);
+
+        _fixture.CurrentUser.Role = UserRole.TrialManager;
+
+        var toFieldWorker = await service.UpdateAsync(trialManager.Id, new UpdateUserRequest
+        {
+            Name = trialManager.Name,
+            Email = trialManager.Email,
+            Role = UserRole.FieldWorker,
+        });
+        toFieldWorker!.Role.Should().Be(UserRole.FieldWorker);
+
+        var toSystemAdmin = () => service.UpdateAsync(trialManager.Id, new UpdateUserRequest
+        {
+            Name = trialManager.Name,
+            Email = trialManager.Email,
+            Role = UserRole.SystemAdmin,
+        });
+        await toSystemAdmin.Should().ThrowAsync<ForbiddenAccessException>()
+            .WithMessage("*Cannot assign role*");
+
+        var toResearcher = () => service.UpdateAsync(trialManager.Id, new UpdateUserRequest
+        {
+            Name = trialManager.Name,
+            Email = trialManager.Email,
+            Role = UserRole.Researcher,
+        });
+        await toResearcher.Should().ThrowAsync<ForbiddenAccessException>()
+            .WithMessage("*Cannot assign role*");
+    }
+
+    [Fact]
+    public async Task UpdateAsync_NullRole_OnRoleHoldingUser_ThrowsForbidden()
+    {
+        // A null role on a user that currently has a role would CLEAR it — forbidden.
+        _fixture.CurrentUser.Role = UserRole.SystemAdmin;
+        var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+        request.Role = UserRole.FieldWorker;
+
+        using var scope = _fixture.CreateScope();
+        var service = Service(scope);
+        var created = await service.CreateAsync(request);
+
+        var clearRole = () => service.UpdateAsync(created.Id, new UpdateUserRequest
+        {
+            Name = "Renamed",
+            Email = created.Email,
+            Role = null,
+        });
+
+        await clearRole.Should().ThrowAsync<ForbiddenAccessException>()
+            .WithMessage("*every account must keep a role*");
+
+        // The persisted role must be untouched — the clear must not have gone through.
+        var repo = scope.ServiceProvider
+            .GetRequiredService<PlottR0._2.Contracts.Repositories.IUserRepository>();
+        var persisted = await repo.GetByIdAsync(created.Id);
+        persisted!.Role.Should().Be(UserRole.FieldWorker);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_NullRole_OnNoRoleUser_IsAllowed()
+    {
+        // Legacy no-role users keep their role-less state; name/email edits are allowed.
+        var existing = await PersistUserAsync(
+            "update.nullrole.norole@plottr02.local", "No Role User", "Pass123!", role: null);
+        _fixture.CurrentUser.Role = UserRole.SystemAdmin;
+
+        using var scope = _fixture.CreateScope();
+        var service = Service(scope);
+
+        var result = await service.UpdateAsync(existing.Id, new UpdateUserRequest
+        {
+            Name = "Renamed",
+            Email = "update.nullrole.norole@plottr02.local",
+            Role = null,
+        });
+
+        result.Should().NotBeNull();
+        result!.Name.Should().Be("Renamed");
+        result.Role.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task UpdateAsync_UnchangedRole_IsNotAnAssignment()
+    {
+        // Echoing the current role is not a change — even an actor who could not grant
+        // that role may update other fields while preserving it.
+        var existing = await PersistUserAsync(
+            "update.unchanged@plottr02.local", "System Admin User", "Pass123!", role: UserRole.SystemAdmin);
+        _fixture.CurrentUser.Role = UserRole.TrialManager;
+
+        using var scope = _fixture.CreateScope();
+        var service = Service(scope);
+
+        var result = await service.UpdateAsync(existing.Id, new UpdateUserRequest
+        {
+            Name = "Renamed",
+            Email = "update.unchanged@plottr02.local",
+            Role = UserRole.SystemAdmin, // same value as persisted — not an assignment
+        });
+
+        result.Should().NotBeNull();
+        result!.Name.Should().Be("Renamed");
+        result.Role.Should().Be(UserRole.SystemAdmin);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// <summary>Persists a user directly via the real repository and returns it.</summary>
-    private async Task<User> CreatePersistedUser(string email, string name, string password)
+    private Task<User> CreatePersistedUser(string email, string name, string password)
+        => PersistUserAsync(email, name, password, UserRole.FieldWorker);
+
+    /// <summary>
+    /// Persists a user directly via the real repository with an explicit
+    /// <paramref name="role"/> (use <c>null</c> to simulate a legacy no-role account),
+    /// bypassing the create-time matrix so tests can set up arbitrary persisted state.
+    /// </summary>
+    private async Task<User> PersistUserAsync(string email, string name, string password, UserRole? role)
     {
         using var scope = _fixture.CreateScope();
         var repo = scope.ServiceProvider
@@ -429,6 +677,7 @@ public sealed class UserServiceTests : IAsyncLifetime
 
         var entity = UserFaker.Entity(email, password);
         entity.Name = name;
+        entity.Role = role;
         return await repo.AddAsync(entity);
     }
 }

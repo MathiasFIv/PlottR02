@@ -31,7 +31,7 @@ public static class UserFaker
                 var email = f.Internet.Email();
                 return uniqueEmail ? $"{email.ToLowerInvariant()}.{f.Random.Int(1000, 9999)}" : email;
             })
-            .RuleFor(r => r.Role, f => f.PickRandom(new string?[] { "Administrator", "Agronomist", "Field Technician", null }))
+            .RuleFor(r => r.Role, f => f.PickRandom(Roles()))
             .RuleFor(r => r.Password, f => f.Internet.Password(12));
 
         // Seeds must be applied to the Faker<T> itself (via UseSeed) to be reproducible.
@@ -45,7 +45,7 @@ public static class UserFaker
         var faker = new Faker<UpdateUserRequest>(locale: "en")
             .RuleFor(r => r.Name, f => f.Name.FullName())
             .RuleFor(r => r.Email, f => f.Internet.Email())
-            .RuleFor(r => r.Role, f => f.PickRandom(new string?[] { "Administrator", "Agronomist", "Field Technician", null }));
+            .RuleFor(r => r.Role, f => f.PickRandom(Roles()));
 
         faker.UseSeed(Seed);
         return faker;
@@ -61,6 +61,17 @@ public static class UserFaker
         faker.UseSeed(Seed);
         return faker;
     }
+
+    /// <summary>
+    /// The four valid <see cref="UserRole"/> values.
+    /// </summary>
+    private static UserRole[] Roles() =>
+    [
+        UserRole.SystemAdmin,
+        UserRole.Researcher,
+        UserRole.TrialManager,
+        UserRole.FieldWorker,
+    ];
 
     /// <summary>
     /// Builds a domain <see cref="User"/> with a known <see cref="BCrypt.Net.BCrypt"/>-hashed
@@ -79,7 +90,7 @@ public static class UserFaker
             Id = Guid.NewGuid(),
             Name = faker.Name.FullName(),
             Email = email ?? faker.Internet.Email(),
-            Role = faker.PickRandom(new string?[] { "Administrator", "Agronomist", "Field Technician", null }),
+            Role = faker.PickRandom(Roles()),
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(password ?? "ValidPass123!", workFactor: 12),
         };
     }
