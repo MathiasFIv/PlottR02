@@ -3,7 +3,32 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/pwa-192x192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#059669" />
+    <!-- Anti-FOUC theme bootstrap. MUST stay classic (non-module) and inline so
+         it runs before first paint; MUST stay in sync with THEME_STORAGE_KEY
+         ('plottR-theme') in src/lib/theme.ts. Mirrors applyTheme(): sets the
+         html data-theme + color-scheme from the stored choice, else the OS. -->
+    <script>
+      (function () {
+        try {
+          var k = 'plottR-theme';
+          var t = localStorage.getItem(k);
+          if (t !== 'plottr-light' && t !== 'plottr-dark') {
+            t = window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'plottr-dark' : 'plottr-light';
+          }
+          var el = document.documentElement;
+          el.setAttribute('data-theme', t);
+          el.style.colorScheme = t === 'plottr-dark' ? 'dark' : 'light';
+        } catch (e) {}
+      })();
+    </script>
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="description" content="Field plot ratings — record by voice" />
     <title>PlottR</title>
   </head>
   <body>

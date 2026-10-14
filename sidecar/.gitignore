@@ -1,0 +1,7 @@
+# Python virtual environment (created on the machine — never tracked)
+.venv/
+venv/
+
+# Python bytecode cache
+__pycache__/
+*.pyc

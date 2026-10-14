@@ -1,8 +1,6 @@
 using System.Security.Claims;
-using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using PlottR0._2.Repository;
 using PlottR0._2.Repository.Persistence;
 using PlottR0._2.Api;
@@ -19,10 +17,6 @@ builder.Services.AddHttpContextAccessor();
 // Swagger / OpenAPI — exposes our endpoints at /swagger for interactive testing.
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
-// Bind the Excel workbook configuration (input/output paths) for the workbook-backed rating store.
-builder.Services.Configure<PlottR0._2.Repository.ExcelWorkbookOptions>(
-    builder.Configuration.GetSection(PlottR0._2.Repository.ExcelWorkbookOptions.SectionName));
 
 // Allow the Vite React dev server to call this API from a browser.
 builder.Services.AddCors(options =>
@@ -63,17 +57,13 @@ builder.Services.AddAuthentication(options =>
     // rather than on TokenValidationParameters where it was removed.
     options.MapInboundClaims = false;
 
-    options.TokenValidationParameters = new TokenValidationParameters
-    {
-        ValidateIssuer = true,
-        ValidIssuer = tokenOptions.Issuer,
-        ValidateAudience = true,
-        ValidAudience = tokenOptions.Audience,
-        ValidateLifetime = true,
-        ValidateIssuerSigningKey = true,
-        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(tokenOptions.SecretKey)),
-        ClockSkew = TimeSpan.FromMinutes(1),
-    };
+    // Built by JwtBearerConfiguration so the RoleClaimType wiring stays unit-testable
+    // (see JwtBearerConfigurationTests). RoleClaimType MUST be "role": tokens carry a
+    // literal "role" claim and MapInboundClaims is off, so [Authorize(Roles = ...)] —
+    // which uses User.IsInRole — would otherwise look for the legacy WS-* role URI and
+    // deny every caller.
+    options.TokenValidationParameters =
+        JwtBearerConfiguration.CreateTokenValidationParameters(tokenOptions);
 });
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();

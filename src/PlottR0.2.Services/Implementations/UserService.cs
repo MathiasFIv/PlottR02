@@ -13,12 +13,13 @@ using PlottR0._2.Services.Abstractions;
 
 namespace PlottR0._2.Services.Implementations;
 
-/// <summary>
-/// Concrete <see cref="IUserService"/> backed by <see cref="IUserRepository"/>.
-/// Talks only to the repository contract (never EF/Repository classes) and exposes
-/// structural reads plus the User DTO workflows.
-/// </summary>
-public class UserService : IUserService
+    /// <summary>
+    /// Concrete <see cref="IUserService"/> backed by <see cref="IUserRepository"/>.
+    /// Talks only to the repository contract (never EF/Repository classes) and exposes
+    /// structural reads plus the User DTO workflows. Enforces the account creation/sharing
+    /// matrix and the "no anonymous accounts" policy.
+    /// </summary>
+    public class UserService : IUserService
 {
     /// <summary>
     /// BCrypt cost factor. 12 is the current recommended baseline; it yields a
@@ -58,10 +59,72 @@ public class UserService : IUserService
     public async Task<IReadOnlyList<User>> GetAllAsync(CancellationToken ct = default)
         => await _userRepository.GetAllAsync(null, null, ct);
 
+    /// <summary>
+    /// The account-creation/assignment matrix: the roles each actor role may grant.
+    /// A missing entry or an empty array means the actor may not create or assign roles.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<UserRole, UserRole[]> AssignableRolesByActor =
+        new Dictionary<UserRole, UserRole[]>
+        {
+            [UserRole.SystemAdmin] = [UserRole.SystemAdmin, UserRole.Researcher, UserRole.TrialManager, UserRole.FieldWorker],
+            [UserRole.Researcher] = [UserRole.TrialManager, UserRole.FieldWorker],
+            [UserRole.TrialManager] = [UserRole.FieldWorker],
+            [UserRole.FieldWorker] = [],
+        };
+
+    /// <summary>
+    /// Resolves the roles the current actor may assign, or throws when the actor is
+    /// anonymous/role-less or has no assignable roles (e.g. a <see cref="UserRole.FieldWorker"/>).
+    /// Shared by <see cref="CreateAsync"/> and <see cref="UpdateAsync"/> so both enforce
+    /// exactly the same matrix.
+    /// </summary>
+    /// <exception cref="ForbiddenAccessException">When the actor may not create/assign users.</exception>
+    private UserRole[] ResolveAssignableRoles()
+    {
+        var actorRole = _currentUser.Role;
+        if (actorRole is null
+            || !AssignableRolesByActor.TryGetValue(actorRole.Value, out var assignable)
+            || assignable.Length == 0)
+        {
+            throw new ForbiddenAccessException("This account is not allowed to create users.");
+        }
+
+        return assignable;
+    }
+
+    /// <summary>
+    /// Throws when <paramref name="requestedRole"/> is not one the current actor may assign.
+    /// </summary>
+    /// <param name="requestedRole">The role being granted or changed to.</param>
+    /// <param name="assignableRoles">The roles resolved by <see cref="ResolveAssignableRoles"/>.</param>
+    /// <exception cref="ForbiddenAccessException">When the requested role is outside the actor's matrix row.</exception>
+    private void EnsureRoleIsAssignable(UserRole requestedRole, UserRole[] assignableRoles)
+    {
+        if (!assignableRoles.Contains(requestedRole))
+        {
+            throw new ForbiddenAccessException(
+                $"Cannot assign role '{requestedRole}' as a '{_currentUser.Role}' account.");
+        }
+    }
+
     /// <inheritdoc />
     public async Task<UserResponse> CreateAsync(CreateUserRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // No anonymous/no-role actor may create users, and a creator with no assignable
+        // roles (FieldWorker) has nothing it is allowed to grant.
+        var assignableRoles = ResolveAssignableRoles();
+
+        // A role is mandatory — anonymous/no-role accounts are no longer permitted anywhere.
+        if (request.Role is null)
+        {
+            throw new ArgumentException(
+                "Role is required — anonymous/no-role accounts are no longer permitted.",
+                nameof(request));
+        }
+
+        EnsureRoleIsAssignable(request.Role.Value, assignableRoles);
 
         ValidatePassword(request.Password);
         ValidateEmail(request.Email);
@@ -171,6 +234,27 @@ public class UserService : IUserService
         if (existing is null)
         {
             return null;
+        }
+
+        if (request.Role is null)
+        {
+            // Nullifying the role would clear it. A legacy no-role user may keep its
+            // role-less state (name/email edits only), but a real role may never be cleared.
+            if (existing.Role is not null)
+            {
+                throw new ForbiddenAccessException(
+                    "Clearing a user's role is not permitted — every account must keep a role.");
+            }
+        }
+        else if (request.Role.Value == existing.Role)
+        {
+            // Echoing the unchanged role is not an assignment — no matrix check needed.
+        }
+        else
+        {
+            // A genuine role change is bound by the same matrix as account creation.
+            var assignableRoles = ResolveAssignableRoles();
+            EnsureRoleIsAssignable(request.Role.Value, assignableRoles);
         }
 
         existing.UpdatedAt = DateTime.UtcNow;

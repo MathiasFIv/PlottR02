@@ -8,6 +8,12 @@
 .vs/
 .vscode/
 *.Code-workspace
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+[Pp]ublish/
+artifacts/
 
 # ── IDE ───────────────────────────────────────────────
 .idea/
@@ -37,6 +43,8 @@ Thumbs.db
 node_modules/
 dist/
 dist-ssr/
+dev-dist/
+.vite/
 
 # ── Excel workbooks (semi-confidential trial data — never tracked) ─
 *.xlsx
@@ -50,3 +58,20 @@ dist-ssr/
 
 # ── Code coverage (generated HTML/Cobertura — local-only, never commit) ──
 coverage/
+
+# ── Python (STT sidecar & tooling) ────────────────────
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# ── Runtime work data (voice recordings, workbooks — generated at run time) ──
+Service/
+
+# ── Logs & scratch files ──────────────────────────────
+logs/
+*.log
+*.bak
+
+# ── Local dev tools (machine-specific — keep out of the repo) ──
+scripts/dev/android-preview.ps1
