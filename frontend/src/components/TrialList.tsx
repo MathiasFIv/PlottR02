@@ -1,6 +1,20 @@
 import { Link } from 'react-router-dom';
 import type { TrialSummary } from '../types';
 
+/**
+ * Trial status → badge. A newly created trial renders NO badge at all — it
+ * previously showed a noisy blue "Created" chip on every row. `InProgress`
+ * shows a yellow "In Progress" chip as soon as ratings are being written;
+ * `Completed` shows a green "Done" chip once the document is fully plotted.
+ */
+const TRIAL_STATUS_BADGES: Record<
+  string,
+  { label: string; tone: string } | undefined
+> = {
+  InProgress: { label: 'In Progress', tone: 'badge-warning' },
+  Completed: { label: 'Done', tone: 'badge-success' },
+};
+
 type TrialListProps = {
   trials: TrialSummary[];
   loading: boolean;
@@ -50,16 +64,22 @@ export function TrialList({
 
   return (
     <ul className="list mt-4">
-      {trials.map((trial) => (
+      {trials.map((trial) => {
+        const statusBadge = trial.status
+          ? TRIAL_STATUS_BADGES[trial.status]
+          : undefined;
+        return (
         <li key={trial.trialId} className="list-row">
           <div>
             <p className="font-medium text-base-content">
               {trial.externalId || trial.fileName}
             </p>
             <div className="flex items-center flex-wrap gap-2.5 mt-0.5">
-              <span className="badge badge-info badge-sm text-xs">
-                {trial.status}
-              </span>
+              {statusBadge && (
+                <span className={`badge ${statusBadge.tone} badge-sm text-xs`}>
+                  {statusBadge.label}
+                </span>
+              )}
               {showAssignedBadge && trial.isAssignedToCurrentUser && (
                 <span className="badge badge-accent badge-sm text-xs">
                   Assigned to you
@@ -103,7 +123,8 @@ export function TrialList({
             </div>
           </div>
         </li>
-      ))}
+        );
+      })}
     </ul>
   );
 }

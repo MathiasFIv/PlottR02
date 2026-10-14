@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Button } from './Button';
 import { api } from '../lib/api';
+import { useCloseOnEscape } from '../hooks/useCloseOnEscape';
 import { assignableCrew, roleLabel } from '../types';
 import type { TrialSummary, User } from '../types';
 
@@ -31,6 +32,8 @@ export function AssignCrewModal({ trial, onSaved, onClose }: AssignCrewModalProp
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  useCloseOnEscape(onClose);
 
   useEffect(() => {
     let cancelled = false;

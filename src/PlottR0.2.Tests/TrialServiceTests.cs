@@ -1160,6 +1160,9 @@ public sealed class TrialServiceTests : IAsyncLifetime
 
         public Task<bool> IsAssignedAsync(Guid trialId, Guid userId, CancellationToken ct = default)
             => Task.FromResult(false);
+
+        public Task UpdateStatusAsync(Guid trialId, string status, CancellationToken ct = default)
+            => throw new NotSupportedException();
     }
 
     /// <summary>

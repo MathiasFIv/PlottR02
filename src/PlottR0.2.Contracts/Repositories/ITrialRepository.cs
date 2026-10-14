@@ -42,4 +42,16 @@ public interface ITrialRepository : IRepository<Trial, Guid>
     /// <param name="userId">The user to check.</param>
     /// <param name="ct">Cancellation token.</param>
     Task<bool> IsAssignedAsync(Guid trialId, Guid userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Advances ONLY the <see cref="Trial.Status"/> of the trial identified by
+    /// <paramref name="trialId"/> (plus its audit timestamp) in a single round-trip —
+    /// the dashboard badge lifecycle (<see cref="TrialStatus"/>: Created → InProgress →
+    /// Completed) persisted by the sync pipeline after a successful workbook write.
+    /// </summary>
+    /// <param name="trialId">The trial whose status is updated.</param>
+    /// <param name="status">The new status value (see <see cref="TrialStatus"/>).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="KeyNotFoundException">No trial with <paramref name="trialId"/> exists.</exception>
+    Task UpdateStatusAsync(Guid trialId, string status, CancellationToken ct = default);
 }

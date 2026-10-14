@@ -378,6 +378,15 @@ public sealed class RecordingSyncService : IRecordingSyncService
                     values,
                     subsampleSet,
                     scanForFreeCells: true);
+
+                // Trial status lifecycle (dashboard badge): a policy write that actually
+                // LANDED (non-null with written cells) advances the trial. The recompute
+                // re-reads the copy this write just exported — the same workbook the sheet
+                // endpoint serves — so the status reflects exactly what the UI shows.
+                if (policy is not null && policy.WrittenCells.Count > 0)
+                {
+                    await RecomputeTrialStatusAsync(trial, outputDirectory, workbookPath, ct);
+                }
             }
             catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
             {
@@ -578,6 +587,14 @@ public sealed class RecordingSyncService : IRecordingSyncService
                     new[] { cValue },
                     new HashSet<int> { confirmedSubsample },
                     scanForFreeCells: true);
+
+                // Trial status lifecycle (dashboard badge) — same rule as the voice sync: a
+                // correction that actually wrote values advances the trial; the recompute
+                // re-reads the copy this write just exported.
+                if (policy is not null && policy.WrittenCells.Count > 0)
+                {
+                    await RecomputeTrialStatusAsync(trial, outputDirectory, workbookPath, ct);
+                }
             }
             catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
             {
@@ -784,6 +801,92 @@ public sealed class RecordingSyncService : IRecordingSyncService
         return policy.SkippedPresentCells.Count > 0
             ? VoiceRecordingStatus.SkippedPresent
             : VoiceRecordingStatus.Flagged;
+    }
+
+    /// <summary>
+    /// Recomputes the trial's status after a SUCCESSFUL workbook write (one that actually
+    /// wrote values — this is only invoked when <c>policy.WrittenCells.Count &gt; 0</c>) and
+    /// persists the forward-only lifecycle transition (design.md §3, dashboard badge):
+    /// <list type="bullet">
+    /// <item><description><see cref="TrialStatus.Created"/> → <see cref="TrialStatus.InProgress"/> while the rating
+    /// region is only partially plotted (some key rows still carry empty cells);</description></item>
+    /// <item><description>→ <see cref="TrialStatus.Completed"/> as soon as EVERY key row carries ALL nine
+    /// trait values (null = empty; 0 is a real value per design.md Rule 2).</description></item>
+    /// </list>
+    /// The region is re-read from the output copy the write just exported — the SAME workbook
+    /// the dashboard sheet endpoint resolves (see <see cref="ITrialWorkbookStore.ResolveExport"/>)
+    /// — never from the write's INPUT, which is stale by definition. The recompute is
+    /// best-effort bookkeeping: an empty region is NOT progress (Created stays Created until
+    /// a real value lands) and a region-read failure leaves the current status untouched
+    /// rather than failing an otherwise successful sync. An already-Completed trial never
+    /// regresses, even if the region is no longer fully plotted.
+    /// </summary>
+    private async Task RecomputeTrialStatusAsync(
+        Trial trial,
+        string outputDirectory,
+        string workbookPath,
+        CancellationToken ct)
+    {
+        var writtenPath = ResolveJustWrittenOutputCopy(outputDirectory, workbookPath);
+
+        SheetRegion? region;
+        try
+        {
+            region = writtenPath is null ? null : _ratings.ReadSheetRegion(writtenPath);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
+        {
+            _logger.LogWarning(ex,
+                "Could not re-read workbook '{Path}' to recompute trial {TrialId} status; leaving '{Status}' unchanged.",
+                writtenPath, trial.Id, trial.Status);
+            return;
+        }
+
+        // Fully plotted = a non-empty region whose EVERY key row carries all trait values.
+        var regionUsable = region is not null && region.Columns.Count > 0 && region.Rows.Count > 0;
+        var fullyPlotted = regionUsable
+            && region!.Rows.All(row =>
+                row.Values.Count == region.Columns.Count
+                && row.Values.All(value => value.HasValue));
+
+        var newStatus = fullyPlotted
+            ? TrialStatus.Completed
+            : regionUsable && trial.Status == TrialStatus.Created
+                ? TrialStatus.InProgress
+                : trial.Status;
+
+        // Forward-only: persist ONLY a real transition (never a regression, never a no-op).
+        if (newStatus != trial.Status)
+        {
+            trial.Status = newStatus;
+            await _trials.UpdateStatusAsync(trial.Id, newStatus, ct);
+            _logger.LogInformation(
+                "Trial {TrialId} status advanced to {Status} after a successful workbook write.",
+                trial.Id, newStatus);
+        }
+    }
+
+    /// <summary>
+    /// Resolves the absolute path of the output copy the JUST-FINISHED policy write produced:
+    /// the only <c>*.xlsx</c> in <paramref name="outputDirectory"/> whose name is the current
+    /// input file's base name plus <c>"_out_"</c>. Successive syncs chain (each output becomes
+    /// the next input), so the current input's base name embeds every previous copy's stamp
+    /// and the pattern matches at most ONE file — THIS write's copy. Same-second timestamp
+    /// ties cannot select a neighbouring copy, unlike
+    /// <see cref="TryGetNewestOutputCopy(System.String)"/>, which ranks by the second-granularity
+    /// file-name stamp. Returns <see langword="null"/> when no output copy exists (nothing was
+    /// written).
+    /// </summary>
+    private static string? ResolveJustWrittenOutputCopy(string outputDirectory, string workbookPath)
+    {
+        if (!Directory.Exists(outputDirectory))
+        {
+            return null;
+        }
+
+        var prefix = $"{Path.GetFileNameWithoutExtension(workbookPath)}_out_";
+        return Directory.GetFiles(outputDirectory, "*.xlsx")
+            .FirstOrDefault(file => Path.GetFileName(file).StartsWith(prefix, StringComparison.Ordinal));
     }
 
     /// <summary>

@@ -910,6 +910,168 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
         await AssertStoredAsync(clientId2, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
     }
 
+    // ── Trial status lifecycle (dashboard badge) ─────────────────────────────
+
+    [Fact]
+    public async Task SyncAsync_PartialFirstWrite_AdvancesTrialStatusToInProgress()
+    {
+        // Arrange — pristine workbook (nothing pre-filled): a single confirmed voice sync
+        // writes one value into row 22, leaving 143 of the 144 region cells empty, so the
+        // region is only PARTIALLY plotted. The dashboard badge must advance to InProgress.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 value 7" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: 101, subsample: 1, value: 7));
+
+        // Assert — the write landed AND the trial badge advanced Created → InProgress
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.NeedsReview.Should().BeFalse();
+        result.WrittenCells.Should().ContainSingle();
+        (await GetTrialStatusAsync(trialId)).Should().Be(TrialStatus.InProgress);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Written));
+    }
+
+    [Fact]
+    public async Task SyncAsync_LaterWriteFillsLastCell_CompletesTrial()
+    {
+        // Arrange — a workbook pre-filled to the LAST cell: all 144 region cells carry a
+        // value except (101,1,1) and (101,1,2). The first sync writes C22 (still incomplete
+        // → InProgress); the second chained sync appends D22, which fills the FINAL empty
+        // cell — every key row now carries all nine trait values → Completed.
+        var prefilled = new Dictionary<(int plot, int subsample, int traitOrdinal), int>();
+        foreach (var plot in RatingWorkbookFactory.Plots)
+        {
+            foreach (var subsample in RatingWorkbookFactory.Subsamples)
+            {
+                for (var trait = 1; trait <= 9; trait++)
+                {
+                    prefilled[(plot, subsample, trait)] = 1;
+                }
+            }
+        }
+        prefilled.Remove((101, 1, 1));
+        prefilled.Remove((101, 1, 2));
+
+        var trialId = await CreateTrialAsync(prefilled);
+        var clientId1 = Guid.NewGuid().ToString();
+        var clientId2 = Guid.NewGuid().ToString();
+        // One scripted transcription per sync (the fake throws on any extra call).
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 value 5" },
+            new TranscriptionResult { Text = "plot 101 subsample 1 value 6" });
+
+        SyncVoiceRecordingResult first;
+        using (var scope = _fixture.CreateScope())
+        {
+            first = await CreateService(scope, fake).SyncAsync(
+                AudioBytes(), "clip.webm", Command(trialId, clientId1, plot: 101, subsample: 1, value: 5));
+        }
+
+        // Act — first write: part of the region still empty → InProgress, not yet Completed
+        first.Status.Should().Be(VoiceRecordingStatus.Written);
+        first.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("C22");
+        (await GetTrialStatusAsync(trialId)).Should().Be(TrialStatus.InProgress);
+
+        // The second sync MUST use a DIFFERENT client id — the idempotency gate would
+        // otherwise answer a Replay without any workbook work.
+        SyncVoiceRecordingResult second;
+        using (var scope = _fixture.CreateScope())
+        {
+            second = await CreateService(scope, fake).SyncAsync(
+                AudioBytes(), "clip.webm", Command(trialId, clientId2, plot: 101, subsample: 1, value: 6));
+        }
+
+        // Assert — D22 appended into the last empty cell of the region → Completed
+        second.Status.Should().Be(VoiceRecordingStatus.Written);
+        second.Replayed.Should().BeFalse();
+        second.WrittenCells.Select(c => NormalizeAddress(c.CellAddress)).Should().Equal("D22");
+        second.WrittenCells[0].Value.Should().Be(6);
+        (await GetTrialStatusAsync(trialId)).Should().Be(TrialStatus.Completed);
+
+        // The newest copy physically holds BOTH writes (C22 from sync 1, D22 from sync 2)
+        var newest = OutputCopies(trialId).OrderByDescending(File.GetLastWriteTimeUtc).First();
+        ReadCell(newest, plot: 101, subsample: 1, traitOrdinal: 1).Should().Be(5);
+        ReadCell(newest, plot: 101, subsample: 1, traitOrdinal: 2).Should().Be(6);
+    }
+
+    [Fact]
+    public async Task SyncAsync_WriteAfterCompletion_StaysCompleted()
+    {
+        // Arrange — a workbook missing TWO cells ((101,1,1) and (102,1,1)). The trial is
+        // forced to Completed (a finished badge) BEFORE the sync: a further write to C22
+        // leaves (102,1,1) empty, so the region is NOT fully plotted anymore — the
+        // forward-only lifecycle must NOT regress the badge back to InProgress.
+        var prefilled = new Dictionary<(int plot, int subsample, int traitOrdinal), int>();
+        foreach (var plot in RatingWorkbookFactory.Plots)
+        {
+            foreach (var subsample in RatingWorkbookFactory.Subsamples)
+            {
+                for (var trait = 1; trait <= 9; trait++)
+                {
+                    prefilled[(plot, subsample, trait)] = 1;
+                }
+            }
+        }
+        prefilled.Remove((101, 1, 1));
+        prefilled.Remove((102, 1, 1));
+
+        var trialId = await CreateTrialAsync(prefilled);
+        using (var setupScope = _fixture.CreateScope())
+        {
+            await setupScope.ServiceProvider.GetRequiredService<ITrialRepository>()
+                .UpdateStatusAsync(trialId, TrialStatus.Completed);
+        }
+
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 value 5" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act — a real write lands in C22 while the region stays incomplete
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: 101, subsample: 1, value: 5));
+
+        // Assert — the write succeeded, but the Completed badge is never regressed
+        result.Status.Should().Be(VoiceRecordingStatus.Written);
+        result.WrittenCells.Should().ContainSingle();
+        (await GetTrialStatusAsync(trialId)).Should().Be(TrialStatus.Completed);
+    }
+
+    [Fact]
+    public async Task SyncAsync_NoWriteStaysFlagged_LeavesTrialStatusUntouched()
+    {
+        // Arrange — pristine workbook; the confirmed value 99 is OUT OF RANGE (gate A), so
+        // the recording is flagged and NOTHING is written → no policy write exists to advance
+        // the trial status from Created.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var fake = new FakeTranscriptionService(
+            new TranscriptionResult { Text = "plot 101 subsample 1 value 99" });
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, fake);
+
+        // Act
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: 101, subsample: 1, value: 99));
+
+        // Assert — flagged, nothing written, badge still Created (no no-op write may flip it)
+        result.Status.Should().Be(VoiceRecordingStatus.Flagged);
+        result.NeedsReview.Should().BeTrue();
+        result.WrittenCells.Should().BeEmpty();
+        OutputCopies(trialId).Should().BeEmpty();
+        (await GetTrialStatusAsync(trialId)).Should().Be(TrialStatus.Created);
+
+        await AssertStoredAsync(clientId, row => row.Status.Should().Be(VoiceRecordingStatus.Flagged));
+    }
+
     [Fact]
     public async Task SyncAsync_MultiValue_OneOutOfRangeValue_FlagsWithoutWriting()
     {
@@ -2599,6 +2761,14 @@ await AssertStoredAsync(clientId, row =>
         var row = await repo.GetByClientRecordingIdAsync(clientId);
         row.Should().NotBeNull();
         assert(row!);
+    }
+
+    /// <summary>Re-reads the persisted Trial through a fresh scope and returns its status.</summary>
+    private async Task<string?> GetTrialStatusAsync(Guid trialId)
+    {
+        using var scope = _fixture.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<ITrialRepository>();
+        return (await repo.GetByIdAsync(trialId))?.Status;
     }
 
     /// <summary>Asserts no VoiceRecording row exists for the given PWA idempotency key.</summary>

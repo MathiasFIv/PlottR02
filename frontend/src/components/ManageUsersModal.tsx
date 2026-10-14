@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { Button } from './Button';
 import { FormField } from './FormField';
 import { useUsers } from '../hooks/useUsers';
+import { useCloseOnEscape } from '../hooks/useCloseOnEscape';
 import { editableRolesFor } from '../lib/userRoles';
 import { roleLabel } from '../types';
 import type { User, UserRole } from '../types';
@@ -14,12 +15,13 @@ type ManageUsersModalProps = {
 };
 
 /**
- * Manager-only "Manage users" dialog. Reads the already-fetched list from
- * `usersAtom` (via `useUsers` with `fetchOnMount: false` — the dashboard panel
- * owns the GET) and edits/deletes in place: each row can expand into an inline
- * edit form (PUT /api/Users/{id}, no password) or a two-step inline delete
- * confirm (DELETE /api/Users/{id}). Both mutate the atom on success, so the
- * list behind the dialog stays in sync without a refetch.
+ * Manager-only "Manage users" dialog. Fetches the user list on open
+ * (`useUsers` with `fetchOnMount: true` — the dashboard no longer hosts a
+ * Users panel, so the dialog owns the GET) and edits/deletes in place: each
+ * row can expand into an inline edit form (PUT /api/Users/{id}, no password)
+ * or a two-step inline delete confirm (DELETE /api/Users/{id}). Both mutate
+ * the atom on success, so the list behind the dialog stays in sync without a
+ * refetch.
  *
  * The role `<select>` uses `editableRolesFor`: a row whose current role the
  * actor cannot assign still lists it (echoed, labelled "(current)") so an
@@ -28,9 +30,8 @@ type ManageUsersModalProps = {
  * LOCAL `operationError`, never the shared list `errorAtom`.
  */
 export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) {
-  const { users, error, operationError, updateUser, deleteUser } = useUsers({
-    fetchOnMount: false,
-  });
+  const { users, loading, error, operationError, updateUser, deleteUser } =
+    useUsers({ fetchOnMount: true });
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
@@ -45,6 +46,8 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
 
   const [attempted, setAttempted] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+
+  useCloseOnEscape(onClose);
 
   function startEdit(user: User) {
     setStatus(null);
@@ -111,7 +114,9 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
         </h2>
 
         {users.length === 0 ? (
-          error ? (
+          loading ? (
+            <p className="text-sm text-base-content/70">Loading users…</p>
+          ) : error ? (
             <p className="text-sm text-error">{error}</p>
           ) : (
             <p className="text-sm text-base-content/70">No users found yet.</p>
@@ -127,7 +132,7 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
                 <li key={user.id} className="list-row">
                   {editingId === user.id ? (
                     <form
-                      className="flex flex-col w-full"
+                      className="flex flex-col w-full list-col-grow"
                       onSubmit={(e) => void handleSaveEdit(e, user)}
                     >
                       <FormField
@@ -209,11 +214,11 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
                       </div>
                     </form>
                   ) : confirmingDeleteId === user.id ? (
-                    <div className="flex w-full items-center justify-between gap-3">
-                      <p className="text-sm text-base-content">
+                    <>
+                      <p className="text-sm text-base-content list-col-grow">
                         Delete <span className="font-medium">{user.name}</span>?
                       </p>
-                      <div className="flex gap-2 shrink-0">
+                      <div className="flex gap-2 shrink-0 self-center">
                         <button
                           type="button"
                           className="btn btn-sm"
@@ -231,10 +236,10 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
                           {deletingId === user.id ? 'Deleting…' : 'Delete'}
                         </button>
                       </div>
-                    </div>
+                    </>
                   ) : (
-                    <div className="flex w-full items-start justify-between gap-3">
-                      <div>
+                    <>
+                      <div className="list-col-grow">
                         <p className="font-medium text-base-content">
                           {user.name}
                         </p>
@@ -249,7 +254,7 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
                           </p>
                         )}
                       </div>
-                      <div className="flex gap-2 shrink-0">
+                      <div className="flex gap-2 shrink-0 self-center">
                         <button
                           type="button"
                           className="btn btn-sm"
@@ -269,7 +274,7 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
                           Delete
                         </button>
                       </div>
-                    </div>
+                    </>
                   )}
                 </li>
               );

@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { Button } from './Button';
 import { FormField } from './FormField';
 import { useUsers } from '../hooks/useUsers';
+import { useCloseOnEscape } from '../hooks/useCloseOnEscape';
 import { assignableRoles, roleLabel } from '../types';
 import type { UserRole } from '../types';
 
@@ -35,6 +36,8 @@ export function CreateUserModal({
   const [validationError, setValidationError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [attempted, setAttempted] = useState(false);
+
+  useCloseOnEscape(onClose);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();

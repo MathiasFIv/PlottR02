@@ -133,4 +133,27 @@ public sealed class TrialRepository : ITrialRepository
         return await _db.Assignments
             .AnyAsync(a => a.TrialId == trialId && a.UserId == userId, ct);
     }
+
+    /// <inheritdoc />
+    public async Task UpdateStatusAsync(
+        Guid trialId,
+        string status,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(status);
+
+        // Single round-trip: set ONLY the status column (+ audit timestamp) without loading
+        // the entity — the sync pipeline persists the dashboard badge lifecycle, mirroring
+        // the ExecuteUpdateAsync pattern used by RefreshTokenRepository.
+        var updated = await _db.Trials
+            .Where(t => t.Id == trialId)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(t => t.Status, status)
+                    .SetProperty(t => t.UpdatedAt, DateTime.UtcNow),
+                ct);
+
+        if (updated == 0)
+            throw new KeyNotFoundException($"Trial '{trialId}' was not found.");
+    }
 }

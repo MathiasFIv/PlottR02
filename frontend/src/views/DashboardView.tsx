@@ -6,20 +6,22 @@ import { Button } from '../components/Button';
 import { RecordLinkPanel } from '../components/RecordLinkPanel';
 import { TopBar } from '../components/TopBar';
 import { TrialList } from '../components/TrialList';
-import { UsersPanel } from '../components/UserManagementSection';
 import { api } from '../lib/api';
 import { currentUserAtom } from '../store/atoms';
 import { useAuth } from '../hooks/useAuth';
 import { useTrials } from '../hooks/useTrials';
-import { canCreateUsers, canCreateTrials } from '../types';
+import { canCreateTrials } from '../types';
 import type { TrialSummary } from '../types';
 
 /**
- * Logged-in dashboard: three panels in a responsive 3-column grid capped at
- * 1280px — the record launcher (FIRST), the trials list, and the users panel
- * (any account creator; the list inside it is managers-only). Every panel is
- * the same height on desktop, and each long list (trials, users) scrolls
- * inside its own panel so the page itself never grows unwieldy.
+ * Logged-in dashboard: two even panels in a responsive grid — the record
+ * launcher (FIRST) and the trials list. The panels scale to the available
+ * screen but are clamped (min 28rem / max 48rem), so the grid stays even at
+ * any viewport; the long trials list scrolls inside its own panel, so the
+ * page itself never grows unwieldy.
+ *
+ * User management no longer lives on the dashboard: "Create user" and
+ * "Manage users" moved into the shared top bar (see TopBar).
  *
  * The trials panel is read-only for every role. Creators (system admins,
  * researchers, trial managers) see a single "Upload Trial" button UNDER the
@@ -35,9 +37,6 @@ export function DashboardView() {
   const currentUser = useAtomValue(currentUserAtom);
   const navigate = useNavigate();
   const { logout } = useAuth();
-  // Any role allowed to create accounts sees the section; the list within it
-  // remains managers-only.
-  const showUserManagement = canCreateUsers(currentUser?.role ?? null);
   // The trials list is read-only for every role; only creators see the
   // upload button that POSTs to /api/Trials.
   const showTrialUpload = canCreateTrials(currentUser?.role ?? null);
@@ -106,11 +105,11 @@ export function DashboardView() {
     <div>
       <TopBar onLogout={handleLogout} />
 
-      <main className="mx-auto grid max-w-[1280px] gap-6 px-6 py-8 lg:grid-cols-3">
+      <main className="mx-auto grid w-full max-w-[1440px] gap-6 px-6 py-8 grid-cols-1 md:grid-cols-2">
         {/* The record launcher is always the FIRST panel. */}
-        <RecordLinkPanel className="min-w-0 lg:h-[calc(100vh-9rem)]" />
+        <RecordLinkPanel className="min-w-0 overflow-hidden md:h-[clamp(28rem,calc(100vh_-_9rem),48rem)]" />
 
-        <section className="card card-border bg-base-100 shadow-sm p-6 min-w-0 flex flex-col lg:h-[calc(100vh-9rem)] lg:overflow-hidden">
+        <section className="card card-border bg-base-100 shadow-sm p-6 min-w-0 flex flex-col overflow-hidden md:h-[clamp(28rem,calc(100vh_-_9rem),48rem)]">
           <h2 className="text-lg font-semibold text-base-content mb-3">
             Trials
           </h2>
@@ -179,13 +178,6 @@ export function DashboardView() {
             </p>
           )}
         </section>
-
-        {showUserManagement && (
-          <UsersPanel
-            actorRole={currentUser?.role ?? null}
-            className="min-w-0 lg:h-[calc(100vh-9rem)]"
-          />
-        )}
       </main>
 
       {assigningTrial && (
