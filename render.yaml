@@ -10,7 +10,6 @@ services:
     dockerContext: .
     healthCheckPath: /health
     autoDeployTrigger: commit
-    maxShutdownDelaySeconds: 30
     # NOTE: no `disk:` block — persistent disks are unavailable on the free plan.
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
