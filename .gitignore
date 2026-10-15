@@ -1,10 +1,11 @@
-# ── .NET ──────────────────────────────────────────────
+# ── .NET build output & tooling ───────────────────────
 [Bb]in/
 [Oo]bj/
+[Pp]ublish/
+artifacts/
 *.user
 *.suo
 *.userprefs
-*.local
 .vs/
 .vscode/
 *.Code-workspace
@@ -12,39 +13,61 @@ TestResults/
 *.trx
 *.coverage
 *.coveragexml
-[Pp]ublish/
-artifacts/
 
-# ── IDE ───────────────────────────────────────────────
+# ── IDE / editors ─────────────────────────────────────
 .idea/
+*.iml
 *.swp
 *.swo
+.history/
+*.orig
+*.rej
 
 # ── OS ────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# ── Env / secrets (keep committed .env, ignore local overrides) ─
+# ── Env / secrets (commit *.example templates only) ───
+# Ignore every real env file, re-include checked-in templates.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!.env.*.example
 
 # ── ASP.NET dev server / launch profiles ──────────────
 **/Properties/launchSettings.json
 
-# ── User secrets ──────────────────────────────────────
+# ── User secrets / local overrides ────────────────────
 **/secrets.json
 **/.user-secrets*
+
+# App configuration & secrets — commit the .example template ONLY.
+**/appsettings.json
+**/appsettings.*.json
+!**/appsettings.example.json
+*.local
+**/*.local.json
+
+# ── Certificates & private keys (never commit) ────────
+*.pfx
+*.p12
+*.pem
+*.key
+*.crt
+*.der
 
 # ── Markdown (all docs/notes omitted per user instruction) ─
 *.md
 
-# ── Frontend (node_modules/dist handled here too) ─────
+# ── Frontend build output / caches ────────────────────
 node_modules/
 dist/
 dist-ssr/
 dev-dist/
 .vite/
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
 
 # ── Excel workbooks (semi-confidential trial data — never tracked) ─
 *.xlsx
@@ -52,26 +75,38 @@ dev-dist/
 *.xlsb
 *.xls
 
-# App configuration & secrets — commit .example templates only
-**/appsettings.json
-**/appsettings.*.json
-
-# ── Code coverage (generated HTML/Cobertura — local-only, never commit) ──
+# ── Code coverage (generated HTML/Cobertura — local-only) ──
 coverage/
+*.lcov
 
 # ── Python (STT sidecar & tooling) ────────────────────
 .venv/
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+*.egg-info/
+.ipynb_checkpoints/
 
-# ── Runtime work data (voice recordings, workbooks — generated at run time) ──
+# ── Runtime work data (voice recordings, workbooks — generated) ──
 Service/
 
-# ── Logs & scratch files ──────────────────────────────
+# ── Logs, scratch files & local databases ─────────────
 logs/
 *.log
 *.bak
+*.tmp
+*.temp
+*.db
+*.sqlite
+*.sqlite3
 
 # ── Local dev tools (machine-specific — keep out of the repo) ──
 scripts/dev/android-preview.ps1
+.neon
+package-lock.json

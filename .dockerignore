@@ -1,0 +1,15 @@
+**/bin
+**/obj
+**/node_modules
+**/dist
+**/.git
+**/*.md
+artifacts/
+coverage/
+Service/
+**/*.xlsx
+**/.env*
+.venv/
+sidecar/
+frontend/
+AgentDocs/

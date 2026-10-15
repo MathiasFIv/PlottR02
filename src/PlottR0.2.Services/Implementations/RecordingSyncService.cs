@@ -1,4 +1,3 @@
-using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PlottR0._2.Contracts;
@@ -55,6 +54,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
     private readonly ITranscriptionService _transcriptionService;
     private readonly ITrialRepository _trials;
     private readonly IRatingRepository _ratings;
+    private readonly ITrialWorkbookStore _trialWorkbooks;
     private readonly ICurrentUser _currentUser;
     private readonly ILogger<RecordingSyncService> _logger;
 
@@ -92,6 +92,11 @@ public sealed class RecordingSyncService : IRecordingSyncService
     /// <param name="transcriptionService">Speech-to-text sidecar gateway.</param>
     /// <param name="trials">Trial repository used for the trial gate and workbook path.</param>
     /// <param name="ratings">Workbook-backed rating repository performing the policy write.</param>
+    /// <param name="trialWorkbooks">
+    /// Workbook store resolving the trial's read source (newest accumulated output copy or the
+    /// pristine source) and exposing the trial's working directory; also rehydrates a cold
+    /// local cache from durable storage and persists written artifacts after a successful sync.
+    /// </param>
     /// <param name="currentUser">
     /// The acting identity, used for the per-trial access gate: a field worker may only sync
     /// to (or correct) trials they are assigned to.
@@ -103,6 +108,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         ITranscriptionService transcriptionService,
         ITrialRepository trials,
         IRatingRepository ratings,
+        ITrialWorkbookStore trialWorkbooks,
         ICurrentUser currentUser,
         ILogger<RecordingSyncService> logger)
     {
@@ -111,6 +117,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         _transcriptionService = transcriptionService;
         _trials = trials;
         _ratings = ratings;
+        _trialWorkbooks = trialWorkbooks;
         _currentUser = currentUser;
         _logger = logger;
     }
@@ -361,17 +368,21 @@ public sealed class RecordingSyncService : IRecordingSyncService
         {
             try
             {
-                var serviceDir = ResolveServiceDirectory();
-                var outputDirectory = Path.Combine(serviceDir, "Working", trial.Id.ToString());
+                var outputDirectory = _trialWorkbooks.GetWorkingDirectory(trial.Id);
 
                 // Successive syncs chain the read source: the newest output copy (if any) is
-                // the input, so a later recording sees cells written by an earlier one. Without
-                // a copy yet, the pristine source workbook is used.
-                var workbookPath = TryGetNewestOutputCopy(outputDirectory)
-                    ?? Path.GetFullPath(Path.Combine(serviceDir, trial.SourceWorkbookPath ?? string.Empty));
+                // the input, so a later recording sees cells written by an earlier one; the
+                // pristine source workbook is the fallback. ResolveExportAsync rehydrates a cold
+                // local cache from durable storage first, so a redeployed instance still sees the
+                // accumulated state. A null result (nothing on disk and nothing durable) is
+                // surfaced as a FileNotFoundException so the catch below flags the recording.
+                var resolvedWorkbook = await _trialWorkbooks.ResolveExportAsync(
+                    trial.Id, trial.SourceWorkbookPath ?? string.Empty, ct)
+                    ?? throw new FileNotFoundException(
+                        "No source workbook is available for the trial.", trial.SourceWorkbookPath);
 
                 policy = _ratings.WritePlotColumnPreserving(
-                    workbookPath,
+                    resolvedWorkbook.FilePath,
                     outputDirectory,
                     resolvedPlot,
                     traitOrdinal,
@@ -385,7 +396,11 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 // endpoint serves — so the status reflects exactly what the UI shows.
                 if (policy is not null && policy.WrittenCells.Count > 0)
                 {
-                    await RecomputeTrialStatusAsync(trial, outputDirectory, workbookPath, ct);
+                    await RecomputeTrialStatusAsync(trial, outputDirectory, resolvedWorkbook.FilePath, ct);
+
+                    // Mirror the accumulated sync state into durable storage so it survives a
+                    // redeploy — a later sync on a fresh instance must chain on this copy.
+                    await _trialWorkbooks.PersistTrialFilesAsync(trial.Id, ct);
                 }
             }
             catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
@@ -573,14 +588,19 @@ public sealed class RecordingSyncService : IRecordingSyncService
         {
             try
             {
-                var serviceDir = ResolveServiceDirectory();
-                var outputDirectory = Path.Combine(serviceDir, "Working", trial.Id.ToString());
+                var outputDirectory = _trialWorkbooks.GetWorkingDirectory(trial.Id);
 
-                var workbookPath = TryGetNewestOutputCopy(outputDirectory)
-                    ?? Path.GetFullPath(Path.Combine(serviceDir, trial.SourceWorkbookPath ?? string.Empty));
+                // Same chained read source as the voice sync: the newest accumulated output copy
+                // (rehydrated from durable storage on a cold cache) is the input; the pristine
+                // source is the fallback. A null result is surfaced as FileNotFoundException so
+                // the catch below flags the recording.
+                var resolvedWorkbook = await _trialWorkbooks.ResolveExportAsync(
+                    trial.Id, trial.SourceWorkbookPath ?? string.Empty, ct)
+                    ?? throw new FileNotFoundException(
+                        "No source workbook is available for the trial.", trial.SourceWorkbookPath);
 
                 policy = _ratings.WritePlotColumnPreserving(
-                    workbookPath,
+                    resolvedWorkbook.FilePath,
                     outputDirectory,
                     confirmedPlot,
                     traitOrdinal,
@@ -593,7 +613,11 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 // re-reads the copy this write just exported.
                 if (policy is not null && policy.WrittenCells.Count > 0)
                 {
-                    await RecomputeTrialStatusAsync(trial, outputDirectory, workbookPath, ct);
+                    await RecomputeTrialStatusAsync(trial, outputDirectory, resolvedWorkbook.FilePath, ct);
+
+                    // Mirror the accumulated sync state into durable storage so it survives a
+                    // redeploy — a later sync on a fresh instance must chain on this copy.
+                    await _trialWorkbooks.PersistTrialFilesAsync(trial.Id, ct);
                 }
             }
             catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
@@ -872,8 +896,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
     /// input file's base name plus <c>"_out_"</c>. Successive syncs chain (each output becomes
     /// the next input), so the current input's base name embeds every previous copy's stamp
     /// and the pattern matches at most ONE file — THIS write's copy. Same-second timestamp
-    /// ties cannot select a neighbouring copy, unlike
-    /// <see cref="TryGetNewestOutputCopy(System.String)"/>, which ranks by the second-granularity
+    /// ties cannot select a neighbouring copy, unlike the newest-copy ranking the workbook
+    /// store performs, which ranks by the second-granularity
     /// file-name stamp. Returns <see langword="null"/> when no output copy exists (nothing was
     /// written).
     /// </summary>
@@ -1097,73 +1121,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
             ".mp4" or ".m4a" => "audio/mp4",
             _ => "application/octet-stream",
         };
-
-    /// <summary>
-    /// Resolves the repo-root <c>Service/</c> directory by walking up from
-    /// <c>AppContext.BaseDirectory</c>, mirroring <c>TrialWorkbookStore.ResolveServiceDirectory()</c>.
-    /// The Services project must not reference the Repository project, so this walk is
-    /// replicated here rather than reused.
-    /// </summary>
-    private static string ResolveServiceDirectory()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            if (Directory.Exists(Path.Combine(dir.FullName, "Service")))
-            {
-                return Path.Combine(dir.FullName, "Service");
-            }
-
-            dir = dir.Parent;
-        }
-
-        // Fallback: resolve relative to the current working directory.
-        return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "Service"));
-    }
-
-    /// <summary>
-    /// Returns the newest existing output copy in the trial's working directory — the file
-    /// whose name ends in <c>_out_yyyyMMdd_HHmmss.xlsx</c> with the greatest timestamp — or
-    /// <see langword="null"/> when no copy exists yet. The <see langword="last"/> <c>_out_</c>
-    /// marker is used, so a chained copy (one created from another output copy) parses to its
-    /// own newest stamp. Used by the policy write to make successive syncs accumulate on
-    /// earlier output.
-    /// </summary>
-    private static string? TryGetNewestOutputCopy(string outputDirectory)
-    {
-        if (!Directory.Exists(outputDirectory))
-        {
-            return null;
-        }
-
-        string? newestPath = null;
-        DateTime newestStamp = default;
-        const string marker = "_out_";
-        foreach (var file in Directory.GetFiles(outputDirectory, "*.xlsx"))
-        {
-            var name = Path.GetFileNameWithoutExtension(file);
-            var markerIndex = name.LastIndexOf(marker, StringComparison.Ordinal);
-            if (markerIndex < 0)
-            {
-                continue;
-            }
-
-            var stamp = name[(markerIndex + marker.Length)..];
-            if (DateTime.TryParseExact(
-                    stamp,
-                    "yyyyMMdd_HHmmss",
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.None,
-                    out var parsedStamp)
-                && (newestPath is null || parsedStamp > newestStamp))
-            {
-                newestStamp = parsedStamp;
-                newestPath = file;
-            }
-        }
-
-        return newestPath;
-    }
 
     /// <summary>
     /// True when a <see cref="DbUpdateException"/> was caused by the

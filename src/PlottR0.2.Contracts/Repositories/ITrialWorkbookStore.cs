@@ -37,4 +37,32 @@ public interface ITrialWorkbookStore
     /// escapes the Service/ directory.
     /// </summary>
     ResolvedWorkbookExport? ResolveExport(Guid trialId, string sourceRelativePath);
+
+    /// <summary>
+    /// Durable counterparts to <see cref="ResolveExport"/>: first rehydrates a cold local
+    /// cache from the durable object store (a warm cache is served with zero network), then
+    /// resolves exactly as <see cref="ResolveExport"/> does. Behaves identically to
+    /// <see cref="ResolveExport"/> when durable storage is disabled.
+    /// </summary>
+    /// <param name="trialId">The trial whose workbook should be resolved.</param>
+    /// <param name="sourceRelativePath">The trial's pristine source workbook relative path, if any.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<ResolvedWorkbookExport?> ResolveExportAsync(Guid trialId, string sourceRelativePath, CancellationToken ct = default);
+
+    /// <summary>
+    /// Persists (mirrors) the trial's working-directory artifacts into the durable object
+    /// store, uploading only those the store does not already hold. No-op when durable
+    /// storage is disabled. Used after a successful workbook write so the accumulated sync
+    /// output survives a redeploy.
+    /// </summary>
+    /// <param name="trialId">The trial whose working directory should be persisted.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task PersistTrialFilesAsync(Guid trialId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the absolute local path of the trial's working directory (the cache the
+    /// policy write reads from and writes into).
+    /// </summary>
+    /// <param name="trialId">The trial whose working directory should be resolved.</param>
+    string GetWorkingDirectory(Guid trialId);
 }

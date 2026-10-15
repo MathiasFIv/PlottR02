@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using PlottR0._2.Repository;
 using PlottR0._2.Repository.Persistence;
@@ -14,16 +15,33 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddHttpContextAccessor();
 
+// Render (and most PaaS edges) terminate TLS and forward the original scheme/host via
+// X-Forwarded-Proto / X-Forwarded-For. Trust those headers so Request.Scheme/Host reflect the
+// public origin; otherwise UseHttpsRedirection and generated links see the internal http hop.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+    // The edge is not a fixed proxy IP, so don't cap the forwarding chain depth.
+    options.ForwardLimit = null;
+});
+
 // Swagger / OpenAPI — exposes our endpoints at /swagger for interactive testing.
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Allow the Vite React dev server to call this API from a browser.
+// Allow the SPA to call this API from a browser. Origins come from configuration
+// (AllowedOrigins), falling back to the Vite React dev server when the section is absent.
+// NOTE: no AllowCredentials() — auth travels as a Bearer header, not cookies.
+var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
+    ?? new[] { "http://localhost:5173" };
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("Frontend", policy =>
     {
-        policy.WithOrigins("http://localhost:5173")
+        policy.WithOrigins(allowedOrigins)
               .AllowAnyMethod()
               .AllowAnyHeader();
     });
@@ -34,7 +52,8 @@ var connectionString = builder.Configuration.GetConnectionString("PlottR02")
 
 builder.Services.ConfigurePersistence(
     connectionString,
-    enableDetailedErrors: builder.Environment.IsDevelopment());
+    enableDetailedErrors: builder.Environment.IsDevelopment(),
+    configuration: builder.Configuration);
 builder.Services.ConfigureApplication(builder.Configuration);
 
 // JWT bearer authentication — validates the access tokens issued by ITokenService
@@ -81,11 +100,24 @@ using (var scope = app.Services.CreateScope())
     }
     catch (Exception ex)
     {
-        logger.LogWarning(ex, "Could not apply database migrations on startup. The database may be unavailable; the API will continue but persistence is not guaranteed.");
+        // Dev: tolerate a missing/unreachable database so the API still boots for local work.
+        if (app.Environment.IsDevelopment())
+        {
+            logger.LogWarning(ex, "Could not apply database migrations on startup. The database may be unavailable; the API will continue but persistence is not guaranteed.");
+        }
+        // Non-dev: a broken schema must abort startup with a non-zero exit rather than boot silently.
+        else
+        {
+            logger.LogCritical(ex, "Could not apply database migrations on startup. Aborting startup because the database schema is not guaranteed.");
+            throw;
+        }
     }
 }
 
-// Configure the HTTP request pipeline.
+// Configure the HTTP request pipeline. Forwarded headers must run first so downstream
+// middleware (CORS, HTTPS redirection) sees the real client scheme/host behind the edge proxy.
+app.UseForwardedHeaders();
+
 app.UseCors("Frontend");
 
 // Swagger UI at /swagger — only in Development, where we test endpoints interactively.
@@ -102,5 +134,8 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+// Liveness probe for the platform (Render healthCheckPath: /health). Anonymous, no dependency checks.
+app.MapGet("/health", () => Results.Ok());
 
 app.Run();
