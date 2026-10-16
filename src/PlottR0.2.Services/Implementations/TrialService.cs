@@ -379,7 +379,8 @@ public class TrialService : ITrialService
 
         ct.ThrowIfCancellationRequested();
 
-        var export = _workbookStore.ResolveExport(trial.Id, trial.SourceWorkbookPath ?? string.Empty);
+        var export = await _workbookStore.ResolveExportAsync(
+            trial.Id, trial.SourceWorkbookPath ?? string.Empty, ct);
         if (export is null)
             throw new FileNotFoundException($"Workbook for trial '{trialId}' was not found on disk.");
 

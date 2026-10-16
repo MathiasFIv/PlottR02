@@ -412,6 +412,91 @@ public sealed class TrialServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetWorkbookExportAsync_ColdLocalCache_RehydratesFromDurableStore()
+    {
+        // Arrange — an isolated durable-backed store (temp cache root + in-memory object
+        // store) so wiping the local cache faithfully simulates the Render free deploy,
+        // where Storage__Root is ephemeral and only the object store survives.
+        var cacheRoot = Path.Combine(
+            Path.GetTempPath(), "PlottrTrialServiceRehydrate_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(cacheRoot);
+        var objectStore = new InMemoryObjectStore();
+        var store = new TrialWorkbookStore(cacheRoot, objectStore);
+
+        var trialId = Guid.NewGuid();
+        try
+        {
+            // Upload/save a workbook: the write-through caches it locally AND durably.
+            var fileName = TrialFaker.GenerateFileName();
+            using (var stream = TrialWorkbookFactory.CreateStream())
+            {
+                await store.SaveAsync(trialId, fileName, stream);
+            }
+
+            // Persist the DB row that points at the saved source workbook.
+            using (var scope = _fixture.CreateScope())
+            {
+                var repo = scope.ServiceProvider.GetRequiredService<ITrialRepository>();
+                await repo.CreateAsync(new Trial
+                {
+                    Id = trialId,
+                    ExternalId = Path.GetFileNameWithoutExtension(fileName),
+                    FileName = fileName,
+                    Status = TrialStatus.Created,
+                    SourceWorkbookPath = Path.Combine("Working", trialId.ToString(), fileName),
+                    CreatedBy = DefaultActorUserId,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                });
+            }
+
+            // Simulate a redeploy: wipe the ephemeral local cache while the durable object
+            // store still holds the workbook. Nothing is left on disk to resolve against.
+            Directory.Delete(Path.Combine(cacheRoot, "Working", trialId.ToString()), recursive: true);
+            objectStore.ResetCounters();
+
+            // Act — the read must rehydrate from the object store before resolving. A sync
+            // ResolveExport against the now-empty cache would throw FileNotFoundException.
+            WorkbookExport export;
+            using (var scope = _fixture.CreateScope())
+            {
+                var repo = scope.ServiceProvider.GetRequiredService<ITrialRepository>();
+                var userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+                var service = new PlottR0._2.Services.Implementations.TrialService(
+                    repo,
+                    store,
+                    new FaultingAuditService(),
+                    _fixture.CurrentUser,
+                    NullLogger<PlottR0._2.Services.Implementations.TrialService>.Instance,
+                    new ClosedXmlRatingRepository(NullLogger<ClosedXmlRatingRepository>.Instance),
+                    userRepository);
+
+                export = await service.GetWorkbookExportAsync(trialId);
+            }
+
+            // Assert — the workbook was re-resolved from durable storage and returned, and
+            // the rehydrating path is what fetched it (regression guard for the async call).
+            export.FileName.Should().Be(fileName);
+            File.Exists(export.FilePath).Should().BeTrue(
+                "a cold local cache must be rehydrated from the durable object store");
+            objectStore.GetToFileKeys.Should().Contain($"Workbooks/{trialId}/{fileName}",
+                "the rehydrating ResolveExportAsync path must download the durable source, not resolve against an empty cache");
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(cacheRoot))
+                    Directory.Delete(cacheRoot, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup.
+            }
+        }
+    }
+
+    [Fact]
     public async Task GetSheetAsync_UnknownTrial_ThrowsKeyNotFound()
     {
         // Arrange
