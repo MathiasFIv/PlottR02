@@ -1595,6 +1595,29 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
         });
     }
 
+    [Fact]
+    public async Task SyncAsync_TranscriptionFailure_Reports403ReasonAndFlagsReview()
+    {
+        // Arrange — the provider rejects the request with HTTP 403. The sync degrades to an
+        // empty transcript as before, but the actual failure reason must ride the result so
+        // an empty-transcript incident is diagnosable without reading the server log.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        using var scope = _fixture.CreateScope();
+        var service = CreateService(scope, new ThrowingTranscriptionService("request failed with 403"));
+
+        // Act — transcript-only command, so the failure is the sole reason nothing resolves
+        var result = await service.SyncAsync(
+            AudioBytes(), "clip.webm", Command(trialId, clientId, plot: null, subsample: null, value: null));
+
+        // Assert — the reason travels on the result, the transcript stays empty and the
+        // recording is flagged for human review.
+        result.TranscriptionError.Should().NotBeNullOrEmpty();
+        result.TranscriptionError.Should().Contain("403");
+        result.Transcript.Should().BeEmpty();
+        result.NeedsReview.Should().BeTrue();
+    }
+
     // ── Already-present cell: append mode moves the write to the next free cell ─
 
     [Fact]
@@ -2798,11 +2821,18 @@ await AssertStoredAsync(clientId, row =>
 
     /// <summary>
     /// A transcription double that unconditionally fails like an unavailable sidecar
-    /// (<see cref="FakeTranscriptionService"/> is sealed and only knows how to succeed).
+    /// (<see cref="FakeTranscriptionService"/> is sealed and only knows how to succeed). The
+    /// message is configurable so a test can script a specific provider failure (e.g. an HTTP
+    /// 403) and prove the reason surfaces on the sync result.
     /// </summary>
     private sealed class ThrowingTranscriptionService : ITranscriptionService
     {
+        private readonly string _message;
+
+        public ThrowingTranscriptionService(string message = "Speech-to-text sidecar is unavailable.")
+            => _message = message;
+
         public Task<TranscriptionResult> TranscribeAsync(Stream audio, string fileName, CancellationToken ct = default)
-            => throw new HttpRequestException("Speech-to-text sidecar is unavailable.");
+            => throw new HttpRequestException(_message);
     }
 }

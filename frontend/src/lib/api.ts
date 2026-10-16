@@ -277,6 +277,9 @@ export interface SyncRecordingResponse {
   wasTranscriptOnly: boolean;
   submittedAt: string;
   transcript: string;
+  /** Human-readable reason transcription failed (empty/absent when it
+   *  succeeded or was skipped). */
+  transcriptionError?: string;
   confidence: number | null;
   writtenCells: {
     plot: number;

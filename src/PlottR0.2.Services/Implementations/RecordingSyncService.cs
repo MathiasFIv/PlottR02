@@ -71,6 +71,13 @@ public sealed class RecordingSyncService : IRecordingSyncService
     public const double ReviewConfidenceThreshold = 0.75;
 
     /// <summary>
+    /// Upper bound on the diagnostic transcription-failure text echoed on
+    /// <see cref="SyncVoiceRecordingResult.TranscriptionError"/>, so an unexpectedly large
+    /// provider error message can never bloat the sync response.
+    /// </summary>
+    private const int MaxTranscriptionErrorLength = 300;
+
+    /// <summary>
     /// Empty subsample set used when no legal subsample can be resolved — the write attempt
     /// is skipped and the recording is flagged rather than writing to every subsample.
     /// </summary>
@@ -232,6 +239,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         // errors must surface.
         var transcript = string.Empty;
         var transcriptionFailed = false;
+        var transcriptionError = string.Empty;
         buffered.Position = 0;
         try
         {
@@ -247,6 +255,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             transcriptionFailed = true;
+            transcriptionError = DescribeTranscriptionFailure(ex);
             _logger.LogError(ex,
                 "Transcription failed for voice recording {ClientRecordingId}; " +
                 "continuing the sync from the resolved fields only.",
@@ -318,7 +327,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 transcript,
                 parsed,
                 policy: null,
-                submittedAt: DateTimeOffset.UtcNow);
+                submittedAt: DateTimeOffset.UtcNow,
+                transcriptionError: transcriptionError);
         }
 
         // Step 10b — TraitOrdinal gate (defense in depth): traitOrdinal spans 1..9; the
@@ -349,7 +359,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 transcript,
                 parsed,
                 policy: null,
-                submittedAt: DateTimeOffset.UtcNow);
+                submittedAt: DateTimeOffset.UtcNow,
+                transcriptionError: transcriptionError);
         }
 
         // Step 11 — Policy write (design.md §3): the sync offers exactly the RESOLVED
@@ -465,7 +476,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
             parsed,
             policy,
             submittedAt: DateTimeOffset.UtcNow,
-            traitOrdinal);
+            traitOrdinal,
+            transcriptionError: transcriptionError);
     }
 
     /// <inheritdoc />
@@ -997,7 +1009,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
         DateTimeOffset submittedAt,
         int? traitOrdinal = null,
         bool replayed = false,
-        TranscriptParseResult? parsedForResolution = null)
+        TranscriptParseResult? parsedForResolution = null,
+        string transcriptionError = "")
     {
         // Same default-target rule as Step 9: a client-sent default fills a field the
         // confirmed value AND the transcript both omitted (with the subsample guard against
@@ -1037,6 +1050,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
             WasTranscriptOnly = cPlot is null && cSubsample is null && cValue is null,
             SubmittedAt = submittedAt,
             Transcript = transcript,
+            TranscriptionError = transcriptionError,
             Confidence = parsed?.Confidence,
             WrittenCells = policy?.WrittenCells ?? [],
             SkippedPresentCells = policy?.SkippedPresentCells ?? [],
@@ -1044,6 +1058,20 @@ public sealed class RecordingSyncService : IRecordingSyncService
             OutOfTraitRangeValueCount = policy?.OutOfTraitRangeValueCount ?? 0,
             UsedDefaultTarget = usedDefaultPlot || usedDefaultSubsample,
         };
+    }
+
+    /// <summary>
+    /// Renders a bounded, single-line description of a transcription failure for the sync
+    /// result, so the cause (e.g. an HTTP 403 from the provider) is diagnosable without the
+    /// server log. Carriage returns/newlines are collapsed to spaces and the text is capped
+    /// at <see cref="MaxTranscriptionErrorLength"/> characters.
+    /// </summary>
+    /// <param name="ex">The caught sidecar/provider failure.</param>
+    /// <returns>A trimmed, single-line, length-bounded message.</returns>
+    private static string DescribeTranscriptionFailure(Exception ex)
+    {
+        var message = (ex.Message ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return message.Length > MaxTranscriptionErrorLength ? message[..MaxTranscriptionErrorLength] + "…" : message;
     }
 
     /// <summary>

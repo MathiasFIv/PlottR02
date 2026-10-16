@@ -283,10 +283,19 @@ export function summarizeSync(res: SyncRecordingResponse): SyncSummary {
     lines.push(`Check the transcript — Whisper heard: \u00AB${res.transcript.trim()}\u00BB`);
   }
 
+  // Transcription failed on the server: with no transcript to show, surface
+  // the server's reason instead of leaving the operator with a silent gap.
+  const transcriptionFailed =
+    res.transcript.trim() === '' &&
+    (res.transcriptionError ?? '').trim() !== '';
+  if (transcriptionFailed) {
+    lines.push(`Transcription failed: ${res.transcriptionError}`);
+  }
+
   const variant =
     res.status === 'Written' || res.status === 'SkippedPresent'
       ? 'success'
-      : res.status === 'Flagged'
+      : res.status === 'Flagged' || transcriptionFailed
         ? 'error'
         : 'warning';
 

@@ -121,6 +121,13 @@ public sealed class SyncVoiceRecordingResult
     public string Transcript { get; init; } = string.Empty;
 
     /// <summary>
+    /// Human-readable reason the transcription step failed on THIS sync, or an empty string
+    /// when transcription succeeded, was skipped (replay / value gate), or produced no speech.
+    /// Bounded/diagnostic — carries the underlying HTTP/sidecar error, not a user-crafted message.
+    /// </summary>
+    public string TranscriptionError { get; init; } = string.Empty;
+
+    /// <summary>
     /// The parse confidence in 0..1, or <see langword="null"/> when no parse ran
     /// (replay / value gate). 0 when a transcription failed or the transcript was empty
     /// (the parser produced no recognized fields).

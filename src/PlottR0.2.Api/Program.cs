@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using PlottR0._2.Repository;
 using PlottR0._2.Repository.Persistence;
 using PlottR0._2.Api;
@@ -98,6 +99,36 @@ builder.Services.AddAuthorization();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
 
 var app = builder.Build();
+
+// Startup diagnostic: report which speech-to-text provider the composition root selected so a
+// production "empty transcript" incident is diagnosable from the boot log alone. The selection
+// mirrors ServiceCollectionExtensions (Cloudflare Workers AI when its credentials are present,
+// otherwise the FasterWhisper sidecar) — see CloudflareAiOptions.IsConfigured.
+{
+    var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
+    var cloudflare = app.Services.GetRequiredService<IOptions<CloudflareAiOptions>>().Value;
+    if (cloudflare.IsConfigured)
+    {
+        startupLogger.LogInformation(
+            "Speech-to-text provider: Cloudflare Workers AI (model {Model}).", cloudflare.Model);
+    }
+    else
+    {
+        var fasterWhisper = app.Services.GetRequiredService<IOptions<FasterWhisperOptions>>().Value;
+        if (app.Environment.IsProduction())
+        {
+            startupLogger.LogWarning(
+                "Speech-to-text provider misconfigured: CloudflareAi credentials are NOT configured " +
+                "and the FasterWhisper sidecar at {BaseUrl} is not deployed, so transcription will fail.",
+                fasterWhisper.BaseUrl);
+        }
+        else
+        {
+            startupLogger.LogInformation(
+                "Speech-to-text provider: FasterWhisper sidecar at {BaseUrl}.", fasterWhisper.BaseUrl);
+        }
+    }
+}
 
 // Apply any pending EF Core migrations on startup.
 using (var scope = app.Services.CreateScope())

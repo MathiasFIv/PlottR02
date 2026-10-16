@@ -193,6 +193,10 @@ export function ConfirmCard({
         <p className="text-sm text-base-content/70" role="status">
           Whisper heard: «{transcript}»
         </p>
+      ) : (lastResult?.transcriptionError ?? '').trim() !== '' ? (
+        <p className="text-sm text-error" role="alert">
+          Transcription failed: {lastResult?.transcriptionError}
+        </p>
       ) : (
         <p className="text-sm text-base-content/70" role="status">
           No transcript — the server could not transcribe this clip. Check the

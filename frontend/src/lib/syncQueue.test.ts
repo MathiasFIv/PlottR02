@@ -945,6 +945,19 @@ describe('summarizeSync', () => {
     expect(lines.join(' ')).toContain('already sent');
     expect(variant).toBe('warning');
   });
+
+  it('surfaces the transcription failure reason and an error variant when the transcript is empty', () => {
+    const { lines, variant } = summarizeSync(
+      syncResponse({
+        status: 'Received',
+        transcript: '',
+        transcriptionError: 'Whisper model failed to load',
+      }),
+    );
+    const text = lines.join(' ');
+    expect(text).toContain('Transcription failed: Whisper model failed to load');
+    expect(variant).toBe('error');
+  });
 });
 
 describe('default target memory', () => {
