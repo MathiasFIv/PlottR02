@@ -52,8 +52,8 @@ export function TopBar({ links = [], onLogout }: TopBarProps) {
   return (
     <>
       <header className="navbar bg-base-100 border-b border-base-300 px-6 py-3 max-lg:px-4">
-        <div className="navbar-start" />
-        <div className="navbar-center">
+        <div className="navbar-start max-lg:hidden" />
+        <div className="navbar-center max-lg:grow">
           <Link
             to="/"
             aria-label="PlottR 0.2 — back to dashboard"
@@ -71,7 +71,7 @@ export function TopBar({ links = [], onLogout }: TopBarProps) {
             />
           </Link>
         </div>
-        <div className="navbar-end gap-4 max-lg:gap-1.5">
+        <div className="navbar-end gap-4 max-lg:gap-1.5 max-lg:w-auto">
           {currentUser && (
             <span className="badge badge-ghost gap-1.5 text-sm font-normal max-lg:hidden">
               Signed in as <strong>{currentUser.name}</strong>
