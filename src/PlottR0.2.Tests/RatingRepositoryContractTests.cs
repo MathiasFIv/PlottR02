@@ -41,13 +41,4 @@ public sealed class RatingRepositoryContractTests
         var act = () => repo.ExistsAsync(Guid.NewGuid());
         await act.Should().ThrowAsync<NotSupportedException>();
     }
-
-    [Fact]
-    public async Task CountAsync_Always_ThrowsNotSupported()
-    {
-        var repo = CreateRepository();
-
-        var act = () => repo.CountAsync();
-        await act.Should().ThrowAsync<NotSupportedException>();
-    }
 }

@@ -241,9 +241,6 @@ public class ClosedXmlRatingRepository : IRatingRepository
     public Task<bool> ExistsAsync(Guid id, CancellationToken ct = default)
         => throw new NotSupportedException("The workbook store does not address Rating entities by id.");
 
-    public Task<int> CountAsync(CancellationToken ct = default)
-        => throw new NotSupportedException("The workbook store does not count Rating entities.");
-
     // ----- Workbook helpers (ClosedXML confined here) -----
 
     private static int TraitColumn(int traitOrdinal)

@@ -53,12 +53,6 @@ public sealed class TrialRepository : ITrialRepository
     }
 
     /// <inheritdoc />
-    public async Task<int> CountAsync(CancellationToken ct = default)
-    {
-        return await _db.Trials.CountAsync(ct);
-    }
-
-    /// <inheritdoc />
     public async Task<Trial> CreateAsync(Trial trial, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(trial);

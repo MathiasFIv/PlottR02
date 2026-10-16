@@ -49,12 +49,6 @@ public sealed class VoiceRecordingRepository : IVoiceRecordingRepository
     }
 
     /// <inheritdoc />
-    public async Task<int> CountAsync(CancellationToken ct = default)
-    {
-        return await _db.VoiceRecordings.CountAsync(ct);
-    }
-
-    /// <inheritdoc />
     public async Task<VoiceRecording> CreateAsync(VoiceRecording recording, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(recording);

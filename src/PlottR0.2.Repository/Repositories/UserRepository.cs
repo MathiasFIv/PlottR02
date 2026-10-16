@@ -53,12 +53,6 @@ public sealed class UserRepository : IUserRepository
     }
 
     /// <inheritdoc />
-    public async Task<int> CountAsync(CancellationToken ct = default)
-    {
-        return await _db.Users.CountAsync(ct);
-    }
-
-    /// <inheritdoc />
     public async Task<User> AddAsync(User entity, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(entity);

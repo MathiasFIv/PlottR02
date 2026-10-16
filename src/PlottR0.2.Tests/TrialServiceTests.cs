@@ -157,7 +157,7 @@ public sealed class TrialServiceTests : IAsyncLifetime
         using (var verifyScope = _fixture.CreateScope())
         {
             var repo = verifyScope.ServiceProvider.GetRequiredService<ITrialRepository>();
-            var count = await repo.CountAsync();
+            var count = (await repo.GetAllAsync()).Count;
             count.Should().Be(0, "no trial should be persisted when the workbook is invalid");
         }
     }
@@ -182,7 +182,7 @@ public sealed class TrialServiceTests : IAsyncLifetime
         using (var verifyScope = _fixture.CreateScope())
         {
             var repo = verifyScope.ServiceProvider.GetRequiredService<ITrialRepository>();
-            var count = await repo.CountAsync();
+            var count = (await repo.GetAllAsync()).Count;
             count.Should().Be(0, "no trial should be persisted when the extension is wrong");
         }
     }
@@ -703,7 +703,7 @@ public sealed class TrialServiceTests : IAsyncLifetime
         using (var verifyScope = _fixture.CreateScope())
         {
             var repo = verifyScope.ServiceProvider.GetRequiredService<ITrialRepository>();
-            (await repo.CountAsync()).Should().Be(0,
+            (await repo.GetAllAsync()).Count.Should().Be(0,
                 "the role gate must reject before anything is persisted");
         }
     }
@@ -790,7 +790,7 @@ public sealed class TrialServiceTests : IAsyncLifetime
         using (var verifyScope = _fixture.CreateScope())
         {
             var repo = verifyScope.ServiceProvider.GetRequiredService<ITrialRepository>();
-            (await repo.CountAsync()).Should().Be(0,
+            (await repo.GetAllAsync()).Count.Should().Be(0,
                 "a privileged actor without a user id must be rejected before anything is persisted");
         }
     }
@@ -1230,9 +1230,6 @@ public sealed class TrialServiceTests : IAsyncLifetime
 
         public Task<bool> ExistsAsync(Guid id, CancellationToken ct = default)
             => Task.FromResult(false);
-
-        public Task<int> CountAsync(CancellationToken ct = default)
-            => Task.FromResult(0);
 
         public Task SetAssignmentsAsync(Guid trialId, IReadOnlyList<Guid> userIds, Guid assignedById, CancellationToken ct = default)
             => throw new NotSupportedException();
