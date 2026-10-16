@@ -4,12 +4,14 @@
 using BC = BCrypt.Net.BCrypt;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using PlottR0._2.Contracts;
 using PlottR0._2.Contracts.Dtos.User;
 using PlottR0._2.Contracts.Mappers;
 using PlottR0._2.Contracts.Repositories;
 using PlottR0._2.Domain;
 using PlottR0._2.Services.Abstractions;
+using PlottR0._2.Services.Configuration;
 
 namespace PlottR0._2.Services.Implementations;
 
@@ -17,7 +19,11 @@ namespace PlottR0._2.Services.Implementations;
     /// Concrete <see cref="IUserService"/> backed by <see cref="IUserRepository"/>.
     /// Talks only to the repository contract (never EF/Repository classes) and exposes
     /// structural reads plus the User DTO workflows. Enforces the account creation/sharing
-    /// matrix and the "no anonymous accounts" policy.
+    /// matrix and the "no anonymous accounts" policy — the latter has a configuration
+    /// escape hatch: <c>Auth:AllowAnonymousSignup</c> (default OFF) lets an anonymous actor
+    /// create the login-page self-signup account, which is ALWAYS a
+    /// <see cref="UserRole.SystemAdmin"/> (the bootstrap account); any requested role is
+    /// deliberately ignored on that path.
     /// </summary>
     public class UserService : IUserService
 {
@@ -37,6 +43,7 @@ namespace PlottR0._2.Services.Implementations;
     private readonly IUserRepository _userRepository;
     private readonly IAuditService _auditService;
     private readonly ICurrentUser _currentUser;
+    private readonly IOptions<AuthOptions> _authOptions;
 
     /// <summary>
     /// Creates a new <see cref="UserService"/>.
@@ -44,11 +51,19 @@ namespace PlottR0._2.Services.Implementations;
     /// <param name="userRepository">The user repository contract to operate against.</param>
     /// <param name="auditService">The audit service contract used to record the audit trail.</param>
     /// <param name="currentUser">The current user identity attributed to audit entries.</param>
-    public UserService(IUserRepository userRepository, IAuditService auditService, ICurrentUser currentUser)
+    /// <param name="authOptions">The bound <c>Auth</c> options carrying the anonymous-signup
+    /// feature flag (default OFF; parsed fail-closed via
+    /// <see cref="AuthOptions.ParseAllowAnonymousSignup"/>).</param>
+    public UserService(
+        IUserRepository userRepository,
+        IAuditService auditService,
+        ICurrentUser currentUser,
+        IOptions<AuthOptions> authOptions)
     {
         _userRepository = userRepository;
         _auditService = auditService;
         _currentUser = currentUser;
+        _authOptions = authOptions;
     }
 
     /// <inheritdoc />
@@ -73,17 +88,47 @@ namespace PlottR0._2.Services.Implementations;
         };
 
     /// <summary>
+    /// The <c>Auth:AllowAnonymousSignup</c> feature flag (default OFF). When ON, an actor
+    /// without a role may create the bootstrap account — which is always a
+    /// <see cref="UserRole.SystemAdmin"/>. The value comes from the bound
+    /// <see cref="AuthOptions"/> (parsed fail-closed at the composition root), so it can
+    /// never throw.
+    /// </summary>
+    private bool AllowAnonymousSignup => _authOptions.Value.AllowAnonymousSignup;
+
+    /// <summary>
     /// Resolves the roles the current actor may assign, or throws when the actor is
-    /// anonymous/role-less or has no assignable roles (e.g. a <see cref="UserRole.FieldWorker"/>).
+    /// anonymous/role-less (without the bootstrap path) or has no assignable roles
+    /// (e.g. a <see cref="UserRole.FieldWorker"/>).
     /// Shared by <see cref="CreateAsync"/> and <see cref="UpdateAsync"/> so both enforce
     /// exactly the same matrix.
     /// </summary>
+    /// <param name="anonymousBootstrap">When <c>true</c>, the caller is the anonymous
+    /// self-signup path (no actor role AND <c>Auth:AllowAnonymousSignup</c> ON); it renders
+    /// the <see cref="UserRole.SystemAdmin"/> row so the coerced bootstrap account is always
+    /// assignable. Only <see cref="CreateAsync"/> ever passes <c>true</c> — an anonymous
+    /// actor may never change an existing account's role via <see cref="UpdateAsync"/>.
+    /// </param>
     /// <exception cref="ForbiddenAccessException">When the actor may not create/assign users.</exception>
-    private UserRole[] ResolveAssignableRoles()
+    private UserRole[] ResolveAssignableRoles(bool anonymousBootstrap = false)
     {
+        if (anonymousBootstrap)
+        {
+            // The signup path has no actor at all; the bootstrap account is always a
+            // SystemAdmin, so it takes the SystemAdmin row. CreateAsync only requests this
+            // after verifying the feature flag is ON.
+            return AssignableRolesByActor[UserRole.SystemAdmin];
+        }
+
         var actorRole = _currentUser.Role;
-        if (actorRole is null
-            || !AssignableRolesByActor.TryGetValue(actorRole.Value, out var assignable)
+        if (actorRole is null)
+        {
+            // Anonymous/role-less actor WITHOUT the bootstrap path. The historical
+            // "no anonymous accounts" policy stands.
+            throw new ForbiddenAccessException("This account is not allowed to create users.");
+        }
+
+        if (!AssignableRolesByActor.TryGetValue(actorRole.Value, out var assignable)
             || assignable.Length == 0)
         {
             throw new ForbiddenAccessException("This account is not allowed to create users.");
@@ -112,19 +157,29 @@ namespace PlottR0._2.Services.Implementations;
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        // No anonymous/no-role actor may create users, and a creator with no assignable
-        // roles (FieldWorker) has nothing it is allowed to grant.
-        var assignableRoles = ResolveAssignableRoles();
+        // Bootstrap window: the login-page self-signup path presents an actor with NO role
+        // (there is no authenticated caller). With Auth:AllowAnonymousSignup ON the account
+        // is therefore ALWAYS created as a SystemAdmin and whatever role the payload carries
+        // is deliberately IGNORED — coerced, not rejected, so the public signup form keeps
+        // working while a public caller can never mint e.g. a TrialManager. Turn the flag OFF
+        // once the bootstrap account exists; afterwards only an authenticated actor may
+        // create users, bound by the matrix below.
+        var anonymousBootstrap = _currentUser.Role is null && AllowAnonymousSignup;
+        var role = anonymousBootstrap ? UserRole.SystemAdmin : request.Role;
 
-        // A role is mandatory — anonymous/no-role accounts are no longer permitted anywhere.
-        if (request.Role is null)
+        // A role is mandatory — anonymous/no-role accounts are no longer permitted anywhere,
+        // except for the coerced bootstrap account above.
+        if (role is null)
         {
             throw new ArgumentException(
                 "Role is required — anonymous/no-role accounts are no longer permitted.",
                 nameof(request));
         }
 
-        EnsureRoleIsAssignable(request.Role.Value, assignableRoles);
+        // The actor's matrix row gates what may be granted; the bootstrap path resolves the
+        // SystemAdmin row (see ResolveAssignableRoles) so the coerced role always passes,
+        // while an authenticated actor keeps its exact pre-flag row.
+        EnsureRoleIsAssignable(role.Value, ResolveAssignableRoles(anonymousBootstrap));
 
         ValidatePassword(request.Password);
         ValidateEmail(request.Email);
@@ -137,6 +192,7 @@ namespace PlottR0._2.Services.Implementations;
         }
 
         var entity = UserMapper.ToEntity(request);
+        entity.Role = role.Value; // coerced to SystemAdmin on the anonymous bootstrap path
         entity.PasswordHash = HashPassword(request.Password);
         entity.CreatedAt = DateTime.UtcNow;
         entity.UpdatedAt = DateTime.UtcNow;

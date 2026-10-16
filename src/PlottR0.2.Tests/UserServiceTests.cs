@@ -24,11 +24,13 @@ public sealed class UserServiceTests : IAsyncLifetime
 
     public Task InitializeAsync() => Task.CompletedTask;
 
-    /// <summary>Wipes the shared DB and restores the default test actor after each
-    /// test, so neither rows nor actor identity leak into the next test.</summary>
+    /// <summary>Wipes the shared DB, restores the default test actor and turns the
+    /// anonymous-signup flag back OFF after each test, so neither rows, actor identity
+    /// nor the feature flag leak into the next test (the contract default is OFF).</summary>
     public Task DisposeAsync()
     {
         _fixture.CurrentUser.ResetToDefaults();
+        _fixture.SetAllowAnonymousSignup(false);
         return _fixture.ResetDatabaseAsync();
     }
 
@@ -178,6 +180,113 @@ public sealed class UserServiceTests : IAsyncLifetime
         var act = () => service.CreateAsync(request);
         await act.Should().ThrowAsync<ArgumentException>()
             .WithMessage("*Role is required*");
+    }
+
+    // ── Anonymous self-registration (Auth:AllowAnonymousSignup) ──────────────
+
+    [Theory]
+    [InlineData(UserRole.SystemAdmin)]
+    [InlineData(UserRole.Researcher)]
+    [InlineData(UserRole.TrialManager)]
+    [InlineData(UserRole.FieldWorker)]
+    public async Task CreateAsync_AnonymousActor_WithFlagEnabled_CoercesRequestedRoleToSystemAdmin(UserRole requestedRole)
+    {
+        // Issue 2: exactly what an unauthenticated POST /api/Users presents when the
+        // login-page signup panel is switched on — no actor id, no actor role. Whatever role
+        // the payload carries is IGNORED and coerced to SystemAdmin, so a public caller can
+        // never mint a privileged account (e.g. POSTing "TrialManager" still yields SystemAdmin).
+        _fixture.CurrentUser.UserId = null;
+        _fixture.CurrentUser.Name = null;
+        _fixture.CurrentUser.Role = null;
+        _fixture.SetAllowAnonymousSignup(true);
+
+        var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+        request.Role = requestedRole;
+
+        using var scope = _fixture.CreateScope();
+        var created = await Service(scope).CreateAsync(request);
+
+        created.Role.Should().Be(UserRole.SystemAdmin);
+
+        // The coerced role — not the requested one — is what actually lands in the database.
+        var repo = scope.ServiceProvider
+            .GetRequiredService<PlottR0._2.Contracts.Repositories.IUserRepository>();
+        var persisted = await repo.GetByEmailAsync(request.Email);
+        persisted.Should().NotBeNull();
+        persisted!.Role.Should().Be(UserRole.SystemAdmin);
+        persisted.PasswordHash.Should().StartWith("$2").And.NotBe(request.Password);
+
+        // Audit attribution may be null for an anonymous creation (no actor to blame).
+        persisted.CreatedBy.Should().BeNull();
+
+        // The freshly created account must be able to log in with the same credentials.
+        var login = await Service(scope).LoginAsync(new LoginRequest
+        {
+            Email = request.Email,
+            Password = request.Password,
+        });
+        login.Email.Should().Be(request.Email);
+        login.Role.Should().Be(UserRole.SystemAdmin);
+    }
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("")]
+    [InlineData("notabool")] // malformed non-bool — must fail CLOSED, never throw
+    [InlineData(null)]       // absent key
+    public async Task CreateAsync_AnonymousActor_WithFlagOffOrMalformed_ThrowsForbidden(string? rawFlag)
+    {
+        // Explicit "false", an empty string, a malformed non-bool and an absent key all mean
+        // OFF (the fail-closed parser never throws), so the historical "no anonymous
+        // accounts" policy stands for every requested role.
+        _fixture.CurrentUser.UserId = null;
+        _fixture.CurrentUser.Name = null;
+        _fixture.CurrentUser.Role = null;
+        _fixture.SetAllowAnonymousSignupRaw(rawFlag);
+
+        foreach (var requestedRole in AllRoles)
+        {
+            var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+            request.Role = requestedRole;
+
+            using var scope = _fixture.CreateScope();
+            var act = () => Service(scope).CreateAsync(request);
+
+            await act.Should().ThrowAsync<ForbiddenAccessException>()
+                .WithMessage("*not allowed to create users*");
+        }
+    }
+
+    [Fact]
+    public async Task CreateAsync_MatrixUnchanged_ForAuthenticatedActor_WhenFlagEnabled()
+    {
+        // The flag must only affect role-less (anonymous) actors — an authenticated
+        // actor's row of the matrix is identical with the flag on or off.
+        _fixture.SetAllowAnonymousSignup(true);
+        _fixture.CurrentUser.Role = UserRole.TrialManager;
+
+        foreach (var requestedRole in AllRoles)
+        {
+            var shouldAllow = requestedRole == UserRole.FieldWorker; // TrialManager's only grant
+
+            var request = UserFaker.CreateRequest(uniqueEmail: true).Generate();
+            request.Role = requestedRole;
+
+            using var scope = _fixture.CreateScope();
+            var service = Service(scope);
+
+            if (shouldAllow)
+            {
+                var result = await service.CreateAsync(request);
+                result.Role.Should().Be(requestedRole);
+            }
+            else
+            {
+                var act = () => service.CreateAsync(request);
+                await act.Should().ThrowAsync<ForbiddenAccessException>()
+                    .WithMessage("*Cannot assign role*");
+            }
+        }
     }
 
     // ── LoginAsync ────────────────────────────────────────────────────────────

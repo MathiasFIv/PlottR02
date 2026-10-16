@@ -10,7 +10,11 @@ namespace PlottR0._2.Tests;
     /// the attributes are the observable contract asserted here rather than a pipeline 403.
     /// The behaviour behind <c>[Authorize(Roles = ...)]</c> is covered separately by
     /// <c>JwtBearerConfigurationTests</c> (mint → validate → <c>IsInRole</c>).
-    /// <c>Create</c> is now authenticated-only and governed by the service-level matrix.
+    /// <c>Create</c> carries <c>[AllowAnonymous]</c> for the config-gated self-signup path
+    /// (<c>Auth:AllowAnonymousSignup</c>, default OFF — see
+    /// <c>UsersControllerAnonymousSignupTests</c> for the 401/201 behaviour); every other
+    /// action stays authenticated-only and the service-level matrix still governs who may
+    /// grant which role.
     /// </summary>
 public sealed class UsersControllerAuthorizationTests
 {
@@ -60,18 +64,40 @@ public sealed class UsersControllerAuthorizationTests
     }
 
     [Fact]
-    public void Create_RequiresAuthentication_NoLongerAnonymous()
+    public void Create_CarriesAllowAnonymous_ButStaysConfigGated()
     {
         var create = typeof(UsersController).GetMethod(nameof(UsersController.Create))!;
 
-        // The login-screen self-registration path is gone: Create must NOT opt out of
-        // authentication, and it declares no role gate of its own — the class-level
-        // [Authorize] makes it authenticated-only, and the create/assign matrix is
-        // enforced in UserService.
+        // The self-signup path opts Create out of authentication metadata, but only the
+        // Create action — and the flag in AuthOptions.AllowAnonymousSignup (default OFF)
+        // decides whether an anonymous caller actually gets through (401 otherwise).
         create.GetCustomAttribute<AllowAnonymousAttribute>()
-            .Should().BeNull("Create is authenticated-only now");
+            .Should().NotBeNull("Create is the single config-gated anonymous signup entry point");
         create.GetCustomAttribute<AuthorizeAttribute>()
-            .Should().BeNull("the class-level [Authorize] covers Create; the matrix lives in the service");
+            .Should().BeNull("the class-level [Authorize] still covers Create; the matrix lives in the service");
+    }
+
+    [Fact]
+    public void OnlyCreate_CarriesAllowAnonymous_OtherActionsStayAuthenticated()
+    {
+        // The class-level [Authorize] must keep protecting every other action: only
+        // Create may opt out, and only because its service-layer/config gate backs it up.
+        var actionNames = new[]
+        {
+            nameof(UsersController.GetAll),
+            nameof(UsersController.GetMe),
+            nameof(UsersController.GetById),
+            nameof(UsersController.Update),
+            nameof(UsersController.Delete),
+        };
+
+        foreach (var methodName in actionNames)
+        {
+            typeof(UsersController)
+                .GetMethod(methodName)!
+                .GetCustomAttribute<AllowAnonymousAttribute>()
+                .Should().BeNull($"`{methodName}` must never become anonymous-reachable");
+        }
     }
 
     [Fact]

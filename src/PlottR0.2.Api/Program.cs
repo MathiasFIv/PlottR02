@@ -56,6 +56,16 @@ builder.Services.ConfigurePersistence(
     configuration: builder.Configuration);
 builder.Services.ConfigureApplication(builder.Configuration);
 
+// Auth feature flags (Auth section) — the anonymous self-signup switch lives here.
+// Bound FAIL-CLOSED through the SAME parser the service layer uses: a malformed value
+// (e.g. "yes"/"notabool"/"") is OFF instead of a throwing strong binder, so an anonymous
+// request can never surface as a 500. Default is OFF (appsettings.example.json / a missing
+// key both mean false); flip at runtime with the Auth__AllowAnonymousSignup env var
+// (e.g. Render: Auth__AllowAnonymousSignup=true).
+builder.Services.AddOptions<AuthOptions>()
+    .Configure<IConfiguration>((options, configuration) =>
+        options.AllowAnonymousSignup = AuthOptions.ParseAllowAnonymousSignup(configuration));
+
 // JWT bearer authentication — validates the access tokens issued by ITokenService
 // using the same TokenOptions bound from the "Jwt" appsettings section.
 var tokenOptions = builder.Configuration

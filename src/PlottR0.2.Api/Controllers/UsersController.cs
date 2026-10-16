@@ -1,8 +1,10 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using PlottR0._2.Contracts.Dtos.User;
 using PlottR0._2.Services.Abstractions;
+using PlottR0._2.Services.Configuration;
 
 
 namespace PlottR0._2.Api.Controllers;
@@ -13,8 +15,12 @@ namespace PlottR0._2.Api.Controllers;
     /// Reading, updating and deleting users is restricted to system admins and
     /// trial managers (see <see cref="ManageUsersRoles"/>); listing additionally admits
     /// researchers so the trial-assignment picker can populate its candidate list.
-    /// <c>GetMe</c> stays open to any authenticated user and <c>Create</c> is
-    /// authenticated-only with role assignment governed by the role assignment matrix.
+    /// <c>GetMe</c> stays open to any authenticated user. <c>Create</c> carries
+    /// <c>[AllowAnonymous]</c> so the login-page self-signup path can reach it, but that
+    /// path is gated by <see cref="AuthOptions.AllowAnonymousSignup"/> (default OFF):
+    /// with the flag off an anonymous caller is rejected with 401 right here in the
+    /// action guard, and only authenticated actors — bound by the account-creation
+    /// matrix enforced in <see cref="IUserService"/> — may create users.
     /// </summary>
 [ApiController]
 [Authorize]
@@ -29,14 +35,17 @@ public class UsersController : ControllerBase
     public const string ManageUsersRoles = "SystemAdmin,TrialManager";
 
     private readonly IUserService _userService;
+    private readonly IOptions<AuthOptions> _authOptions;
 
     /// <summary>
     /// Creates a new <see cref="UsersController"/>.
     /// </summary>
     /// <param name="userService">The user service contract to operate against.</param>
-    public UsersController(IUserService userService)
+    /// <param name="authOptions">The bound <c>Auth</c> options carrying the anonymous-signup switch.</param>
+    public UsersController(IUserService userService, IOptions<AuthOptions> authOptions)
     {
         _userService = userService;
+        _authOptions = authOptions;
     }
 
     /// <summary>
@@ -91,24 +100,38 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>
-    /// Creates a new user. This endpoint is authenticated-only — the previous
-    /// login-screen self-registration path is gone, so there are no anonymous
-    /// accounts. The caller must supply a role, and it must fall inside the
-    /// caller's row of the account-creation/assignment matrix (enforced in
-    /// <see cref="IUserService"/>, not here).
+    /// Creates a new user. <c>[AllowAnonymous]</c> opts this single action out of the
+    /// class-level <c>[Authorize]</c> so the login-page self-signup panel can call it —
+    /// but anonymous access is config-gated by <see cref="AuthOptions.AllowAnonymousSignup"/>
+    /// (default OFF). With the flag off, an anonymous caller is rejected with 401 by the
+    /// guard below and never reaches the service, i.e. behaviour is identical to the
+    /// authenticated-only endpoint that existed before the flag. Authenticated callers are
+    /// unaffected by the flag: the caller must still supply a role inside their row of the
+    /// account-creation/assignment matrix (enforced in <see cref="IUserService"/>, not here).
     /// </summary>
     /// <param name="request">The create payload; <c>Role</c> is required.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>201 with the created user and a Location header to fetch it, 400 for a
-    /// missing/invalid role or payload, 403 when the caller may not assign the role,
-    /// or 409 when the email already belongs to another account.</returns>
+    /// <returns>201 with the created user and a Location header to fetch it, 401 when an
+    /// anonymous caller hits a disabled signup flag, 400 for a missing/invalid role or
+    /// payload, 403 when the caller may not assign the role, or 409 when the email already
+    /// belongs to another account.</returns>
     [HttpPost]
+    [AllowAnonymous]
     [ProducesResponseType(typeof(UserResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<UserResponse>> Create([FromBody] CreateUserRequest request, CancellationToken ct = default)
     {
+        // Config gate for anonymous self-registration. Authenticated callers skip this
+        // entirely; anonymous callers only proceed when the feature is explicitly on,
+        // so the default (flag absent/false) keeps this endpoint authenticated-only.
+        if (User.Identity?.IsAuthenticated != true && !_authOptions.Value.AllowAnonymousSignup)
+        {
+            return Unauthorized();
+        }
+
         try
         {
             var created = await _userService.CreateAsync(request, ct);
