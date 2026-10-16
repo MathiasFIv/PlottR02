@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 using PlottR0._2.Contracts.Dtos.Trial;
 using PlottR0._2.Contracts.Ratings;
 using PlottR0._2.Contracts.Repositories;
-using PlottR0._2.Domain;
 
 namespace PlottR0._2.Repository.Repositories;
 
@@ -13,10 +12,6 @@ namespace PlottR0._2.Repository.Repositories;
 /// Rule 1 layering): it reads a trial's sheet region and applies the locked-overwrite
 /// policy write on the "Subsample Plot Data" sheet region C22:K245, exporting the result
 /// as a fresh copy.
-///
-/// The entity-style generic <see cref="IRepository{TEntity,TKey}"/> methods are NOT
-/// supported: the workbook store can only legally write rating cells (Rule 3 metadata
-/// read-only, Rule 2 empty ≠ 0), so full entity CRUD is deliberately unavailable here.
 /// </summary>
 public class ClosedXmlRatingRepository : IRatingRepository
 {
@@ -229,17 +224,6 @@ public class ClosedXmlRatingRepository : IRatingRepository
             OutOfTraitRangeValueCount = outOfTraitRange,
         };
     }
-
-    // ----- Generic entity-style methods: NOT supported by the workbook store -----
-
-    public Task<Rating?> GetByIdAsync(Guid id, CancellationToken ct = default)
-        => throw new NotSupportedException("The workbook store does not address Rating entities by id; use the rating operations.");
-
-    public Task<IReadOnlyList<Rating>> GetAllAsync(int? skip = null, int? take = null, CancellationToken ct = default)
-        => throw new NotSupportedException("The workbook store does not list Rating entities; use ReadSheetRegion.");
-
-    public Task<bool> ExistsAsync(Guid id, CancellationToken ct = default)
-        => throw new NotSupportedException("The workbook store does not address Rating entities by id.");
 
     // ----- Workbook helpers (ClosedXML confined here) -----
 

@@ -12,9 +12,6 @@ public class PlottR0DbContext : DbContext
 
     public DbSet<User> Users => Set<User>();
     public DbSet<Trial> Trials => Set<Trial>();
-    public DbSet<Plot> Plots => Set<Plot>();
-    public DbSet<Subsample> Subsamples => Set<Subsample>();
-    public DbSet<Rating> Ratings => Set<Rating>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<VoiceRecording> VoiceRecordings => Set<VoiceRecording>();
@@ -25,9 +22,6 @@ public class PlottR0DbContext : DbContext
         // ── Shared audit columns for every AuditableEntity ──────────────────
         ConfigureAuditableEntity<User>(modelBuilder);
         ConfigureAuditableEntity<Trial>(modelBuilder);
-        ConfigureAuditableEntity<Plot>(modelBuilder);
-        ConfigureAuditableEntity<Subsample>(modelBuilder);
-        ConfigureAuditableEntity<Rating>(modelBuilder);
         ConfigureAuditableEntity<VoiceRecording>(modelBuilder);
 
         modelBuilder.Entity<User>(entity =>
@@ -69,60 +63,12 @@ public class PlottR0DbContext : DbContext
             entity.Property(t => t.SourceWorkbookPath)
                 .HasMaxLength(500);
 
-            // Trial 1 -> N Plot. Plot has no TrialId property, so EF materializes
-            // a shadow FK (TrialId) GUID column on the Plots table.
-            entity.HasMany(t => t.Plots)
-                .WithOne()
-                .HasForeignKey("TrialId")
-                .OnDelete(DeleteBehavior.Cascade);
-
             // Ownership FK (design.md #13): CreatedBy → User, SetNull on delete
             // so orphaned trials remain accessible.
             entity.HasOne(t => t.CreatedByUser)
                 .WithMany()
                 .HasForeignKey(t => t.CreatedBy)
                 .OnDelete(DeleteBehavior.SetNull);
-        });
-
-        modelBuilder.Entity<Plot>(entity =>
-        {
-            entity.HasKey(p => p.Id);
-            entity.Property(p => p.PlotNumber)
-                .IsRequired();
-
-            // Plot 1 -> N Subsample. Subsample has no PlotId property, so EF
-            // materializes a shadow FK (PlotId) GUID column on the Subsamples table.
-            entity.HasMany(p => p.Subsamples)
-                .WithOne()
-                .HasForeignKey("PlotId")
-                .OnDelete(DeleteBehavior.Cascade);
-        });
-
-        modelBuilder.Entity<Subsample>(entity =>
-        {
-            entity.HasKey(s => s.Id);
-            entity.Property(s => s.SubsampleIndex)
-                .IsRequired();
-
-            // Subsample 1 -> N Rating. Rating has no SubsampleId property, so EF
-            // materializes a shadow FK (SubsampleId) GUID column on the Ratings table.
-            entity.HasMany(s => s.Ratings)
-                .WithOne()
-                .HasForeignKey("SubsampleId")
-                .OnDelete(DeleteBehavior.Cascade);
-        });
-
-        modelBuilder.Entity<Rating>(entity =>
-        {
-            entity.HasKey(r => r.Id);
-            entity.Property(r => r.Value)
-                .IsRequired();
-
-            // TraitId is a plain GUID column. There is no Trait entity persisted
-            // (Trait is a Domain value object), so no FK navigation and no FK
-            // constraint is created for it.
-            entity.Property(r => r.TraitId)
-                .IsRequired();
         });
 
         modelBuilder.Entity<RefreshToken>(entity =>

@@ -654,8 +654,8 @@ public sealed class RatingPolicyWriteTests : IDisposable
     }
 
     /// <summary>
-    /// The policy write takes explicit paths, so a bare repository suffices
-    /// (like <see cref="RatingRepositoryContractTests"/>).
+    /// The policy write takes explicit paths, so a bare repository suffices —
+    /// no workbook file, temp dirs, or Postgres container needed.
     /// </summary>
     private static ClosedXmlRatingRepository CreateRepository() =>
         new(NullLogger<ClosedXmlRatingRepository>.Instance);

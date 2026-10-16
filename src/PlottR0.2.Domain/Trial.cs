@@ -1,7 +1,7 @@
 namespace PlottR0._2.Domain;
 
 /// <summary>
-/// Represents an uploaded trial file and its parsed plot hierarchy.
+/// Represents an uploaded trial file.
 /// The <see cref="CreatedBy"/> FK (inherited from <see cref="AuditableEntity"/>)
 /// establishes ownership per design.md #13.
 /// </summary>
@@ -12,7 +12,6 @@ public class Trial : AuditableEntity
     public string FileName { get; set; } = string.Empty;
     public string Status { get; set; } = "Created";
     public string? SourceWorkbookPath { get; set; }
-    public List<Plot> Plots { get; set; } = [];
 
     /// <summary>
     /// Users assigned to work on this trial. A researcher or trial-manager creator is

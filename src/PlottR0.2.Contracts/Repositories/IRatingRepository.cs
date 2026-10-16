@@ -1,16 +1,14 @@
 using PlottR0._2.Contracts.Ratings;
-using PlottR0._2.Domain;
 
 namespace PlottR0._2.Contracts.Repositories;
 
 /// <summary>
 /// Workbook-backed store contract for the trial sheet workflow: reading a trial's
 /// sheet region and applying the locked-overwrite policy write used by the voice sync
-/// pipeline. Extends the generic read-only <see cref="IRepository{TEntity,TKey}"/>.
-/// The repository owns resolving <c>(plot, subsample, trait)</c> to a workbook cell;
-/// consumers never compute cell coordinates (design.md §7).
+/// pipeline. The repository owns resolving <c>(plot, subsample, trait)</c> to a
+/// workbook cell; consumers never compute cell coordinates (design.md §7).
 /// </summary>
-public interface IRatingRepository : IRepository<Rating, Guid>
+public interface IRatingRepository
 {
     /// <summary>
     /// Reads the WHOLE ratings sheet region of the workbook at <paramref name="workbookPath"/>:

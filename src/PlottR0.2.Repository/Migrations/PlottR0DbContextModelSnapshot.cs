@@ -64,82 +64,6 @@ namespace PlottR0._2.Repository.Migrations
                     b.ToTable("AuditLogs");
                 });
 
-            modelBuilder.Entity("PlottR0._2.Domain.Plot", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("NOW()");
-
-                    b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("PlotNumber")
-                        .HasColumnType("integer");
-
-                    b.Property<int?>("TreatmentNumber")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid?>("TrialId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("NOW()");
-
-                    b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TrialId");
-
-                    b.ToTable("Plots");
-                });
-
-            modelBuilder.Entity("PlottR0._2.Domain.Rating", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("NOW()");
-
-                    b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("SubsampleId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("TraitId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("NOW()");
-
-                    b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("Value")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SubsampleId");
-
-                    b.ToTable("Ratings");
-                });
-
             modelBuilder.Entity("PlottR0._2.Domain.RefreshToken", b =>
                 {
                     b.Property<Guid>("Id")
@@ -174,41 +98,6 @@ namespace PlottR0._2.Repository.Migrations
                     b.HasIndex("UserId", "IsRevoked");
 
                     b.ToTable("RefreshTokens");
-                });
-
-            modelBuilder.Entity("PlottR0._2.Domain.Subsample", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("NOW()");
-
-                    b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("PlotId")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("SubsampleIndex")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("NOW()");
-
-                    b.Property<Guid?>("UpdatedBy")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("PlotId");
-
-                    b.ToTable("Subsamples");
                 });
 
             modelBuilder.Entity("PlottR0._2.Domain.Trial", b =>
@@ -422,22 +311,6 @@ namespace PlottR0._2.Repository.Migrations
                     b.ToTable("VoiceRecordings");
                 });
 
-            modelBuilder.Entity("PlottR0._2.Domain.Plot", b =>
-                {
-                    b.HasOne("PlottR0._2.Domain.Trial", null)
-                        .WithMany("Plots")
-                        .HasForeignKey("TrialId")
-                        .OnDelete(DeleteBehavior.Cascade);
-                });
-
-            modelBuilder.Entity("PlottR0._2.Domain.Rating", b =>
-                {
-                    b.HasOne("PlottR0._2.Domain.Subsample", null)
-                        .WithMany("Ratings")
-                        .HasForeignKey("SubsampleId")
-                        .OnDelete(DeleteBehavior.Cascade);
-                });
-
             modelBuilder.Entity("PlottR0._2.Domain.RefreshToken", b =>
                 {
                     b.HasOne("PlottR0._2.Domain.User", null)
@@ -445,14 +318,6 @@ namespace PlottR0._2.Repository.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-                });
-
-            modelBuilder.Entity("PlottR0._2.Domain.Subsample", b =>
-                {
-                    b.HasOne("PlottR0._2.Domain.Plot", null)
-                        .WithMany("Subsamples")
-                        .HasForeignKey("PlotId")
-                        .OnDelete(DeleteBehavior.Cascade);
                 });
 
             modelBuilder.Entity("PlottR0._2.Domain.Trial", b =>
@@ -488,21 +353,9 @@ namespace PlottR0._2.Repository.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
                 });
 
-            modelBuilder.Entity("PlottR0._2.Domain.Plot", b =>
-                {
-                    b.Navigation("Subsamples");
-                });
-
-            modelBuilder.Entity("PlottR0._2.Domain.Subsample", b =>
-                {
-                    b.Navigation("Ratings");
-                });
-
             modelBuilder.Entity("PlottR0._2.Domain.Trial", b =>
                 {
                     b.Navigation("Assignments");
-
-                    b.Navigation("Plots");
                 });
 
             modelBuilder.Entity("PlottR0._2.Domain.User", b =>
