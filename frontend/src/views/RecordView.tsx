@@ -9,12 +9,11 @@ import { useTrials } from '../hooks/useTrials';
 import { useVoiceQueue } from '../hooks/useVoiceQueue';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { getRecordingById } from '../lib/audioDb';
-import { deriveEndOfSheet, deriveNextTarget, resolveNextTarget } from '../lib/nextTarget';
+import { deriveEndOfPlot, deriveEndOfSheet, deriveNextTarget, resolveNextTarget } from '../lib/nextTarget';
 import { formatAnchor, isAnchorForTrial } from '../lib/sheetAnchor';
 import { summarizeSync } from '../lib/syncQueue';
 import {
   activeTrialIdAtom,
-  sheetAnchorNoticeAtom,
   sheetLastWrittenAtom,
   sheetSelectedAtom,
   trialSheetAtom,
@@ -43,19 +42,14 @@ export function RecordView() {
   /** The sheet payload on screen — the rows the next target derives from. */
   const sheetPayload = useAtomValue(trialSheetAtom);
   /**
-   * Write anchor + tap feedback (set by the `SheetPanel` grid below, through
-   * the same default store). Rendered HERE, next to the mic, so the anchored
-   * cell is announced even when the grid is scrolled off screen — that is the
-   * whole point of the line. Trial-guarded: a tap from another trial never
-   * renders for this one.
+   * Write anchor (set by the `SheetPanel` grid below, through the same
+   * default store). Rendered HERE, next to the mic, so the anchored row is
+   * announced even when the grid is scrolled off screen — that is the whole
+   * point of the line. Trial-guarded: a tap from another trial never renders
+   * for this one.
    */
   const anchorRaw = useAtomValue(sheetSelectedAtom);
-  const anchorNoticeRaw = useAtomValue(sheetAnchorNoticeAtom);
   const anchor = isAnchorForTrial(anchorRaw, activeTrialId);
-  const anchorNotice =
-    anchorNoticeRaw !== null && anchorNoticeRaw.trialId === activeTrialId
-      ? anchorNoticeRaw
-      : null;
 
   const {
     isRecording,
@@ -207,10 +201,12 @@ export function RecordView() {
   const pendingStatus = pendingRec?.status;
 
   // Next write target for a "values-only" clip — derived reactively, never a
-  // stored "+1": the last-written pair (atom, guarded to THIS trial) walked
-  // one step forward through the payload's rows[]. When no payload is loaded
-  // yet (sheet still fetching, offline), fall back to the persisted
-  // snapshot-derived resolution — same derivation, best rows available.
+  // stored "+1": the last-written pair plus its `blockFull` flag (atom,
+  // guarded to THIS trial) STAYS on the written row while the block is
+  // unfilled and advances to the next subsample of the SAME plot once it is
+  // full. When no payload is loaded yet (sheet still fetching, offline), fall
+  // back to the persisted snapshot-derived resolution — same derivation, best
+  // rows available.
   const rows =
     activeTrialId !== null && sheetPayload?.trialId === activeTrialId
       ? sheetPayload.rows
@@ -223,9 +219,18 @@ export function RecordView() {
     activeTrialId === null
       ? null
       : rows !== null
-        ? deriveNextTarget(rows, lastWritten)
+        ? deriveNextTarget(rows, lastWritten, lastWritten?.blockFull ?? false)
         : resolveNextTarget(activeTrialId);
   const endOfSheetTarget = deriveEndOfSheet(rows, lastWritten);
+  // End of a PLOT (block full + no next row in the same plot): the run has
+  // nothing left to write here — distinct from the silent mid-sheet `null`
+  // (an unfilled block STAYS and `nextTarget` covers it). Suppressed by the
+  // render order below when the SAME row is also the true end of the sheet.
+  const endOfPlotTarget = deriveEndOfPlot(
+    rows,
+    lastWritten,
+    lastWritten?.blockFull ?? false,
+  );
 
   /**
    * Variant-aware color class for the inline outcome banner. The `synced` case
@@ -302,16 +307,7 @@ export function RecordView() {
             {anchor !== null && (
               <p className="text-sm text-base-content/70 mt-0" role="status">
                 Anchored: {formatAnchor(anchor)} — speak numbers to fill. Tap
-                the cell again to clear.
-              </p>
-            )}
-            {/* Refusal feedback from tapping a cell that already holds a
-                value: the tap is REFUSED with NO state change — it does not
-                clear the anchor — so the anchor line above (if any) still
-                shows alongside this refusal instead of going quiet. */}
-            {anchorNotice !== null && (
-              <p className="text-sm font-medium text-warning mt-0" role="status">
-                Cell already filled
+                the row again to clear.
               </p>
             )}
 
@@ -325,6 +321,13 @@ export function RecordView() {
               <p className="text-sm text-base-content/70 mt-0" role="status">
                 End of sheet - last: Plot {endOfSheetTarget.plot} · Sub{' '}
                 {endOfSheetTarget.subsample}
+              </p>
+            ) : endOfPlotTarget !== null &&
+              activeTrialId !== null &&
+              sheetPayload?.trialId === activeTrialId ? (
+              <p className="text-sm text-base-content/70 mt-0" role="status">
+                Nothing to write — stopped at the end of this plot (Plot{' '}
+                {endOfPlotTarget.plot} · Sub {endOfPlotTarget.subsample})
               </p>
             ) : null}
 

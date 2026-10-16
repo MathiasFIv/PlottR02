@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SheetColumn } from '../types';
-import { buildSheetHeader } from './sheetHeader';
+import { buildSheetBlocks, buildSheetHeader } from './sheetHeader';
 
 /** Builds a column the way the reader does — every field explicit. */
 function column(
@@ -121,5 +121,73 @@ describe('buildSheetHeader — degenerate input', () => {
   it('always yields spans >= 1 (no zero-width tier-1 cell)', () => {
     const { runs } = buildSheetHeader([column(1, 'C', 'LEAF1', 'SEPTTR')]);
     expect(runs.every((run) => run.span >= 1)).toBe(true);
+  });
+});
+
+describe('buildSheetBlocks — category blocks (the block-full unit)', () => {
+  it('groups the 9-column part-major run into three 3-wide blocks', () => {
+    expect(buildSheetBlocks(partMajor)).toEqual([
+      { partRated: 'LEAF1', start: 1, end: 3 },
+      { partRated: 'LEAF2', start: 4, end: 6 },
+      { partRated: 'LEAF3', start: 7, end: 9 },
+    ]);
+  });
+
+  it('derives the block size from the file — never a hardcoded 3-wide block', () => {
+    const blocks = buildSheetBlocks([
+      column(1, 'C', 'LEAF1', 'SEPTTR'),
+      column(2, 'D', 'LEAF1', 'ERYSGR'), // 2-wide part
+      column(3, 'E', 'LEAF2', 'PUCCST'),
+      column(4, 'F', 'LEAF3', 'SEPTTR'),
+      column(5, 'G', 'LEAF3', 'ERYSGR'),
+      column(6, 'H', 'LEAF3', 'PUCCST'),
+      column(7, 'I', 'LEAF3', 'SEPTTR'), // 4-wide part
+    ]);
+    expect(blocks).toEqual([
+      { partRated: 'LEAF1', start: 1, end: 2 },
+      { partRated: 'LEAF2', start: 3, end: 3 },
+      { partRated: 'LEAF3', start: 4, end: 7 },
+    ]);
+  });
+
+  it('does not merge equal partRated values that are not adjacent', () => {
+    const blocks = buildSheetBlocks([
+      column(1, 'C', 'LEAF1', 'SEPTTR'),
+      column(2, 'D', 'LEAF2', 'SEPTTR'),
+      column(3, 'E', 'LEAF1', 'SEPTTR'),
+    ]);
+    expect(blocks).toEqual([
+      { partRated: 'LEAF1', start: 1, end: 1 },
+      { partRated: 'LEAF2', start: 2, end: 2 },
+      { partRated: 'LEAF1', start: 3, end: 3 },
+    ]);
+  });
+
+  it('groups null/blank partRated together into their own block', () => {
+    const blocks = buildSheetBlocks([
+      column(1, 'C', 'LEAF1', 'SEPTTR'),
+      column(2, 'D', null, 'ERYSGR'),
+      column(3, 'E', '   ', 'PUCCST'), // blank ≡ null after trim
+      column(4, 'F', 'LEAF2', 'SEPTTR'),
+    ]);
+    expect(blocks).toEqual([
+      { partRated: 'LEAF1', start: 1, end: 1 },
+      { partRated: null, start: 2, end: 3 },
+      { partRated: 'LEAF2', start: 4, end: 4 },
+    ]);
+  });
+
+  it('start/end are the FIRST/LAST traitOrdinal in ARRAY order (not index + 1)', () => {
+    // Shuffled ordinals: a positional/index assumption would give start 1/end 3.
+    const blocks = buildSheetBlocks([
+      column(3, 'C', 'LEAF1', 'SEPTTR'),
+      column(1, 'D', 'LEAF1', 'ERYSGR'),
+      column(7, 'E', 'LEAF1', 'PUCCST'),
+    ]);
+    expect(blocks).toEqual([{ partRated: 'LEAF1', start: 3, end: 7 }]);
+  });
+
+  it('returns an empty list for no columns', () => {
+    expect(buildSheetBlocks([])).toEqual([]);
   });
 });

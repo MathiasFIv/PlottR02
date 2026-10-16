@@ -1,12 +1,15 @@
 /**
  * Write anchor (tap-to-anchor) — pure, Node-safe, no React.
  *
- * Tapping an EMPTY cell in the read-only grid (`components/SheetGrid.tsx`)
- * stores a `SheetSelected` anchor (`store/atoms.ts#sheetSelectedAtom`);
- * speaking numbers then fills that cell and the ones to its right, because
- * the sync engine freezes the anchor onto the record at first send
- * (`lib/syncQueue.ts`). The BACKEND already supports this
- * (`WritePlotColumnPreserving` with `scanForFreeCells:true`) — this module is
+ * Tapping a cell in the read-only grid (`components/SheetGrid.tsx`) stores a
+ * ROW-level `SheetSelected` anchor (`store/atoms.ts#sheetSelectedAtom`);
+ * speaking numbers then fills that row's first empty cell and the ones to its
+ * right within the current category block, because the sync engine freezes
+ * the anchor onto the record at first send (`lib/syncQueue.ts`) WITHOUT a
+ * column pin — the server scans forward from column C (`TraitColumn(1)`), so
+ * a tap on ANY cell of a row means "write into this ROW, starting at its
+ * first empty cell". The BACKEND already supports this
+ * (`AppendToCategoryBlock` scanning for the first free cell) — this module is
  * the client half: the trial guard, the display string, and the wire mapping.
  *
  * Three rules the whole feature hangs on:
@@ -17,12 +20,10 @@
  *   `sheetLastWrittenAtom` + `deriveNextTarget` stay the only sources of the
  *   auto-continue cursor (`lib/nextTarget.ts`), and this module never writes
  *   to either.
- * - **Clearing is a UI gesture.** `lib/syncQueue.ts` reads the anchor at
- *   first send and freezes it; it never clears it.
- * - **A filled cell is refused, never destructive.** `decideAnchorTap`
- *   answers with an intention only; the hosts apply it, so a stray tap on a
- *   filled cell can never destroy the anchor you already had (owner decision:
- *   refuse = NO state change).
+ * - **The anchor is one-shot.** `lib/syncQueue.ts` reads the anchor at first
+ *   send and freezes it; after the first successful write the anchor
+ *   drove, the engine CLEARS it (a tap arms exactly one run). A tap on the
+ *   anchored row before that is still a UI clear gesture.
  */
 
 import type { SheetSelected } from '../store/atoms';
@@ -49,7 +50,7 @@ export function isAnchorForTrial(
  */
 const MIDDLE_DOT = '\u00B7';
 
-/** Human-readable anchor for the status line, e.g. `Plot 101 · Sub 2 · Col 3`. */
+/** Human-readable anchor for the status line, e.g. `Plot 101 · Sub 2`. */
 export function formatAnchor(anchor: SheetSelected): string {
   return [
     'Plot ',
@@ -58,17 +59,15 @@ export function formatAnchor(anchor: SheetSelected): string {
     MIDDLE_DOT,
     ' Sub ',
     String(anchor.subsample),
-    ' ',
-    MIDDLE_DOT,
-    ' Col ',
-    String(anchor.traitOrdinal),
   ].join('');
 }
 
 /**
  * The shape `lib/syncQueue.ts` freezes onto the record at first send —
- * `{ defaultTarget, traitOrdinal }`, both consumed by `lib/api.ts`'s
- * FormData builder (`defaultPlot`/`defaultSubsample` + `traitOrdinal`).
+ * `{ defaultTarget }`, consumed by `lib/api.ts`'s FormData builder
+ * (`defaultPlot`/`defaultSubsample`). NO `traitOrdinal` is sent: the tap is
+ * row-only, and the server scanning from column C is exactly what makes the
+ * write land on the row's first empty cell.
  *
  * WHY the anchor rides `defaultPlot`/`defaultSubsample` (and not a confirmed
  * `plot`/`subsample`):
@@ -81,48 +80,33 @@ export function formatAnchor(anchor: SheetSelected): string {
  *   `plot`/`subsample` pair would claim the operator said it out loud, so a
  *   bare low-confidence `"5, 6"` would be forced into correction review on
  *   every utterance — the exact opposite of the anchor's purpose.
- *
- * `traitOrdinal` is NOT a default: the tapped column is an override, so it
- * rides the record's own `traitOrdinal` field and wins over the recorder's
- * trait selector.
  */
 export function anchorToWire(anchor: SheetSelected): {
   defaultTarget: { plot: number; subsample: number };
-  traitOrdinal: number;
 } {
   return {
     defaultTarget: { plot: anchor.plot, subsample: anchor.subsample },
-    traitOrdinal: anchor.traitOrdinal,
   };
 }
 
 /**
  * The tap payload `components/SheetGrid.tsx` hands `onSelectCell` — the one
  * shape both hosts (`components/SheetPanel.tsx`, `views/SheetView.tsx`)
- * receive and `decideAnchorTap` consumes. Structurally identical to
- * `SheetGrid`'s inline prop type, so a handler taking this stays assignable.
+ * receive and `decideAnchorTap` consumes. Row-only: no column, no value.
  */
 export type SheetCellTap = {
   plot: number;
   subsample: number;
-  traitOrdinal: number;
-  valuesIndex: number;
-  value: number | null;
 };
 
 /**
  * The outcome of one tap, decided purely — the HOST applies it:
- * - `refuse-filled` — the cell already holds a value: leave the anchor
- *   exactly as it is (NO anchor change) and raise the `'cell-filled'`
- *   notice. Clearing on a filled tap was the rejected behaviour: one stray
- *   tap would silently destroy a valid anchor.
- * - `clear` — an empty cell that IS the current anchor: tap it again to
- *   release. Clears the notice (an accepted tap retires it).
- * - `set` — an empty cell that is not the current anchor: make it the
- *   anchor. Also clears the notice.
+ * - `clear` — a cell of the CURRENT anchor's row: tap it again to release.
+ * - `set` — any other row: make that row the anchor. Tapping a cell of a
+ *   fully-filled row still selects the row (an honest write then reports
+ *   "already filled" via the sync banner — the tap is never destructive).
  */
 export type AnchorDecision =
-  | { kind: 'refuse-filled' }
   | { kind: 'clear' }
   | { kind: 'set'; anchor: SheetSelected };
 
@@ -135,24 +119,22 @@ export type AnchorDecision =
  * not re-checked), and `trialId` is the caller's own trial (the `SheetView`
  * host guards `trialId === undefined` before calling).
  *
- * Rules, in order (exactly the closed owner decisions):
- * 1. filled cell → `{ kind: 'refuse-filled' }` — refusal, NOT a clear;
- * 2. empty + `current` matches this cell (plot, subsample, traitOrdinal;
- *    `valuesIndex` is derived from the same column and not compared) →
- *    `{ kind: 'clear' }`;
- * 3. empty otherwise → `{ kind: 'set', anchor: { trialId, …cell coords } }`.
+ * Rules, in order:
+ * 1. `current` matches this cell's ROW (plot + subsample) → `{ kind: 'clear' }`
+ *    — tapping the anchored row again releases it;
+ * 2. otherwise → `{ kind: 'set', anchor: { trialId, plot, subsample } }` —
+ *    the tapped ROW becomes the anchor (filled rows included; the row's
+ *    values are deliberately NOT consulted).
  */
 export function decideAnchorTap(
   cell: SheetCellTap,
   current: SheetSelected | null,
   trialId: string,
 ): AnchorDecision {
-  if (cell.value !== null) return { kind: 'refuse-filled' };
   if (
     current !== null &&
     current.plot === cell.plot &&
-    current.subsample === cell.subsample &&
-    current.traitOrdinal === cell.traitOrdinal
+    current.subsample === cell.subsample
   ) {
     return { kind: 'clear' };
   }
@@ -162,8 +144,6 @@ export function decideAnchorTap(
       trialId,
       plot: cell.plot,
       subsample: cell.subsample,
-      traitOrdinal: cell.traitOrdinal,
-      valuesIndex: cell.valuesIndex,
     },
   };
 }

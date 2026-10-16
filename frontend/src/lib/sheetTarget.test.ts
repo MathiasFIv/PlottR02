@@ -1,37 +1,42 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getDefaultStore } from 'jotai/vanilla';
-import { sheetLastWrittenAtom } from '../store/atoms';
-import type { SheetColumn, SheetRow } from '../types';
+import { sheetLastWrittenAtom, trialSheetAtom } from '../store/atoms';
+import type { SheetColumn, SheetRow, TrialSheet } from '../types';
 import { readDefaultTarget, writeDefaultTarget } from './defaultTarget';
 import { deriveNextTarget } from './nextTarget';
-import { sheetCellValue } from './sheetCell';
+import { writeSheetSnapshot } from './sheetSnapshot';
 import {
   advanceSheetTarget,
+  deriveBlockFull,
   rehydrateSheetTarget,
   targetHighlight,
-  targetSelection,
 } from './sheetTarget';
 
 const TRIAL = 'trial-1';
 const OTHER_TRIAL = 'trial-2';
 
 /**
- * Columns are DELIBERATELY shuffled so `traitOrdinal !== index + 1`:
- * the first column carries ordinal 3, ordinal 1 sits at index 1, ordinal 7 at
- * index 2. Any `ordinal - 1` / Excel-letter shortcut therefore lands on the
- * WRONG cell and fails loudly below.
+ * The 9-column, part-major `columns` the API sends (cols C..K, ordinals 1..9),
+ * grouped into three 3-wide category blocks: LEAF1 [1..3], LEAF2 [4..6],
+ * LEAF3 [7..9]. `blockFull` is judged against THESE runs.
  */
 const columns: SheetColumn[] = [
-  { traitOrdinal: 3, column: 'C', pestCode: 'PUCCST', partRated: 'LEAF1', label: 'PUCCST × LEAF1' },
-  { traitOrdinal: 1, column: 'D', pestCode: 'SEPTTR', partRated: 'LEAF1', label: 'SEPTTR × LEAF1' },
-  { traitOrdinal: 7, column: 'E', pestCode: 'ERYSGR', partRated: 'LEAF1', label: 'ERYSGR × LEAF1' },
+  { traitOrdinal: 1, column: 'C', pestCode: 'SEPTTR', partRated: 'LEAF1', label: 'SEPTTR × LEAF1' },
+  { traitOrdinal: 2, column: 'D', pestCode: 'ERYSGR', partRated: 'LEAF1', label: 'ERYSGR × LEAF1' },
+  { traitOrdinal: 3, column: 'E', pestCode: 'PUCCST', partRated: 'LEAF1', label: 'PUCCST × LEAF1' },
+  { traitOrdinal: 4, column: 'F', pestCode: 'SEPTTR', partRated: 'LEAF2', label: 'SEPTTR × LEAF2' },
+  { traitOrdinal: 5, column: 'G', pestCode: 'ERYSGR', partRated: 'LEAF2', label: 'ERYSGR × LEAF2' },
+  { traitOrdinal: 6, column: 'H', pestCode: 'PUCCST', partRated: 'LEAF2', label: 'PUCCST × LEAF2' },
+  { traitOrdinal: 7, column: 'I', pestCode: 'SEPTTR', partRated: 'LEAF3', label: 'SEPTTR × LEAF3' },
+  { traitOrdinal: 8, column: 'J', pestCode: 'ERYSGR', partRated: 'LEAF3', label: 'ERYSGR × LEAF3' },
+  { traitOrdinal: 9, column: 'K', pestCode: 'PUCCST', partRated: 'LEAF3', label: 'PUCCST × LEAF3' },
 ];
 
 /**
- * Excel `Row` values are shuffled too (57 / 12 / 99 — neither the array index
- * nor `index + 22`, and not in plot order) so a `Row`-based match or a
- * positional assumption lands on the wrong row. `values[1] === 0` in the
- * plot 101 / sub 1 row pins Rule 2 (empty ≠ 0).
+ * Excel `Row` values are shuffled (57 / 12 / 99 — neither the array index nor
+ * `index + 22`, and not in plot order) so a `Row`-based match or a positional
+ * assumption lands on the wrong row. `values[1] === 0` in the 101/1 row pins
+ * Rule 2 (empty ≠ 0 — and the highlight ignores values entirely).
  */
 const rows: SheetRow[] = [
   { row: 57, plot: 101, subsample: 2, values: [1, null, 0] },
@@ -53,146 +58,297 @@ function memoryStorage(): StorageStub & { map: Map<string, string> } {
   };
 }
 
+/** A payload carrying `columns` (block-full needs a trial to trust). */
+function payloadFor(
+  trialId: string,
+  payloadColumns: SheetColumn[] | null = columns,
+): TrialSheet {
+  return {
+    trialId,
+    version: 'v1',
+    changed: true,
+    fileName: '4 subsamples.xlsx',
+    generatedAt: '2026-10-06T09:45:13.402Z',
+    metadata: null,
+    columns: payloadColumns,
+    rows,
+  };
+}
+
 beforeEach(() => {
-  // The atom is shared through getDefaultStore() across the suite.
+  // Both atoms are shared through getDefaultStore() across the suite.
   getDefaultStore().set(sheetLastWrittenAtom, null);
+  getDefaultStore().set(trialSheetAtom, null);
 });
 
-describe('targetHighlight', () => {
-  it('(a) resolves the exact cell for a plot + subsample + trait target', () => {
-    expect(
-      targetHighlight({ plot: 101, subsample: 1, traitOrdinal: 1 }, columns, rows),
-    ).toEqual({ row: 12, valuesIndex: 1 });
+describe('targetHighlight (row-only)', () => {
+  it('(a) resolves the ROW for a plot + subsample target', () => {
+    expect(targetHighlight({ plot: 101, subsample: 1 }, rows)).toEqual({ row: 12 });
+    expect(targetHighlight({ plot: 101, subsample: 2 }, rows)).toEqual({ row: 57 });
+    expect(targetHighlight({ plot: 102, subsample: 1 }, rows)).toEqual({ row: 99 });
   });
 
-  it('(b) matches the row by plot + subsample, never by the Excel Row cross-ref', () => {
-    // The plot 101 rows are at array index 1 (Excel Row 12) and 0 (Row 57) —
-    // Row is the cross-ref only: matching on it (or on plot alone, which would
-    // return the FIRST 101 row) must not decide the row.
-    const hit = targetHighlight({ plot: 101, subsample: 1 }, columns, rows);
+  it('(b) matches by plot + subsample, never by the Excel Row cross-ref or index', () => {
+    const hit = targetHighlight({ plot: 101, subsample: 1 }, rows);
+    // The 101/1 row is at array index 1 (Excel Row 12); a plot-only match
+    // (rows[0], Row 57) or the index (1) must not decide the row.
     expect(hit?.row).toBe(12);
     expect(hit?.row).not.toBe(rows[0].row); // not the plot-only first match
-    expect(hit?.row).not.toBe(rows.findIndex((r) => r.plot === 101)); // not the index
-    // Subsample 2 resolves to the OTHER 101 row (Excel Row 57, array index 0).
-    expect(targetHighlight({ plot: 101, subsample: 2 }, columns, rows)?.row).toBe(57);
+    expect(hit?.row).not.toBe(0); // not the array index
   });
 
   it('(c) a target row missing from the payload returns null — never a wrap', () => {
-    expect(targetHighlight({ plot: 101, subsample: 9 }, columns, rows)).toBeNull();
-    expect(targetHighlight({ plot: 999, subsample: 1 }, columns, rows)).toBeNull();
+    expect(targetHighlight({ plot: 101, subsample: 9 }, rows)).toBeNull();
+    expect(targetHighlight({ plot: 999, subsample: 1 }, rows)).toBeNull();
   });
 
-  it('(d) no traitOrdinal falls back to a whole-row tint', () => {
-    expect(targetHighlight({ plot: 102, subsample: 1 }, columns, rows)).toEqual({
-      row: 99,
-      valuesIndex: null,
-    });
+  it('(d) a null target highlights nothing', () => {
+    expect(targetHighlight(null, rows)).toBeNull();
   });
 
-  it('(e) an out-of-range traitOrdinal degrades to a row tint without throwing', () => {
-    expect(() =>
-      targetHighlight({ plot: 101, subsample: 1, traitOrdinal: 9 }, columns, rows),
-    ).not.toThrow();
-    expect(
-      targetHighlight({ plot: 101, subsample: 1, traitOrdinal: 9 }, columns, rows),
-    ).toEqual({ row: 12, valuesIndex: null });
-    // Ordinal 2 is in NO column of this grid — ordinal − 1 would wrongly land
-    // on index 0, so this also pins "identity match, never ordinal − 1".
-    expect(
-      targetHighlight({ plot: 101, subsample: 1, traitOrdinal: 2 }, columns, rows),
-    ).toEqual({ row: 12, valuesIndex: null });
+  it('(e) row-only shape: the highlight carries `row` and NOTHING else', () => {
+    const hit = targetHighlight({ plot: 101, subsample: 1 }, rows);
+    expect(hit).not.toBeNull();
+    expect(Object.keys(hit as object)).toEqual(['row']);
   });
 
-  it('(f) shuffled columns: valuesIndex is the ARRAY index of the traitOrdinal', () => {
-    // First column carries ordinal 3 → index 0 (ordinal − 1 would give 2).
-    expect(
-      targetHighlight({ plot: 101, subsample: 1, traitOrdinal: 3 }, columns, rows),
-    ).toEqual({ row: 12, valuesIndex: 0 });
-    // Ordinal 1 → index 1 (ordinal − 1 would give 0 — the wrong cell).
-    expect(
-      targetHighlight({ plot: 101, subsample: 1, traitOrdinal: 1 }, columns, rows),
-    ).toEqual({ row: 12, valuesIndex: 1 });
-    expect(
-      targetHighlight({ plot: 101, subsample: 1, traitOrdinal: 7 }, columns, rows),
-    ).toEqual({ row: 12, valuesIndex: 2 });
-  });
-
-  it('(g) Rule 2: a highlighted cell holding 0 still highlights AND renders "0"', () => {
-    const highlight = targetHighlight(
-      { plot: 101, subsample: 1, traitOrdinal: 1 },
-      columns,
-      rows,
-    );
-    expect(highlight).toEqual({ row: 12, valuesIndex: 1 });
-
-    // The highlighted cell really is a rated 0 (not an empty cell) …
-    const value = rows[1].values[1];
-    expect(value).toBe(0);
-    // … so the grid renders '0' — never blank — while empty still renders ''.
-    expect(sheetCellValue(value)).toBe('0');
-    expect(sheetCellValue(null)).toBe('');
-  });
-
-  it('(h) a null target highlights nothing', () => {
-    expect(targetHighlight(null, columns, rows)).toBeNull();
+  it('(f) Rule 2: an all-null / all-zero values[] derives the SAME row', () => {
+    const base: SheetRow[] = [
+      { row: 22, plot: 101, subsample: 1, values: [null, 0, null] },
+    ];
+    const zeros: SheetRow[] = [
+      { row: 22, plot: 101, subsample: 1, values: [0, 0, 0] },
+    ];
+    expect(targetHighlight({ plot: 101, subsample: 1 }, base)).toEqual({ row: 22 });
+    expect(targetHighlight({ plot: 101, subsample: 1 }, zeros)).toEqual({ row: 22 });
   });
 });
 
-describe('targetSelection (the write anchor\'s grid shape)', () => {
-  it('(a) narrows targetHighlight to the exact cell for a tapped target', () => {
-    // Shuffled columns again: ordinal 1 → ARRAY index 1, never ordinal − 1.
-    expect(
-      targetSelection({ plot: 101, subsample: 1, traitOrdinal: 1 }, columns, rows),
-    ).toEqual({ row: 12, valuesIndex: 1 });
-    expect(
-      targetSelection({ plot: 101, subsample: 2, traitOrdinal: 3 }, columns, rows),
-    ).toEqual({ row: 57, valuesIndex: 0 });
+describe('deriveBlockFull (the STAY/advance switch)', () => {
+  it('is true when the highest written ordinal reaches its block END', () => {
+    expect(deriveBlockFull([{ traitOrdinal: 1 }, { traitOrdinal: 2 }, { traitOrdinal: 3 }], columns)).toBe(true);
+    expect(deriveBlockFull([{ traitOrdinal: 4 }, { traitOrdinal: 5 }, { traitOrdinal: 6 }], columns)).toBe(true);
+    expect(deriveBlockFull([{ traitOrdinal: 7 }, { traitOrdinal: 8 }, { traitOrdinal: 9 }], columns)).toBe(true);
+    // The LAST ordinal of a block alone is enough (max reaches the end).
+    expect(deriveBlockFull([{ traitOrdinal: 3 }], columns)).toBe(true);
   });
 
-  it('(b) a row missing from the payload selects nothing — never a wrap', () => {
-    expect(
-      targetSelection({ plot: 101, subsample: 9, traitOrdinal: 1 }, columns, rows),
-    ).toBeNull();
-    expect(targetSelection(null, columns, rows)).toBeNull();
+  it('is false while the block still has empty cells after the write', () => {
+    expect(deriveBlockFull([{ traitOrdinal: 1 }, { traitOrdinal: 2 }], columns)).toBe(false);
+    expect(deriveBlockFull([{ traitOrdinal: 4 }, { traitOrdinal: 5 }], columns)).toBe(false);
+    expect(deriveBlockFull([{ traitOrdinal: 1 }], columns)).toBe(false);
   });
 
-  it('(c) a target WITHOUT a column degrades to NO selection, not a row tint', () => {
-    // `targetHighlight` would tint the whole row here; the anchor needs an
-    // exact cell, so the hosts must render no selection instead.
-    expect(targetSelection({ plot: 102, subsample: 1 }, columns, rows)).toBeNull();
-    // Unknown ordinal (in no column of this grid) — same rule.
+  it('judges by the MAX ordinal — a partial next block is NOT full', () => {
+    // LEAF1 (1..3) is full, but the highest write is 4 (mid-LEAF2) → not full.
     expect(
-      targetSelection({ plot: 101, subsample: 1, traitOrdinal: 9 }, columns, rows),
-    ).toBeNull();
+      deriveBlockFull(
+        [{ traitOrdinal: 1 }, { traitOrdinal: 2 }, { traitOrdinal: 3 }, { traitOrdinal: 4 }],
+        columns,
+      ),
+    ).toBe(false);
+  });
+
+  it('is false for no cells, no columns, or an ordinal outside every block', () => {
+    expect(deriveBlockFull([], columns)).toBe(false);
+    expect(deriveBlockFull([{ traitOrdinal: 1 }], [])).toBe(false);
+    // 10 is past the last block (end 9) — no block claims it → conservative false.
+    expect(deriveBlockFull([{ traitOrdinal: 10 }], columns)).toBe(false);
+    // Non-positive / non-integer ordinals are filtered out entirely.
+    expect(deriveBlockFull([{ traitOrdinal: 0 }], columns)).toBe(false);
+    expect(deriveBlockFull([{ traitOrdinal: 2.5 }], columns)).toBe(false);
+  });
+
+  it('never hardcodes a 3-wide block: a 2-wide part is full at its own end', () => {
+    const narrow: SheetColumn[] = [
+      { traitOrdinal: 1, column: 'C', pestCode: 'A', partRated: 'LEAF1', label: 'A × LEAF1' },
+      { traitOrdinal: 2, column: 'D', pestCode: 'B', partRated: 'LEAF1', label: 'B × LEAF1' },
+      { traitOrdinal: 3, column: 'E', pestCode: 'C', partRated: 'LEAF2', label: 'C × LEAF2' },
+    ];
+    expect(deriveBlockFull([{ traitOrdinal: 1 }, { traitOrdinal: 2 }], narrow)).toBe(true);
+    expect(deriveBlockFull([{ traitOrdinal: 1 }], narrow)).toBe(false);
   });
 });
 
 describe('advanceSheetTarget / rehydrateSheetTarget', () => {
-  it('(i) writes through storage + the atom AS WRITTEN (no + 1), and rehydrating ANOTHER trial clears it', () => {
+  it('(i) writes the pair + blockFull through storage and the atom (no + 1)', () => {
     const storage = memoryStorage();
+    getDefaultStore().set(trialSheetAtom, payloadFor(TRIAL));
 
-    advanceSheetTarget(TRIAL, { plot: 101, subsample: 3, traitOrdinal: 5 }, storage);
+    advanceSheetTarget(
+      TRIAL,
+      {
+        plot: 101,
+        subsample: 3,
+        writtenCells: [{ traitOrdinal: 1 }, { traitOrdinal: 2 }, { traitOrdinal: 3 }],
+      },
+      storage,
+    );
 
     // Persistence holds the written pair verbatim — never subsample + 1: the
-    // NEXT pair is derived from the sheet payload (deriveNextTarget), which
-    // is the only thing that knows whether a following row exists.
-    expect(readDefaultTarget(TRIAL, storage)).toEqual({ plot: 101, subsample: 3 });
-    // The atom mirrors that same written pair, tagged with the trial + column.
+    // NEXT pair is derived from the sheet payload (deriveNextTarget).
+    expect(readDefaultTarget(TRIAL, storage)).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: true,
+    });
+    // The atom mirrors that same memory (pair + flag), tagged with the trial.
     expect(getDefaultStore().get(sheetLastWrittenAtom)).toEqual({
       trialId: TRIAL,
       plot: 101,
       subsample: 3,
-      traitOrdinal: 5,
+      blockFull: true,
+    });
+  });
+
+  it('computes blockFull=false when the block is only partly written', () => {
+    const storage = memoryStorage();
+    getDefaultStore().set(trialSheetAtom, payloadFor(TRIAL));
+
+    advanceSheetTarget(
+      TRIAL,
+      {
+        plot: 101,
+        subsample: 2,
+        writtenCells: [{ traitOrdinal: 1 }, { traitOrdinal: 2 }],
+      },
+      storage,
+    );
+
+    expect(readDefaultTarget(TRIAL, storage)).toEqual({
+      plot: 101,
+      subsample: 2,
+      blockFull: false,
+    });
+    expect(getDefaultStore().get(sheetLastWrittenAtom)).toEqual({
+      trialId: TRIAL,
+      plot: 101,
+      subsample: 2,
+      blockFull: false,
+    });
+  });
+
+  it('degrades to blockFull=false when no columns are trustworthy (conservative STAY)', () => {
+    const storage = memoryStorage();
+    // No payload atom at all → columnsForTrial returns null.
+    advanceSheetTarget(
+      TRIAL,
+      { plot: 101, subsample: 3, writtenCells: [{ traitOrdinal: 3 }] },
+      storage,
+    );
+    expect(readDefaultTarget(TRIAL, storage)).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: false,
     });
 
-    // A DIFFERENT trial has nothing remembered → atom null, no foreign cell.
-    rehydrateSheetTarget(OTHER_TRIAL, storage);
+    // A payload belonging to ANOTHER trial is never trusted for this one.
+    getDefaultStore().set(trialSheetAtom, payloadFor(OTHER_TRIAL));
+    advanceSheetTarget(
+      TRIAL,
+      { plot: 101, subsample: 3, writtenCells: [{ traitOrdinal: 3 }] },
+      memoryStorage(),
+    );
+    expect(getDefaultStore().get(sheetLastWrittenAtom)).toEqual({
+      trialId: TRIAL,
+      plot: 101,
+      subsample: 3,
+      blockFull: false,
+    });
+  });
+
+  it('no writtenCells → blockFull=false (nothing filled anything)', () => {
+    const storage = memoryStorage();
+    getDefaultStore().set(trialSheetAtom, payloadFor(TRIAL));
+    advanceSheetTarget(TRIAL, { plot: 101, subsample: 3 }, storage);
+    expect(readDefaultTarget(TRIAL, storage)).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: false,
+    });
+  });
+
+  it('falls back to the persisted snapshot columns when the live atom is empty (W2)', () => {
+    const storage = memoryStorage();
+    // No live payload atom (sheet not loaded yet), but a snapshot IS persisted
+    // for this trial. Without the fallback the block would be judged unfilled
+    // (STAY) and the run would lag one subsample; the snapshot fixes that.
+    writeSheetSnapshot(TRIAL, payloadFor(TRIAL), 'network', storage);
+    // Precondition: the live atom really is empty (beforeEach reset it).
+    expect(getDefaultStore().get(trialSheetAtom)).toBeNull();
+
+    advanceSheetTarget(
+      TRIAL,
+      {
+        plot: 101,
+        subsample: 3,
+        writtenCells: [
+          { traitOrdinal: 1 },
+          { traitOrdinal: 2 },
+          { traitOrdinal: 3 },
+        ],
+      },
+      storage,
+    );
+
+    expect(readDefaultTarget(TRIAL, storage)).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: true,
+    });
+  });
+
+  it('ignores a foreign-trial live atom and trusts the snapshot for THIS trial (W2)', () => {
+    const storage = memoryStorage();
+    // A leftover payload for ANOTHER trial must never decide this trial's
+    // block size — the snapshot is the right source here.
+    getDefaultStore().set(trialSheetAtom, payloadFor(OTHER_TRIAL));
+    writeSheetSnapshot(TRIAL, payloadFor(TRIAL), 'network', storage);
+
+    advanceSheetTarget(
+      TRIAL,
+      { plot: 101, subsample: 3, writtenCells: [{ traitOrdinal: 3 }] },
+      storage,
+    );
+
+    expect(readDefaultTarget(TRIAL, storage)).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: true,
+    });
+  });
+
+  it('still STAYs when neither the atom nor a snapshot has columns (W2 boundary)', () => {
+    const storage = memoryStorage();
+    advanceSheetTarget(
+      TRIAL,
+      { plot: 101, subsample: 3, writtenCells: [{ traitOrdinal: 3 }] },
+      storage,
+    );
+    expect(readDefaultTarget(TRIAL, storage)).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: false,
+    });
+  });
+
+  it('mirrors rememberWrittenTarget no-op: an incomplete result moves neither store nor atom', () => {
+    const storage = memoryStorage();
+    getDefaultStore().set(trialSheetAtom, payloadFor(TRIAL));
+
+    advanceSheetTarget(
+      TRIAL,
+      { plot: null, subsample: 3, writtenCells: [{ traitOrdinal: 1 }] },
+      storage,
+    );
+
+    expect(readDefaultTarget(TRIAL, storage)).toBeNull();
     expect(getDefaultStore().get(sheetLastWrittenAtom)).toBeNull();
   });
 
-  it('rehydrates this trial as a row tint — traitOrdinal is not persisted', () => {
+  it('rehydrates this trial (pair + blockFull) from storage', () => {
     const storage = memoryStorage();
-    writeDefaultTarget(TRIAL, { plot: 101, subsample: 2 }, storage);
+    writeDefaultTarget(TRIAL, { plot: 101, subsample: 2, blockFull: true }, storage);
 
     rehydrateSheetTarget(TRIAL, storage);
 
@@ -200,70 +356,65 @@ describe('advanceSheetTarget / rehydrateSheetTarget', () => {
       trialId: TRIAL,
       plot: 101,
       subsample: 2,
+      blockFull: true,
     });
-    // The atom itself is the LAST-WRITTEN pair (identity-highlightable) …
+    // The atom is the LAST-WRITTEN pair (identity-highlightable), not a next.
     expect(
-      targetHighlight(getDefaultStore().get(sheetLastWrittenAtom), columns, rows),
-    ).toEqual({ row: 57, valuesIndex: null });
+      targetHighlight(getDefaultStore().get(sheetLastWrittenAtom), rows),
+    ).toEqual({ row: 57 });
   });
 
-  it('rehydrating a trial with nothing stored clears the atom', () => {
+  it('rehydrating a trial with nothing stored (or another trial) clears the atom', () => {
     const storage = memoryStorage();
-    advanceSheetTarget(TRIAL, { plot: 101, subsample: 3 }, storage);
+    advanceSheetTarget(
+      TRIAL,
+      { plot: 101, subsample: 3, writtenCells: [{ traitOrdinal: 3 }] },
+      storage,
+    );
     expect(getDefaultStore().get(sheetLastWrittenAtom)).not.toBeNull();
 
     rehydrateSheetTarget(OTHER_TRIAL, storage);
     expect(getDefaultStore().get(sheetLastWrittenAtom)).toBeNull();
   });
 
-  it('mirrors rememberWrittenTarget no-op: an incomplete result moves neither store nor atom', () => {
+  it('rehydrating a LEGACY pair (no blockFull in storage) clears the atom', () => {
     const storage = memoryStorage();
-
-    advanceSheetTarget(TRIAL, { plot: null, subsample: 3, traitOrdinal: 1 }, storage);
-
-    expect(readDefaultTarget(TRIAL, storage)).toBeNull();
+    storage.map.set(
+      `plottR-default-target:${TRIAL}`,
+      JSON.stringify({ plot: 101, subsample: 2 }),
+    );
+    rehydrateSheetTarget(TRIAL, storage);
     expect(getDefaultStore().get(sheetLastWrittenAtom)).toBeNull();
   });
 });
 
 describe('deriveNextTarget feeding targetHighlight (the host wiring)', () => {
-  it('last-written 101/1 → next is 102/1 → the tint lands on 102/1\'s row', () => {
-    // rows[] (array order): [101/2 → Excel Row 57, 101/1 → Row 12, 102/1 → Row 99].
-    const lastWritten = { trialId: TRIAL, plot: 101, subsample: 1 };
-    const next = deriveNextTarget(rows, lastWritten);
-    expect(next).toEqual({ plot: 102, subsample: 1 });
-    expect(targetHighlight(next, columns, rows)).toEqual({
-      row: 99,
-      valuesIndex: null,
-    });
-  });
+  // rows[] (array order): [101/2 → Excel Row 57, 101/1 → Row 12, 102/1 → Row 99].
 
-  it('the last row of the payload derives null → no highlight at all', () => {
-    const lastRow = { trialId: TRIAL, plot: 102, subsample: 1 };
-    const next = deriveNextTarget(rows, lastRow);
-    expect(next).toBeNull();
-    expect(targetHighlight(next, columns, rows)).toBeNull();
-  });
-
-  it('ARRAY order decides: 101/2 derives 101/1 (Excel Row 57 → Row 12)', () => {
-    // The Excel `row` values are non-monotonic (57 sits BEFORE 12 in the
-    // array) and the plot numbers run backwards here — the step forward is
-    // the array index, never `row + 1`, never subsample arithmetic.
-    const next = deriveNextTarget(
-      rows,
-      { plot: 101, subsample: 2 },
-    );
+  it('a full block advances 101/2 → 101/1 → the tint lands on 101/1\'s row', () => {
+    const next = deriveNextTarget(rows, { plot: 101, subsample: 2 }, true);
     expect(next).toEqual({ plot: 101, subsample: 1 });
-    expect(targetHighlight(next, columns, rows)).toEqual({
-      row: 12,
-      valuesIndex: null,
-    });
+    expect(targetHighlight(next, rows)).toEqual({ row: 12 });
+  });
+
+  it('an unfilled block STAYS on 101/2 → the tint lands on 101/2\'s row', () => {
+    const next = deriveNextTarget(rows, { plot: 101, subsample: 2 }, false);
+    expect(next).toEqual({ plot: 101, subsample: 2 });
+    expect(targetHighlight(next, rows)).toEqual({ row: 57 });
+  });
+
+  it('a full block at a plot edge derives null → no highlight at all', () => {
+    // 101/1 is the last 101 row in array order (index 1); the next row is
+    // 102/1, a different plot → null, so nothing is highlighted.
+    const next = deriveNextTarget(rows, { plot: 101, subsample: 1 }, true);
+    expect(next).toBeNull();
+    expect(targetHighlight(next, rows)).toBeNull();
   });
 
   it('a stale/legacy last-written pair not present in rows derives null (nothing claimed)', () => {
     // The pre-fix store could hold 101/5 — a pair the workbook never had.
-    expect(deriveNextTarget(rows, { plot: 101, subsample: 5 })).toBeNull();
-    expect(deriveNextTarget(rows, { plot: 999, subsample: 1 })).toBeNull();
-    expect(targetHighlight(null, columns, rows)).toBeNull();
+    expect(deriveNextTarget(rows, { plot: 101, subsample: 5 }, true)).toBeNull();
+    expect(deriveNextTarget(rows, { plot: 999, subsample: 1 }, true)).toBeNull();
+    expect(targetHighlight(null, rows)).toBeNull();
   });
 });

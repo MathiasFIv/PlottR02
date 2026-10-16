@@ -26,24 +26,46 @@ function memoryStorage(): StorageStub & { map: Map<string, string> } {
 }
 
 describe('defaultTarget', () => {
-  it('round-trips a written target through read', () => {
+  it('round-trips a written target (pair + blockFull) through read', () => {
     const storage = memoryStorage();
-    writeDefaultTarget(TRIAL, { plot: 101, subsample: 3 }, storage);
+    writeDefaultTarget(
+      TRIAL,
+      { plot: 101, subsample: 3, blockFull: true },
+      storage,
+    );
     expect(readDefaultTarget(TRIAL, storage)).toEqual({
       plot: 101,
       subsample: 3,
+      blockFull: true,
+    });
+
+    // The flag is data, not a default: a STAY (unfilled block) round-trips too.
+    writeDefaultTarget(
+      TRIAL,
+      { plot: 101, subsample: 3, blockFull: false },
+      storage,
+    );
+    expect(readDefaultTarget(TRIAL, storage)).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: false,
     });
   });
 
   it('namespaces the memory per trial', () => {
     const storage = memoryStorage();
-    writeDefaultTarget(TRIAL, { plot: 101, subsample: 3 }, storage);
+    writeDefaultTarget(
+      TRIAL,
+      { plot: 101, subsample: 3, blockFull: true },
+      storage,
+    );
     // A different trial must NEVER see this trial's cursor — plot numbers
     // repeat freely across workbooks.
     expect(readDefaultTarget(OTHER_TRIAL, storage)).toBeNull();
     expect(readDefaultTarget(TRIAL, storage)).toEqual({
       plot: 101,
       subsample: 3,
+      blockFull: true,
     });
   });
 
@@ -59,13 +81,36 @@ describe('defaultTarget', () => {
 
   it('returns null for a non-object payload', () => {
     const storage = memoryStorage();
-    storage.map.set(KEY_FOR_TRIAL, JSON.stringify([101, 3]));
+    storage.map.set(KEY_FOR_TRIAL, JSON.stringify([101, 3, true]));
     expect(readDefaultTarget(TRIAL, storage)).toBeNull();
   });
 
   it('returns null for a partially-invalid payload', () => {
     const storage = memoryStorage();
     storage.map.set(KEY_FOR_TRIAL, JSON.stringify({ plot: 101 }));
+    storage.map.set(
+      `${KEY_FOR_TRIAL}-noSub`,
+      JSON.stringify({ plot: 101, blockFull: true }),
+    );
+    expect(readDefaultTarget(TRIAL, storage)).toBeNull();
+    expect(readDefaultTarget(`${TRIAL}-noSub`, storage)).toBeNull();
+  });
+
+  it('reads a LEGACY pair (no blockFull) as null — no flag is ever guessed', () => {
+    // Pre-fix store contents: { plot, subsample } with no blockFull. It must
+    // read as "nothing remembered" (never invent a STAY/advance decision),
+    // which in turn makes `resolveNextTarget` derive no target.
+    const storage = memoryStorage();
+    storage.map.set(KEY_FOR_TRIAL, JSON.stringify({ plot: 101, subsample: 3 }));
+    expect(readDefaultTarget(TRIAL, storage)).toBeNull();
+  });
+
+  it('reads a non-boolean blockFull as null', () => {
+    const storage = memoryStorage();
+    storage.map.set(
+      KEY_FOR_TRIAL,
+      JSON.stringify({ plot: 101, subsample: 3, blockFull: 'yes' }),
+    );
     expect(readDefaultTarget(TRIAL, storage)).toBeNull();
   });
 
@@ -83,41 +128,70 @@ describe('defaultTarget', () => {
 
   it('ignores non-positive or non-integer values on write', () => {
     const badTargets: Array<unknown> = [
-      { plot: 0, subsample: 3 },
-      { plot: -1, subsample: 3 },
-      { plot: 101, subsample: 0 },
-      { plot: 101, subsample: -2 },
-      { plot: 1.5, subsample: 3 },
-      { plot: 101, subsample: 2.5 },
-      { plot: '101', subsample: 3 },
-      { plot: 101, subsample: '3' },
+      { plot: 0, subsample: 3, blockFull: true },
+      { plot: -1, subsample: 3, blockFull: true },
+      { plot: 101, subsample: 0, blockFull: true },
+      { plot: 101, subsample: -2, blockFull: true },
+      { plot: 1.5, subsample: 3, blockFull: true },
+      { plot: 101, subsample: 2.5, blockFull: true },
+      { plot: '101', subsample: 3, blockFull: true },
+      { plot: 101, subsample: '3', blockFull: true },
     ];
     for (const raw of badTargets) {
       const storage = memoryStorage();
       writeDefaultTarget(
         TRIAL,
-        raw as { plot: number; subsample: number },
+        raw as { plot: number; subsample: number; blockFull: boolean },
         storage,
       );
       expect(readDefaultTarget(TRIAL, storage)).toBeNull();
     }
   });
 
-  it('rememberWrittenTarget stores the pair AS WRITTEN — never subsample + 1', () => {
+  it('ignores a write whose blockFull is missing or not a boolean', () => {
+    const badTargets: Array<unknown> = [
+      { plot: 101, subsample: 3 },
+      { plot: 101, subsample: 3, blockFull: 'true' },
+      { plot: 101, subsample: 3, blockFull: null },
+      { plot: 101, subsample: 3, blockFull: 1 },
+    ];
+    for (const raw of badTargets) {
+      const storage = memoryStorage();
+      writeDefaultTarget(
+        TRIAL,
+        raw as { plot: number; subsample: number; blockFull: boolean },
+        storage,
+      );
+      expect(readDefaultTarget(TRIAL, storage)).toBeNull();
+    }
+  });
+
+  it('rememberWrittenTarget stores the pair + flag AS WRITTEN — never subsample + 1', () => {
     const storage = memoryStorage();
-    rememberWrittenTarget(TRIAL, { plot: 101, subsample: 4 }, storage);
+    rememberWrittenTarget(
+      TRIAL,
+      { plot: 101, subsample: 4, blockFull: true },
+      storage,
+    );
     // The workbook decides what comes next (deriveNextTarget walks rows[]);
     // the store only remembers the last write, so 101/4 stays 101/4 — the old
     // `+ 1` here invented a nonexistent 101/5 at the end of a plot.
     expect(readDefaultTarget(TRIAL, storage)).toEqual({
       plot: 101,
       subsample: 4,
+      blockFull: true,
     });
-    // A mid-plot write is stored verbatim too — no increment, ever.
-    rememberWrittenTarget(TRIAL, { plot: 101, subsample: 3 }, storage);
+    // A mid-plot write with an UNFILLED block is stored verbatim too — no
+    // increment, and the flag rides along.
+    rememberWrittenTarget(
+      TRIAL,
+      { plot: 101, subsample: 3, blockFull: false },
+      storage,
+    );
     expect(readDefaultTarget(TRIAL, storage)).toEqual({
       plot: 101,
       subsample: 3,
+      blockFull: false,
     });
   });
 
@@ -125,19 +199,40 @@ describe('defaultTarget', () => {
     const badResults: Array<{
       plot?: number | null;
       subsample?: number | null;
+      blockFull?: boolean;
     }> = [
-      { plot: null, subsample: 3 },
-      { plot: 101, subsample: null },
-      { plot: 101, subsample: 0 },
-      { plot: undefined, subsample: 3 },
-      { plot: -1, subsample: 3 },
-      { plot: 101, subsample: -1 },
-      { plot: 1.5, subsample: 3 },
-      { plot: 101, subsample: 2.5 },
+      { plot: null, subsample: 3, blockFull: true },
+      { plot: 101, subsample: null, blockFull: true },
+      { plot: 101, subsample: 0, blockFull: true },
+      { plot: undefined, subsample: 3, blockFull: true },
+      { plot: -1, subsample: 3, blockFull: true },
+      { plot: 101, subsample: -1, blockFull: true },
+      { plot: 1.5, subsample: 3, blockFull: true },
+      { plot: 101, subsample: 2.5, blockFull: true },
     ];
     for (const result of badResults) {
       const storage = memoryStorage();
       rememberWrittenTarget(TRIAL, result, storage);
+      expect(readDefaultTarget(TRIAL, storage)).toBeNull();
+    }
+  });
+
+  it('rememberWrittenTarget no-ops when blockFull is missing or not a boolean', () => {
+    const badResults: Array<{
+      plot?: number | null;
+      subsample?: number | null;
+      blockFull?: boolean | string;
+    }> = [
+      { plot: 101, subsample: 3 },
+      { plot: 101, subsample: 3, blockFull: 'true' },
+    ];
+    for (const result of badResults) {
+      const storage = memoryStorage();
+      rememberWrittenTarget(
+        TRIAL,
+        result as { plot: number; subsample: number; blockFull: boolean },
+        storage,
+      );
       expect(readDefaultTarget(TRIAL, storage)).toBeNull();
     }
   });
@@ -153,10 +248,14 @@ describe('defaultTarget', () => {
     // environments.
     expect(readDefaultTarget(TRIAL)).toBeNull();
     expect(() =>
-      writeDefaultTarget(TRIAL, { plot: 101, subsample: 3 }),
+      writeDefaultTarget(TRIAL, { plot: 101, subsample: 3, blockFull: true }),
     ).not.toThrow();
     expect(() =>
-      rememberWrittenTarget(TRIAL, { plot: 101, subsample: 3 }),
+      rememberWrittenTarget(TRIAL, {
+        plot: 101,
+        subsample: 3,
+        blockFull: false,
+      }),
     ).not.toThrow();
   });
 });

@@ -1,39 +1,31 @@
 /**
  * Current-cell target (N3) — "the cell we are in": where the voice recorder
  * is positioned / will write next, rendered as the read-only grid's
- * current-cell highlight (row tint + the exact value cell).
+ * current-cell highlight (row tint).
  *
  * Two halves:
- * - `targetHighlight` — pure: maps a `{plot, subsample, traitOrdinal?}` target
- *   onto the grid's `{row, valuesIndex}` render shape against the CURRENT
- *   payload. The hosts call it during render (never memoized), so a payload
- *   replacement (refresh / snapshot hydrate / fast-path) is re-derived for
- *   free and a route change can never strand a stale highlight.
- *   `targetSelection` is that same mapping narrowed to an EXACT cell (the
- *   write anchor's `SheetGrid` `selected` prop) — same matching, no extra
- *   arithmetic, so both hosts render the tap identically.
+ * - `targetHighlight` — pure: maps a `{plot, subsample}` target onto the
+ *   grid's `{row}` render shape against the CURRENT payload. The hosts call
+ *   it during render (never memoized), so a payload replacement (refresh /
+ *   snapshot hydrate / fast-path) is re-derived for free and a route change
+ *   can never strand a stale highlight. Row-only by design: the write cursor
+ *   is a ROW (the tap is row-only and the derive carries no column), so the
+ *   exact cell is deliberately not pinned.
  * - `advanceSheetTarget` / `rehydrateSheetTarget` — the write-through seam:
  *   `lib/syncQueue.ts` records on `status === 'Written'`, the hosts rehydrate
- *   on mount / trial change. Both move the LAST-WRITTEN pair (never a
- *   computed "+1"): `lib/defaultTarget.ts` owns persistence and
- *   `sheetLastWrittenAtom` mirrors what was just written. The NEXT target —
- *   what the grid actually highlights — is derived from that pair plus the
- *   payload by `deriveNextTarget` (`lib/nextTarget.ts`) in the hosts.
+ *   on mount / trial change. Both move the LAST-WRITTEN pair plus its
+ *   `blockFull` flag (never a computed "+1"): `lib/defaultTarget.ts` owns
+ *   persistence and `sheetLastWrittenAtom` mirrors what was just written. The
+ *   NEXT target — what the grid actually highlights — is derived from that
+ *   memory plus the payload by `deriveNextTarget` (`lib/nextTarget.ts`) in
+ *   the hosts.
  *
- * Matching rules — both are identity matches, never arithmetic:
+ * Matching rules — identity matches, never arithmetic:
  * - **ROW**: `rows.findIndex(r => r.plot === target.plot && r.subsample ===
  *   target.subsample)`. `SheetRow.Row` is only the Excel cross-ref and is
  *   NEVER a match key. The highlight carries the matched row's `row` (the
  *   cross-ref `SheetGrid` compares each `<tr>` against), so the tint lands on
  *   the matched row; not found → `null` (no wrap, no nearest-row invention).
- * - **COLUMN**: `columns.findIndex(c => c.traitOrdinal === target.traitOrdinal)`
- *   — that array index IS `valuesIndex`, because the contract is `values[i]`
- *   belongs to `columns[i]` and `TraitOrdinal` need not equal `index + 1`.
- *   NEVER `ordinal - 1`, NEVER Excel-letter math. `values[]` is never read
- *   here — `lib/sheetCell.ts` owns the value channel (Rule 2: empty ≠ 0).
- *
- * `traitOrdinal` is optional everywhere: absent, unknown, or out-of-range
- * degrades to a whole-row tint (`valuesIndex: null`) instead of throwing.
  *
  * Non-React writes use `getDefaultStore()` — the same precedent as
  * `recordingsNeedingAttentionCountAtom` / `sheetRefreshTickAtom` in
@@ -42,28 +34,26 @@
  */
 
 import { getDefaultStore } from 'jotai/vanilla';
-import { sheetLastWrittenAtom } from '../store/atoms';
-import type { SheetLastWritten } from '../store/atoms';
+import { sheetLastWrittenAtom, trialSheetAtom } from '../store/atoms';
 import type { SheetColumn, SheetRow } from '../types';
 import { readDefaultTarget, rememberWrittenTarget } from './defaultTarget';
+import { buildSheetBlocks } from './sheetHeader';
+import { readSheetSnapshot } from './sheetSnapshot';
 
 /**
- * The grid's render shape for the current cell:
- * - `row` — the `SheetRow.row` of the row to tint (what `SheetGrid` compares
- *   against, `highlight?.row === row.row`);
- * - `valuesIndex` — index into `SheetRow.values` / `columns` for the exact
- *   cell, or `null` for a whole-row tint (no/unknown trait column).
+ * The grid's render shape for the current cell / write anchor:
+ * `row` — the `SheetRow.row` of the row to tint (what `SheetGrid` compares
+ * against, `highlight?.row === row.row`). Row-only: no column pin.
  */
-export type SheetHighlight = { row: number; valuesIndex: number | null };
+export type SheetHighlight = { row: number };
 
 /**
- * Resolves the current cell against the payload on screen, or null when the
+ * Resolves the target's row against the payload on screen, or null when the
  * target is null or its plot+subsample is not in this payload. Pure — never
  * reads `values[]`, never throws, never invents a row.
  */
 export function targetHighlight(
-  target: { plot: number; subsample: number; traitOrdinal?: number } | null,
-  columns: SheetColumn[],
+  target: { plot: number; subsample: number } | null,
   rows: SheetRow[],
 ): SheetHighlight | null {
   if (target === null) return null;
@@ -73,46 +63,79 @@ export function targetHighlight(
     (r) => r.plot === target.plot && r.subsample === target.subsample,
   );
   if (rowIndex === -1) return null;
-  const row = rows[rowIndex].row;
-
-  // No trait anchor → row tint; an unknown ordinal degrades the same way.
-  if (typeof target.traitOrdinal !== 'number') return { row, valuesIndex: null };
-  const valuesIndex = columns.findIndex((c) => c.traitOrdinal === target.traitOrdinal);
-  if (valuesIndex === -1) return { row, valuesIndex: null };
-
-  return { row, valuesIndex };
+  return { row: rows[rowIndex].row };
 }
 
+/** One written cell of a sync result — only the column ordinal matters here. */
+type WrittenCell = { traitOrdinal: number };
+
 /**
- * `targetHighlight` narrowed to the WRITE ANCHOR's render shape: the exact
- * cell (`valuesIndex` is a `number`), or null when the target resolves to no
- * cell at all (target null, row not in this payload, trait column not in
- * this payload — an anchor without a column renders no selection rather than
- * a row tint; the hosts pass the result straight to `SheetGrid`'s `selected`
- * prop). Same identity matching, no extra arithmetic — the shared seam both
- * hosts use, so `SheetPanel` and `SheetView` cannot drift apart.
+ * Whether a set of written cells FILLED the category block they landed in:
+ * true when the highest written traitOrdinal reaches the END of its block
+ * (blocks = consecutive equal `partRated` runs, `buildSheetBlocks` — never a
+ * hardcoded 3). False when there is nothing to judge (no cells, no columns,
+ * or an ordinal outside every block) — the conservative "not full" keeps the
+ * cursor on the row and re-targets the SAME subsample (the next write lands
+ * on that row's first empty cell). It is NOT harmless: see the edge below.
+ *
+ * Judgment is by the MAX written ordinal, which is exact for the normal
+ * forward-fill case but has ONE edge: a workbook whose block's LAST cell was
+ * already occupied before this write (so the write stops short of it) is
+ * misjudged as "not full" → STAY — and because the server appends at the
+ * row's next free cell (the NEXT block of the SAME subsample) rather than
+ * reporting "already filled", the run silently lags by one subsample. The
+ * robust fix is a server-computed `blockFull` on the `Written` response;
+ * until then the client derives it from `writtenCells` as best it can.
+ *
+ * Exported for tests; `advanceSheetTarget` is the production caller.
  */
-export function targetSelection(
-  target: { plot: number; subsample: number; traitOrdinal?: number } | null,
+export function deriveBlockFull(
+  writtenCells: readonly WrittenCell[],
   columns: SheetColumn[],
-  rows: SheetRow[],
-): { row: number; valuesIndex: number } | null {
-  const highlight = targetHighlight(target, columns, rows);
-  return highlight !== null && highlight.valuesIndex !== null
-    ? { row: highlight.row, valuesIndex: highlight.valuesIndex }
-    : null;
+): boolean {
+  const ordinals = writtenCells
+    .map((cell) => cell.traitOrdinal)
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (ordinals.length === 0 || columns.length === 0) return false;
+  const maxOrdinal = Math.max(...ordinals);
+  const block = buildSheetBlocks(columns).find(
+    (b) => maxOrdinal >= b.start && maxOrdinal <= b.end,
+  );
+  return block !== undefined && maxOrdinal >= block.end;
 }
 
 /**
- * Re-reads the persisted last-written target for a trial into
+ * The payload's columns for a trial, or null when none can be trusted: the
+ * live atom first (only when it holds a payload AND belongs to this trial — a
+ * payload left behind by another trial must never decide this trial's block
+ * size), else the persisted snapshot for this trial, else null. Mirrors
+ * `rowsForTrial` (`lib/nextTarget.ts`): without the snapshot fallback, a write
+ * that runs before the payload atom is loaded would judge every block as
+ * unfilled (STAY) and the run would lag one subsample. Used only to compute
+ * `blockFull` at write time.
+ */
+function columnsForTrial(
+  trialId: string,
+  storage?: Pick<Storage, 'getItem' | 'setItem'>,
+): SheetColumn[] | null {
+  try {
+    const payload = getDefaultStore().get(trialSheetAtom);
+    if (payload !== null && payload.trialId === trialId && payload.columns !== null) {
+      return payload.columns;
+    }
+    return readSheetSnapshot(trialId, storage)?.sheet.columns ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Re-reads the persisted last-written memory for a trial into
  * `sheetLastWrittenAtom` (mount / trial change). Missing or unreadable
  * storage → the atom is set to null, so a trial with nothing written can
- * never show a leftover cell. Note the atom is seeded with the pair AS WRITTEN
- * — the hosts derive the highlighted (next) row from it via
- * `deriveNextTarget`, never from it directly.
- * `traitOrdinal` is intentionally absent here: persistence holds the
- * plot/subsample pair only (`DefaultTarget`), so rehydration is a row tint
- * until the next write seeds the column again.
+ * never show a leftover row. Note the atom is seeded with the pair AS
+ * WRITTEN plus its `blockFull` flag — the hosts derive the highlighted
+ * (next) row from it via `deriveNextTarget`, never from it directly.
  */
 export function rehydrateSheetTarget(
   trialId: string,
@@ -125,7 +148,12 @@ export function rehydrateSheetTarget(
       sheetLastWrittenAtom,
       remembered === null
         ? null
-        : { trialId, plot: remembered.plot, subsample: remembered.subsample },
+        : {
+            trialId,
+            plot: remembered.plot,
+            subsample: remembered.subsample,
+            blockFull: remembered.blockFull,
+          },
     );
   } catch {
     // Defensive: the reader never throws today, but a highlight must never be
@@ -141,29 +169,38 @@ function isPositiveInt(n: unknown): n is number {
 
 /**
  * Records a successful write (`status === 'Written'`).
- * `rememberWrittenTarget` runs FIRST — it owns persistence, so the store
- * holds the written pair exactly as the server resolved it (NO `+ 1`: the
- * next target is derived from the sheet payload at read time). Then the atom
- * mirrors the SAME written pair (`plot`, `subsample`), tagged with this
- * `trialId` and with `traitOrdinal` only when present. Invalid
- * plot/subsample leaves BOTH the store and the atom alone (same no-op rule as
- * `rememberWrittenTarget`).
+ *
+ * Computes `blockFull` from the response's `writtenCells` against the live
+ * payload's `columns` (trial-guarded; unavailable → false = conservative
+ * STAY), then `rememberWrittenTarget` runs FIRST — it owns persistence, so
+ * the store holds the written pair plus the flag exactly as computed (NO
+ * `+ 1`: the next target is derived from the sheet payload at read time).
+ * Then the atom mirrors the SAME memory (`plot`, `subsample`, `blockFull`),
+ * tagged with this `trialId`. Invalid plot/subsample leaves BOTH the store
+ * and the atom alone (same no-op rule as `rememberWrittenTarget`).
  */
 export function advanceSheetTarget(
   trialId: string,
   result: {
     plot?: number | null;
     subsample?: number | null;
-    traitOrdinal?: number | null;
+    writtenCells?: readonly WrittenCell[];
   },
   storage?: Pick<Storage, 'getItem' | 'setItem'>,
 ): void {
-  rememberWrittenTarget(trialId, result, storage);
-
   const { plot, subsample } = result;
   if (!isPositiveInt(plot) || !isPositiveInt(subsample)) return;
 
-  const written: SheetLastWritten = { trialId, plot, subsample };
-  if (typeof result.traitOrdinal === 'number') written.traitOrdinal = result.traitOrdinal;
-  getDefaultStore().set(sheetLastWrittenAtom, written);
+  const blockFull = deriveBlockFull(
+    result.writtenCells ?? [],
+    columnsForTrial(trialId, storage) ?? [],
+  );
+
+  rememberWrittenTarget(trialId, { plot, subsample, blockFull }, storage);
+  getDefaultStore().set(sheetLastWrittenAtom, {
+    trialId,
+    plot,
+    subsample,
+    blockFull,
+  });
 }

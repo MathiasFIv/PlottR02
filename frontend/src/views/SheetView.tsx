@@ -8,7 +8,7 @@ import { SheetStatusPill } from '../components/SheetStatusPill';
 import { TopBar } from '../components/TopBar';
 import { useAuth } from '../hooks/useAuth';
 import { useTrialSheet } from '../hooks/useTrialSheet';
-import { deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
+import { deriveEndOfPlot, deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
 import {
   decideAnchorTap,
   formatAnchor,
@@ -16,16 +16,8 @@ import {
 } from '../lib/sheetAnchor';
 import type { SheetCellTap } from '../lib/sheetAnchor';
 import { isNonArmSheetError } from '../lib/sheetStatus';
-import {
-  rehydrateSheetTarget,
-  targetHighlight,
-  targetSelection,
-} from '../lib/sheetTarget';
-import {
-  sheetAnchorNoticeAtom,
-  sheetLastWrittenAtom,
-  sheetSelectedAtom,
-} from '../store/atoms';
+import { rehydrateSheetTarget, targetHighlight } from '../lib/sheetTarget';
+import { sheetLastWrittenAtom, sheetSelectedAtom } from '../store/atoms';
 
 /**
  * The dedicated full-sheet route (`/trials/:trialId/sheet`, behind
@@ -58,20 +50,13 @@ export function SheetView() {
    */
   const forTrial = target?.trialId === trialId ? target : null;
 
-  /** Write anchor — read AND written here (tap gesture); syncQueue only reads it. */
+  /** Write anchor — read AND written here (tap gesture); syncQueue also consumes it. */
   const [anchor, setAnchor] = useAtom(sheetSelectedAtom);
-  /** Tap feedback ('cell-filled' refusal) rendered next to the grid. */
-  const [anchorNotice, setAnchorNotice] = useAtom(sheetAnchorNoticeAtom);
   /**
-   * Trial guards: `trialId` is `string | undefined` here. The anchor guard
-   * takes `?? null`, so an id-less route can never match a stored tap; the
-   * notice uses the same identity comparison the last-written pair uses.
+   * Anchor guard: `trialId` is `string | undefined` here. It takes `?? null`,
+   * so an id-less route can never match a stored tap.
    */
   const forTrialAnchor = isAnchorForTrial(anchor, trialId ?? null);
-  const forTrialNotice =
-    anchorNotice !== null && anchorNotice.trialId === trialId
-      ? anchorNotice
-      : null;
 
   // Re-seed from the persisted last-written target on mount
   // and on route/trial change (a missing id rehydrates to "no current cell").
@@ -84,10 +69,16 @@ export function SheetView() {
   // `string | undefined` here, so the optional-chaining comparison is also
   // true when BOTH sides are undefined and does not narrow `sheet`.
   const rows = sheet !== null && sheet.trialId === trialId ? sheet.rows : null;
-  // Next cell = the row after the last-written one in `rows[]` order
-  // (payload-derived — never arithmetic, never a guessed pair).
-  const next = rows !== null ? deriveNextTarget(rows, forTrial) : null;
+  // Next row: STAY on the written row while its block is unfilled, else the
+  // next subsample of the SAME plot (payload-derived — never arithmetic,
+  // never a guessed pair; null at the end of a plot).
+  const next =
+    rows !== null ? deriveNextTarget(rows, forTrial, forTrial?.blockFull ?? false) : null;
   const endOfSheet = deriveEndOfSheet(rows, forTrial);
+  // End of a PLOT (block full, no next row in the same plot): the run has
+  // nothing left to write here. Suppressed below when this row is also the
+  // true end of the sheet (End of sheet wins).
+  const endOfPlot = deriveEndOfPlot(rows, forTrial, forTrial?.blockFull ?? false);
   // No param ⇒ no trial to load: treat it as the same "not found" the API
   // would answer with, instead of a misleading "not loaded yet".
   const viewStatus = trialId === undefined ? 'not-found' : status;
@@ -104,20 +95,13 @@ export function SheetView() {
    * Tap-to-anchor — the SAME behaviour as the embedded `SheetPanel` host:
    * the decision itself is shared in `lib/sheetAnchor.ts#decideAnchorTap`
    * (one grid, two hosts — no duplicated rules), this host only guards the
-   * id-less route and applies the result: filled → REFUSE with NO anchor
-   * change + `'cell-filled'` notice; empty → anchor THIS trial's tap; the
-   * selected cell tapped again → clear. Never touches
+   * id-less route and applies the result: a cell of the anchored row → clear;
+   * any other row → anchor it (row-only). Never touches
    * `sheetLastWrittenAtom` (a tap is not a written fact).
    */
   function handleSelectCell(cell: SheetCellTap): void {
     if (trialId === undefined) return; // no trial ⇒ no anchor to set
     const decision = decideAnchorTap(cell, forTrialAnchor, trialId);
-    if (decision.kind === 'refuse-filled') {
-      // Refusal only — `setAnchor` is deliberately NOT called here.
-      setAnchorNotice({ trialId, kind: 'cell-filled' });
-      return;
-    }
-    setAnchorNotice(null); // an accepted tap retires any refusal notice
     setAnchor(decision.kind === 'clear' ? null : decision.anchor);
   }
 
@@ -165,12 +149,7 @@ export function SheetView() {
           {forTrialAnchor !== null && (
             <p className="text-sm text-base-content/70" role="status">
               Anchored: {formatAnchor(forTrialAnchor)} — speak numbers to
-              fill. Tap the cell again to clear.
-            </p>
-          )}
-          {forTrialNotice !== null && (
-            <p className="text-sm font-medium text-warning" role="status">
-              Cell already filled
+              fill. Tap the row again to clear.
             </p>
           )}
 
@@ -178,8 +157,8 @@ export function SheetView() {
             <SheetGrid
               columns={columns}
               rows={rows}
-              highlight={targetHighlight(next, columns, rows)}
-              selected={targetSelection(forTrialAnchor, columns, rows)}
+              highlight={targetHighlight(next, rows)}
+              selected={targetHighlight(forTrialAnchor, rows)}
               onSelectCell={handleSelectCell}
             />
           )}
@@ -187,6 +166,13 @@ export function SheetView() {
           {hasPayload && rows !== null && endOfSheet !== null && (
             <p className="text-sm text-base-content/70" role="status">
               End of sheet — last: Plot {endOfSheet.plot} · Sub {endOfSheet.subsample}
+            </p>
+          )}
+
+          {hasPayload && rows !== null && endOfSheet === null && endOfPlot !== null && (
+            <p className="text-sm text-base-content/70" role="status">
+              Nothing to write — stopped at the end of this plot (Plot{' '}
+              {endOfPlot.plot} · Sub {endOfPlot.subsample})
             </p>
           )}
         </section>

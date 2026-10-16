@@ -38,7 +38,7 @@ vi.mock('./defaultTarget', async (importOriginal) => {
     ) => actual.readDefaultTarget(trialId, storage ?? defaultTargetStorageStub),
     writeDefaultTarget: (
       trialId: string,
-      target: { plot: number; subsample: number },
+      target: { plot: number; subsample: number; blockFull: boolean },
       storage?: Pick<Storage, 'getItem' | 'setItem'>,
     ) =>
       actual.writeDefaultTarget(
@@ -48,7 +48,11 @@ vi.mock('./defaultTarget', async (importOriginal) => {
       ),
     rememberWrittenTarget: (
       trialId: string,
-      result: { plot?: number | null; subsample?: number | null },
+      result: {
+        plot?: number | null;
+        subsample?: number | null;
+        blockFull?: boolean;
+      },
       storage?: Pick<Storage, 'getItem' | 'setItem'>,
     ) =>
       actual.rememberWrittenTarget(
@@ -106,7 +110,7 @@ import {
   summarizeSync,
   sweepPendingSyncs,
 } from './syncQueue';
-import type { SheetRow, TrialSheet } from '../types';
+import type { SheetColumn, SheetRow, TrialSheet } from '../types';
 
 const syncMock = vi.mocked(api.syncRecording);
 const correctMock = vi.mocked(api.correctRecording);
@@ -115,8 +119,9 @@ const correctMock = vi.mocked(api.correctRecording);
  * Workbook-order rows for trial-1: 4 subsamples per plot (the real file's
  * shape, 101 1 … 101 4, 102 1 … 102 4). The next target is derived from
  * THESE rows (`resolveNextTarget`), so the suite pins the file-derived
- * behaviour: a step crosses the plot boundary and the store itself only ever
- * holds the last-written pair.
+ * behaviour: a full block advances to the next subsample of the SAME plot and
+ * STOPS at the plot edge (never a cross-plot wrap); the store itself only ever
+ * holds the last-written pair + `blockFull`.
  */
 const sheetRows: SheetRow[] = [101, 102].flatMap((plot) =>
   [1, 2, 3, 4].map((subsample, i) => ({
@@ -127,6 +132,25 @@ const sheetRows: SheetRow[] = [101, 102].flatMap((plot) =>
   })),
 );
 
+/**
+ * The 9-column, part-major `columns` the API sends (cols C..K, ordinals 1..9),
+ * grouped into three 3-wide category blocks: LEAF1 [1..3], LEAF2 [4..6],
+ * LEAF3 [7..9]. `advanceSheetTarget` judges `blockFull` against THESE runs, so
+ * a one-cell write leaves the block unfilled (STAY) and a full three-cell
+ * write advances to the next subsample.
+ */
+const sheetColumns: SheetColumn[] = [
+  { traitOrdinal: 1, column: 'C', pestCode: 'SEPTTR', partRated: 'LEAF1', label: 'SEPTTR × LEAF1' },
+  { traitOrdinal: 2, column: 'D', pestCode: 'ERYSGR', partRated: 'LEAF1', label: 'ERYSGR × LEAF1' },
+  { traitOrdinal: 3, column: 'E', pestCode: 'PUCCST', partRated: 'LEAF1', label: 'PUCCST × LEAF1' },
+  { traitOrdinal: 4, column: 'F', pestCode: 'SEPTTR', partRated: 'LEAF2', label: 'SEPTTR × LEAF2' },
+  { traitOrdinal: 5, column: 'G', pestCode: 'ERYSGR', partRated: 'LEAF2', label: 'ERYSGR × LEAF2' },
+  { traitOrdinal: 6, column: 'H', pestCode: 'PUCCST', partRated: 'LEAF2', label: 'PUCCST × LEAF2' },
+  { traitOrdinal: 7, column: 'I', pestCode: 'SEPTTR', partRated: 'LEAF3', label: 'SEPTTR × LEAF3' },
+  { traitOrdinal: 8, column: 'J', pestCode: 'ERYSGR', partRated: 'LEAF3', label: 'ERYSGR × LEAF3' },
+  { traitOrdinal: 9, column: 'K', pestCode: 'PUCCST', partRated: 'LEAF3', label: 'PUCCST × LEAF3' },
+];
+
 const trialSheet: TrialSheet = {
   trialId: 'trial-1',
   version: 'v1',
@@ -134,7 +158,7 @@ const trialSheet: TrialSheet = {
   fileName: '4 subsamples.xlsx',
   generatedAt: '2026-09-16T12:00:00Z',
   metadata: null,
-  columns: null,
+  columns: sheetColumns,
   rows: sheetRows,
 };
 
@@ -592,24 +616,61 @@ describe('sheet refresh tick (recording-driven live refresh)', () => {
 });
 
 describe('current cell target (N3 highlight atom)', () => {
-  it('records the written pair as-is after a Written sync — the next target derives from the payload', async () => {
+  it('records the written pair + blockFull after a Written sync — an unfilled block STAYS', async () => {
     const rec = makeRec();
     await saveRecording(rec);
-    syncMock.mockResolvedValue(syncResponse()); // Written 101/3, traitOrdinal 1
+    // Written 101/3, ONE cell of the 3-wide LEAF1 block → blockFull false.
+    syncMock.mockResolvedValue(syncResponse());
 
     expect(await autoSync(rec.id)).toBe(true);
 
-    // Persistence holds the written pair verbatim: NO subsample + 1 …
-    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
-    // … and the atom mirrors it, tagged with the trial + the trait column.
+    // Persistence holds the written pair verbatim + the flag: NO subsample+1.
+    expect(readDefaultTarget('trial-1')).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: false,
+    });
+    // … and the atom mirrors it, tagged with the trial + the flag.
     expect(currentCell()).toEqual({
       trialId: 'trial-1',
       plot: 101,
       subsample: 3,
-      traitOrdinal: 1,
+      blockFull: false,
     });
-    // The NEXT target is derived from the payload's rows[] at read time:
-    // 101 3 → 101 4 (and 101 4 would cross to 102 1 — see nextTarget.test.ts).
+    // The NEXT target derives from the payload's rows[] at read time: the
+    // block is unfilled, so the run STAYS on 101 3 (writes its next empty
+    // cell) — it does NOT advance to 101 4.
+    expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
+  });
+
+  it('advances to the next subsample once the category block is FULL', async () => {
+    const rec = makeRec();
+    await saveRecording(rec);
+    // All three LEAF1 cells of row 101/3 written → blockFull true.
+    syncMock.mockResolvedValue(
+      syncResponse({
+        writtenCells: [
+          { plot: 101, subsample: 3, traitOrdinal: 1, value: 5, cellAddress: 'C24' },
+          { plot: 101, subsample: 3, traitOrdinal: 2, value: 6, cellAddress: 'D24' },
+          { plot: 101, subsample: 3, traitOrdinal: 3, value: 7, cellAddress: 'E24' },
+        ],
+      }),
+    );
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    expect(readDefaultTarget('trial-1')).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: true,
+    });
+    expect(currentCell()).toEqual({
+      trialId: 'trial-1',
+      plot: 101,
+      subsample: 3,
+      blockFull: true,
+    });
+    // Full block → advance to the next subsample of the SAME plot.
     expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
   });
 
@@ -646,28 +707,32 @@ describe('current cell target (N3 highlight atom)', () => {
     });
     expect(outcome.kind).toBe('success');
 
-    expect(readDefaultTarget('trial-9')).toEqual({ plot: 101, subsample: 3 });
+    // trial-9 has NO columns in the payload (the atom holds trial-1), so
+    // `columnsForTrial` returns null → the block is treated as unfilled.
+    expect(readDefaultTarget('trial-9')).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: false,
+    });
     expect(readDefaultTarget('trial-1')).toBeNull();
     expect(currentCell()).toEqual({
       trialId: 'trial-9',
       plot: 101,
       subsample: 3,
-      traitOrdinal: 1,
+      blockFull: false,
     });
     // Foreign trial: trial-1's payload never seeds trial-9's next target.
     expect(resolveNextTarget('trial-9')).toBeNull();
   });
 });
 
-describe('write anchor (tap-to-anchor on an empty cell)', () => {
-  /** A tap on an empty cell: row 102/2, trait column 5 (`values[4]`). */
+describe('write anchor (tap-to-anchor on a grid row)', () => {
+  /** A tap on a row: plot 102, subsample 2. Row-only — no column, no value. */
   function tappedCell(overrides: Partial<SheetSelected> = {}): SheetSelected {
     return {
       trialId: 'trial-1',
       plot: 102,
       subsample: 2,
-      traitOrdinal: 5,
-      valuesIndex: 4,
       ...overrides,
     };
   }
@@ -679,12 +744,12 @@ describe('write anchor (tap-to-anchor on an empty cell)', () => {
     return call[0];
   }
 
-  it('wins over resolveNextTarget and overrides traitOrdinal, without moving the live memory', async () => {
+  it('wins over resolveNextTarget, sends the tapped ROW, and keeps the recorder\'s own traitOrdinal', async () => {
     const rec = makeRec({ plot: null, subsample: null, value: 5, traitOrdinal: 2 });
     await saveRecording(rec);
     // Live memory says the file-derived next target is 101/3 …
-    writeDefaultTarget('trial-1', { plot: 101, subsample: 2 });
-    // … but the operator tapped 102/2 · col 5 instead.
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 2, blockFull: true });
+    // … but the operator tapped the 102/2 row instead.
     getDefaultStore().set(sheetSelectedAtom, tappedCell());
     // SkippedPresent: nothing is WRITTEN, so the last-written memory must not
     // move and the assertions below read the state the tap was frozen against.
@@ -694,14 +759,18 @@ describe('write anchor (tap-to-anchor on an empty cell)', () => {
 
     expect(await autoSync(rec.id)).toBe(true);
 
-    // The anchor's pair went out — NOT the fallback 101/3 — and the tapped
-    // column beat the recorder's trait selector (2 → 5).
+    // The anchor's pair went out — NOT the fallback 101/3. The tap is ROW-only:
+    // it never overrides the recorder's own trait selector (stays 2).
     const sent = sentRecord();
     expect(sent.defaultTarget).toEqual({ plot: 102, subsample: 2 });
-    expect(sent.traitOrdinal).toBe(5);
+    expect(sent.traitOrdinal).toBe(2);
     // A tap is an INTENT: it never advances `sheetLastWrittenAtom` /
     // the persisted pair — auto-continue still derives 101/3.
-    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 2 });
+    expect(readDefaultTarget('trial-1')).toEqual({
+      plot: 101,
+      subsample: 2,
+      blockFull: true,
+    });
     expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
     expect(currentCell()).toBeNull();
     // The freeze is persisted with the row, ready for the retry path.
@@ -714,7 +783,7 @@ describe('write anchor (tap-to-anchor on an empty cell)', () => {
   it("ignores another trial's tap and falls back to resolveNextTarget", async () => {
     const rec = makeRec({ plot: null, subsample: null, value: 5, traitOrdinal: 2 });
     await saveRecording(rec);
-    writeDefaultTarget('trial-1', { plot: 101, subsample: 2 });
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 2, blockFull: true });
     // The SAME coordinates, but tapped on a different trial's grid.
     getDefaultStore().set(
       sheetSelectedAtom,
@@ -748,7 +817,7 @@ describe('write anchor (tap-to-anchor on an empty cell)', () => {
     // Meanwhile the operator re-taps elsewhere (or clears the anchor).
     getDefaultStore().set(
       sheetSelectedAtom,
-      tappedCell({ plot: 105, subsample: 1, traitOrdinal: 2, valuesIndex: 1 }),
+      tappedCell({ plot: 105, subsample: 1 }),
     );
     syncMock.mockResolvedValueOnce(
       syncResponse({ status: 'SkippedPresent', writtenCells: [] }),
@@ -757,14 +826,16 @@ describe('write anchor (tap-to-anchor on an empty cell)', () => {
     expect(await autoSync(rec.id)).toBe(true);
     const retry = sentRecord(1);
     expect(retry.defaultTarget).toEqual({ plot: 102, subsample: 2 });
-    expect(retry.traitOrdinal).toBe(5);
+    // The rec carries no traitOrdinal of its own, and the row-only tap adds
+    // none — the frozen record ships `undefined`.
+    expect(retry.traitOrdinal).toBeUndefined();
   });
 
   it('a frozen null stays off the wire even when an anchor is live', async () => {
     const rec = makeRec({ plot: null, subsample: null, value: 5, defaultTarget: null });
     await saveRecording(rec);
     // Live memory AND a live anchor both exist — the row's freeze predates them.
-    writeDefaultTarget('trial-1', { plot: 101, subsample: 3 });
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 3, blockFull: true });
     getDefaultStore().set(sheetSelectedAtom, tappedCell());
     syncMock.mockResolvedValue(syncResponse());
 
@@ -793,6 +864,105 @@ describe('write anchor (tap-to-anchor on an empty cell)', () => {
     expect(sent.plot).toBe(12);
     expect(sent.subsample).toBe(1);
     expect(sent.traitOrdinal).toBe(3);
+  });
+
+  it('clears the live anchor after the Written write it drove (one-shot)', async () => {
+    const rec = makeRec({ plot: null, subsample: null, value: 5 });
+    await saveRecording(rec);
+    getDefaultStore().set(sheetSelectedAtom, tappedCell());
+    // The write lands on the tapped row (102/2) → the anchor is consumed.
+    syncMock.mockResolvedValue(
+      syncResponse({
+        status: 'Written',
+        plot: 102,
+        subsample: 2,
+        writtenCells: [
+          { plot: 102, subsample: 2, traitOrdinal: 1, value: 5, cellAddress: 'C26' },
+        ],
+      }),
+    );
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    // The tap armed exactly one run: the live anchor is released.
+    expect(getDefaultStore().get(sheetSelectedAtom)).toBeNull();
+    // The write itself still moved the last-written memory (pair as written).
+    expect(readDefaultTarget('trial-1')).toEqual({
+      plot: 102,
+      subsample: 2,
+      blockFull: false,
+    });
+  });
+
+  it('keeps a NEWER live anchor when the Written pair no longer matches', async () => {
+    const rec = makeRec({ plot: null, subsample: null, value: 5 });
+    await saveRecording(rec);
+    getDefaultStore().set(sheetSelectedAtom, tappedCell());
+
+    // Hold the first send in flight so the operator can re-tap mid-send.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    syncMock.mockImplementation(() =>
+      gate.then(() =>
+        syncResponse({
+          status: 'Written',
+          plot: 102,
+          subsample: 2,
+          writtenCells: [
+            { plot: 102, subsample: 2, traitOrdinal: 1, value: 5, cellAddress: 'C26' },
+          ],
+        }),
+      ),
+    );
+
+    const send = autoSync(rec.id);
+    await waitForStatus(rec.id, 'syncing');
+    // Meanwhile the operator re-taps elsewhere: a NEWER intent replaces the
+    // one the in-flight send already froze.
+    const newer = tappedCell({ plot: 105, subsample: 1 });
+    getDefaultStore().set(sheetSelectedAtom, newer);
+    release();
+    expect(await send).toBe(true);
+
+    // The write the FIRST tap drove still moved the memory …
+    expect(readDefaultTarget('trial-1')).toEqual({
+      plot: 102,
+      subsample: 2,
+      blockFull: false,
+    });
+    // … but the newer tap is NOT swallowed: it stays armed for its own run.
+    expect(getDefaultStore().get(sheetSelectedAtom)).toEqual(newer);
+  });
+
+  it('keeps the live anchor when the send FAILS', async () => {
+    const rec = makeRec({ plot: null, subsample: null, value: 5 });
+    await saveRecording(rec);
+    const tap = tappedCell();
+    getDefaultStore().set(sheetSelectedAtom, tap);
+    syncMock.mockRejectedValue(new ApiError(500, 'boom'));
+
+    expect(await autoSync(rec.id)).toBe(false);
+
+    // A failed send never reaches the Written branch → the tap is not
+    // consumed (the operator can retry the same row or re-tap).
+    expect(getDefaultStore().get(sheetSelectedAtom)).toEqual(tap);
+  });
+
+  it('keeps the live anchor on a non-Written result', async () => {
+    const rec = makeRec({ plot: null, subsample: null, value: 5 });
+    await saveRecording(rec);
+    const tap = tappedCell();
+    getDefaultStore().set(sheetSelectedAtom, tap);
+    // SkippedPresent: nothing was WRITTEN → the tap still arms nothing else.
+    syncMock.mockResolvedValue(
+      syncResponse({ status: 'SkippedPresent', writtenCells: [] }),
+    );
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    expect(getDefaultStore().get(sheetSelectedAtom)).toEqual(tap);
   });
 });
 
@@ -982,20 +1152,42 @@ describe('default target memory', () => {
     return { plot, subsample };
   }
 
+  /** The 3 written cells that FILL one 3-wide category block (LEAF1). */
+  function fullBlock(plot: number, subsample: number) {
+    return [
+      { plot, subsample, traitOrdinal: 1, value: 4, cellAddress: 'C24' },
+      { plot, subsample, traitOrdinal: 2, value: 5, cellAddress: 'D24' },
+      { plot, subsample, traitOrdinal: 3, value: 6, cellAddress: 'E24' },
+    ];
+  }
+
   /**
    * Real syncRecording + fake transport: the fetch stub ECHOES the default
    * pair the client shipped back as a Written resolve with usedDefaultTarget
-   * true — mirroring the real server's /sync substitution. Returns the stub.
+   * true — mirroring the real server's /sync substitution. The default
+   * response writes the FULL 3-wide block (so the run advances); pass
+   * `respond` to shape a different result (e.g. a one-cell write → STAY).
+   * Returns the stub.
    */
-  function stubRealTransport(): ReturnType<typeof vi.fn> {
+  function stubRealTransport(
+    respond: (
+      defaults: { plot: number; subsample: number } | null,
+    ) => SyncRecordingResponse = (defaults) =>
+      syncResponse(
+        defaults === null
+          ? { writtenCells: fullBlock(101, 3) }
+          : {
+              ...defaults,
+              usedDefaultTarget: true,
+              writtenCells: fullBlock(defaults.plot, defaults.subsample),
+            },
+      ),
+  ): ReturnType<typeof vi.fn> {
     syncMock.mockImplementation(
       realSyncRecordingHolder.current as typeof syncMock,
     );
     const fetchStub = vi.fn(async (_url: string, init?: RequestInit) => {
-      const defaults = sentDefaults(init);
-      const result = syncResponse(
-        defaults === null ? {} : { ...defaults, usedDefaultTarget: true },
-      );
+      const result = respond(sentDefaults(init));
       return new Response(JSON.stringify(result), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -1006,21 +1198,26 @@ describe('default target memory', () => {
     return fetchStub;
   }
 
-  it('advances the remembered target after a Written sync and sends it as defaults on the next values-only clip', async () => {
+  it('advances the remembered target after a FULL-block Written sync, sending it as defaults on the next clip', async () => {
     const fetchStub = stubRealTransport();
 
     // First clip is values-only (no plot/subsample) with nothing remembered
-    // yet → it ships NO defaults and resolves to Written 101/3 → the store
-    // (keyed by this trial) records 101/3 AS WRITTEN (no + 1).
+    // yet → it ships NO defaults and the stub resolves Written 101/3 filling
+    // the whole LEAF1 block → the store (keyed by this trial) records 101/3
+    // AS WRITTEN with blockFull true (no + 1).
     const first = makeRec({ plot: null, subsample: null, value: 5 });
     await saveRecording(first);
     expect(await autoSync(first.id)).toBe(true);
-    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
+    expect(readDefaultTarget('trial-1')).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: true,
+    });
 
-    // Second values-only clip: the file-derived NEXT target (101 3 → 101 4
-    // from the payload's rows[]) has to go on the wire; the stub echoes the
-    // shipped pair back as Written 101/4 with usedDefaultTarget true —
-    // exactly what the server resolves to.
+    // Second values-only clip: the file-derived NEXT target (the block is now
+    // full → advance to 101/4 from the payload's rows[]) goes on the wire;
+    // the stub echoes the shipped pair back as Written 101/4 with
+    // usedDefaultTarget true — exactly what the server resolves to.
     const second = makeRec({ plot: null, subsample: null, value: 6 });
     await saveRecording(second);
     expect(await autoSync(second.id)).toBe(true);
@@ -1042,6 +1239,31 @@ describe('default target memory', () => {
     ).toContain('Used default target — Plot 101, Subsample 4');
   });
 
+  it('STAYS on the same subsample when the block is only partly written, resending it as defaults', async () => {
+    // The server wrote ONE cell of the 3-wide LEAF1 block → not full → the run
+    // must continue on the SAME subsample, so the next values-only clip ships
+    // 101/3 again (the server appends to that row's next empty block cell).
+    const fetchStub = stubRealTransport(() => syncResponse());
+
+    const first = makeRec({ plot: null, subsample: null, value: 5 });
+    await saveRecording(first);
+    expect(await autoSync(first.id)).toBe(true);
+    expect(readDefaultTarget('trial-1')).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: false,
+    });
+    expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
+
+    const second = makeRec({ plot: null, subsample: null, value: 6 });
+    await saveRecording(second);
+    expect(await autoSync(second.id)).toBe(true);
+
+    const sent = fetchStub.mock.calls[1]?.[1]?.body as FormData;
+    expect(sent.get('defaultPlot')).toBe('101');
+    expect(sent.get('defaultSubsample')).toBe('3');
+  });
+
   it('never ships a default plot when the clip carries an explicit plot', async () => {
     const fetchStub = stubRealTransport();
 
@@ -1059,17 +1281,17 @@ describe('default target memory', () => {
     expect(wire.get('defaultSubsample')).toBeNull();
   });
 
-  it('sweep chain: two pending values-only clips continue subsample-by-subsample', async () => {
+  it('sweep chain: two pending values-only clips advance subsample-by-subsample (full blocks)', async () => {
     const fetchStub = stubRealTransport();
 
-    // Seed the last-written pair from a prior run: Plot 101, Sub 2 — so the
-    // file-derived next target is Sub 3.
-    writeDefaultTarget('trial-1', { plot: 101, subsample: 2 });
+    // Seed the last-written pair from a prior run: Plot 101, Sub 2 with a
+    // FULL block — so the file-derived next target is Sub 3.
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 2, blockFull: true });
 
     // Two pending values-only clips in the SAME trial, order fixed by the
     // primary-key tiebreak of the status index ('sweep-1' before 'sweep-2').
     // Each snapshots the file-derived next target left by the previous one —
-    // Sub 3, then Sub 4.
+    // Sub 3, then Sub 4 (the stub writes a full block each time → advance).
     const first = makeRec({
       id: 'sweep-1',
       plot: null,
@@ -1093,9 +1315,13 @@ describe('default target memory', () => {
     expect(firstWire.get('defaultSubsample')).toBe('3');
     expect(secondWire.get('defaultPlot')).toBe('101');
     expect(secondWire.get('defaultSubsample')).toBe('4');
-    // Written twice (2 → 3 → 4) — the store only ever records what was
-    // written; the queue drained.
-    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
+    // Written twice (2 → 3 → 4, full blocks) — the store only ever records
+    // what was written; the queue drained.
+    expect(readDefaultTarget('trial-1')).toEqual({
+      plot: 101,
+      subsample: 4,
+      blockFull: true,
+    });
     expect(await getRecordingsByStatus('pending')).toHaveLength(0);
   });
 
@@ -1103,8 +1329,8 @@ describe('default target memory', () => {
     const fetchStub = stubRealTransport();
     // First send of the values-only clip fails (500) after the snapshot froze.
     fetchStub.mockResolvedValueOnce(new Response('boom', { status: 500 }));
-    // Last written 101/2 → the file-derived next target is 101/3.
-    writeDefaultTarget('trial-1', { plot: 101, subsample: 2 });
+    // Last written 101/2 (full block) → the file-derived next target is 101/3.
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 2, blockFull: true });
 
     const first = makeRec({ id: 'w1-a', plot: null, subsample: null, value: 5 });
     await saveRecording(first);
@@ -1115,7 +1341,8 @@ describe('default target memory', () => {
       subsample: 3,
     });
 
-    // Meanwhile a later clip writes at 101/3 and moves the live pair on.
+    // Meanwhile a later clip writes at 101/3 (full block) and moves the live
+    // pair on to 101/3.
     const later = makeRec({
       id: 'w1-b',
       plot: null,
@@ -1124,7 +1351,11 @@ describe('default target memory', () => {
     });
     await saveRecording(later);
     expect(await autoSync(later.id)).toBe(true);
-    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
+    expect(readDefaultTarget('trial-1')).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: true,
+    });
     // Live memory has moved PAST the frozen value: the next derive is 101/4.
     expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
 
@@ -1148,7 +1379,7 @@ describe('default target memory', () => {
     });
     await saveRecording(rec);
     // Live memory now HAS a target — but the row's freeze predates it.
-    writeDefaultTarget('trial-1', { plot: 101, subsample: 3 });
+    writeDefaultTarget('trial-1', { plot: 101, subsample: 3, blockFull: true });
 
     expect(await autoSync(rec.id)).toBe(true);
 
@@ -1161,11 +1392,15 @@ describe('default target memory', () => {
     expect(wire.get('defaultSubsample')).toBeNull();
   });
 
-  it('advances the remembered target after a Written correction', async () => {
+  it('advances the remembered target after a Written correction (full block)', async () => {
     const rec = makeRec({ status: 'needs-attention' });
     await saveRecording(rec);
     correctMock.mockResolvedValue(
-      syncResponse({ status: 'Written', wasTranscriptOnly: false }),
+      syncResponse({
+        status: 'Written',
+        wasTranscriptOnly: false,
+        writtenCells: fullBlock(101, 3),
+      }),
     );
 
     const outcome = await applyCorrection(rec.id, {
@@ -1175,10 +1410,14 @@ describe('default target memory', () => {
     });
 
     expect(outcome.kind).toBe('success');
-    // The corrected result resolved to 101/3 and carries the trial id → the
-    // store records 101/3 as written; the next values-only clip derives
+    // The corrected result resolved to 101/3 with a FULL block → the store
+    // records 101/3 (blockFull true); the next values-only clip derives
     // Sub 4 from the payload's rows[].
-    expect(readDefaultTarget('trial-1')).toEqual({ plot: 101, subsample: 3 });
+    expect(readDefaultTarget('trial-1')).toEqual({
+      plot: 101,
+      subsample: 3,
+      blockFull: true,
+    });
     expect(resolveNextTarget('trial-1')).toEqual({ plot: 101, subsample: 4 });
   });
 

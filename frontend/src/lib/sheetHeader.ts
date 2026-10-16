@@ -103,3 +103,49 @@ export function buildSheetHeader(columns: SheetColumn[]): SheetHeader {
 
   return { runs, pests };
 }
+
+/**
+ * One category block: a run of consecutive columns sharing a `partRated`
+ * value (the same grouping tier 1 of the header renders), identified by the
+ * traitOrdinal RANGE it spans in array order. A block is "full" when the
+ * highest traitOrdinal written into it equals (or is reached past) its
+ * `end` — see `lib/sheetTarget.ts#deriveBlockFull`.
+ */
+export type SheetBlock = {
+  /** Normalized partRated shared by the block (`null` when absent/blank). */
+  partRated: string | null;
+  /** traitOrdinal of the block's FIRST column (array order). */
+  start: number;
+  /** traitOrdinal of the block's LAST column (array order). */
+  end: number;
+};
+
+/**
+ * Groups `columns` into category blocks — consecutive equal `partRated`
+ * values, exactly like the server's `BuildCategoryBlocks` (contiguous equal
+ * row-8 labels; the client mirrors it via the payload's `columns`). NEVER
+ * hardcoded to 3-wide LEAF blocks: a workbook with 2 or 4 columns per part
+ * yields the block size it actually has.
+ *
+ * Pure and deterministic: same columns in → same blocks out. An empty array
+ * yields an empty list.
+ */
+export function buildSheetBlocks(columns: SheetColumn[]): SheetBlock[] {
+  const blocks: SheetBlock[] = [];
+
+  for (const column of columns) {
+    const partRated = normalize(column.partRated);
+    const current = blocks.length > 0 ? blocks[blocks.length - 1] : undefined;
+    if (current !== undefined && current.partRated === partRated) {
+      current.end = column.traitOrdinal;
+    } else {
+      blocks.push({
+        partRated,
+        start: column.traitOrdinal,
+        end: column.traitOrdinal,
+      });
+    }
+  }
+
+  return blocks;
+}

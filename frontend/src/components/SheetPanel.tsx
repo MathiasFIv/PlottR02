@@ -1,20 +1,12 @@
 import { useAtom, useAtomValue } from 'jotai';
 import { useEffect } from 'react';
 import { useTrialSheet } from '../hooks/useTrialSheet';
-import { deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
+import { deriveEndOfPlot, deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
 import { decideAnchorTap, isAnchorForTrial } from '../lib/sheetAnchor';
 import type { SheetCellTap } from '../lib/sheetAnchor';
 import { isNonArmSheetError } from '../lib/sheetStatus';
-import {
-  rehydrateSheetTarget,
-  targetHighlight,
-  targetSelection,
-} from '../lib/sheetTarget';
-import {
-  sheetAnchorNoticeAtom,
-  sheetLastWrittenAtom,
-  sheetSelectedAtom,
-} from '../store/atoms';
+import { rehydrateSheetTarget, targetHighlight } from '../lib/sheetTarget';
+import { sheetLastWrittenAtom, sheetSelectedAtom } from '../store/atoms';
 import { SheetGrid } from './SheetGrid';
 import { SheetMetaStrip } from './SheetMetaStrip';
 import { SheetStates } from './SheetStates';
@@ -40,35 +32,33 @@ type SheetPanelProps = {
  * own status pill, so the two never compete.
  *
  * The N3 current-cell highlight is derived DURING RENDER from
- * `sheetLastWrittenAtom` (the last-written pair, trial-guarded) + the payload
- * on screen: `deriveNextTarget` walks `rows[]` to the row AFTER the written
- * one (crossing plot boundaries, `null` at the end of the sheet) and
+ * `sheetLastWrittenAtom` (the last-written pair + `blockFull`, trial-guarded)
+ * + the payload on screen: `deriveNextTarget` STAYS on the written row while
+ * its category block is unfilled and advances to the next subsample of the
+ * SAME plot once it is full (`null` at the end of a plot — no wrap), and
  * `targetHighlight` maps it onto the grid, so a refresh or snapshot hydrate
  * re-derives it for free and the persisted pair is re-seeded by the effect
  * below (mount / trial change).
  *
  * **Write anchor (tap-to-anchor):** the grid is tappable through
- * `onSelectCell` below. An EMPTY cell becomes the anchor
- * (`sheetSelectedAtom`, trial-guarded with `isAnchorForTrial` and mapped
- * through `targetSelection` — the same identity rules as the highlight); a
- * FILLED cell is REFUSED with NO state change — the existing anchor (if any)
- * is left exactly as it was and the `'cell-filled'` notice is raised for the
- * mic area (`views/RecordView.tsx` renders it — this panel is
- * a sibling of the mic card, so it never renders the status lines itself).
- * Tapping the currently-selected cell again clears the anchor. The anchor
- * atom is NOT cleared by this component's trial change either — that is the
- * point of declaring it outside the payload block.
+ * `onSelectCell` below. A tapped ROW becomes the anchor (`sheetSelectedAtom`,
+ * trial-guarded with `isAnchorForTrial` and mapped through `targetHighlight`
+ * — the same identity rule as the highlight); the tap is ROW-ONLY, so the
+ * write starts at that row's first empty cell and no column is pinned.
+ * Tapping the currently-anchored row again clears the anchor. A tap on a
+ * fully-filled row still selects it — an honest write then reports "already
+ * filled" via the sync banner. The anchor atom is NOT cleared by this
+ * component's trial change either — that is the point of declaring it
+ * outside the payload block.
  */
 export function SheetPanel({ trialId }: SheetPanelProps) {
   const { sheet, status, source, error, updatedAt } = useTrialSheet(trialId);
-  /** N3 last-written pair — read live; written by the sync engine (non-React set). */
+  /** N3 last-written pair + blockFull — read live; written by the sync engine. */
   const target = useAtomValue(sheetLastWrittenAtom);
   /** Only THIS trial's pair may tint this trial's grid (plot numbers repeat). */
   const forTrial = target?.trialId === trialId ? target : null;
-  /** Write anchor — read AND written here (tap gesture); syncQueue only reads it. */
+  /** Write anchor — read AND written here (tap gesture); syncQueue also consumes it. */
   const [anchor, setAnchor] = useAtom(sheetSelectedAtom);
-  /** Tap feedback raised for RecordView's mic area to render. */
-  const [, setAnchorNotice] = useAtom(sheetAnchorNoticeAtom);
   /** Only THIS trial's tap may anchor this trial's grid. */
   const forTrialAnchor = isAnchorForTrial(anchor, trialId);
 
@@ -90,32 +80,29 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
     status !== 'not-found' &&
     !isNonArmSheetError(error);
 
-  // Next cell = the row after the last-written one in `rows[]` order
-  // (payload-derived — never arithmetic, never a guessed pair).
-  const next = rows !== null ? deriveNextTarget(rows, forTrial) : null;
+  // Next row: STAY on the written row while its block is unfilled, else the
+  // next subsample of the SAME plot (payload-derived — never arithmetic,
+  // never a guessed pair; null at the end of a plot).
+  const next =
+    rows !== null ? deriveNextTarget(rows, forTrial, forTrial?.blockFull ?? false) : null;
   const endOfSheet = deriveEndOfSheet(rows, forTrial);
+  // End of a PLOT (block full, no next row in the same plot): the run has
+  // nothing left to write here. Suppressed below when this row is also the
+  // true end of the sheet (End of sheet wins).
+  const endOfPlot = deriveEndOfPlot(rows, forTrial, forTrial?.blockFull ?? false);
 
   /**
    * Tap-to-anchor. The DECISION is shared with the `views/SheetView.tsx`
    * host in `lib/sheetAnchor.ts#decideAnchorTap` (one grid, two hosts — no
    * duplicated rules); this host only applies it:
-   * - FILLED cell → refuse with NO anchor change, plus the `'cell-filled'`
-   *   notice (a stray tap must never destroy a valid existing anchor);
-   * - empty cell → anchor this trial's tap (it overrides the recorder's
-   *   trait selector — the whole point of tapping a specific cell);
-   * - the currently-selected cell tapped AGAIN → clear the anchor.
-   * The notice is set on a refusal and cleared on an accepted tap.
+   * - a cell of the anchored row → clear the anchor;
+   * - any other row → anchor it (row-only; the write starts at that row's
+   *   first empty cell).
    * The tap never touches `sheetLastWrittenAtom`: it is an intent, not a
    * written fact, so `Next:` / auto-continue cannot move on a gesture.
    */
   function handleSelectCell(cell: SheetCellTap): void {
     const decision = decideAnchorTap(cell, forTrialAnchor, trialId);
-    if (decision.kind === 'refuse-filled') {
-      // Refusal only — `setAnchor` is deliberately NOT called here.
-      setAnchorNotice({ trialId, kind: 'cell-filled' });
-      return;
-    }
-    setAnchorNotice(null); // an accepted tap retires any refusal notice
     setAnchor(decision.kind === 'clear' ? null : decision.anchor);
   }
 
@@ -141,8 +128,8 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
         <SheetGrid
           columns={columns}
           rows={rows}
-          highlight={targetHighlight(next, columns, rows)}
-          selected={targetSelection(forTrialAnchor, columns, rows)}
+          highlight={targetHighlight(next, rows)}
+          selected={targetHighlight(forTrialAnchor, rows)}
           onSelectCell={handleSelectCell}
         />
       )}
@@ -150,6 +137,13 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
       {hasPayload && rows !== null && endOfSheet !== null && (
         <p className="text-sm text-base-content/70" role="status">
           End of sheet — last: Plot {endOfSheet.plot} · Sub {endOfSheet.subsample}
+        </p>
+      )}
+
+      {hasPayload && rows !== null && endOfSheet === null && endOfPlot !== null && (
+        <p className="text-sm text-base-content/70" role="status">
+          Nothing to write — stopped at the end of this plot (Plot{' '}
+          {endOfPlot.plot} · Sub {endOfPlot.subsample})
         </p>
       )}
     </div>

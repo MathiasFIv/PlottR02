@@ -95,16 +95,15 @@ export async function autoSync(recordingId: string): Promise<boolean> {
      * `AudioRecording.defaultTarget`), freeze a target onto the row before the
      * wire, in this resolution order:
      *
-     *   1. **the write anchor** — a tap on an empty grid cell, but ONLY for
-     *      this clip's trial (`isAnchorForTrial`; plot numbers repeat, so a
-     *      foreign trial's tap must never seed this one). The anchor also
-     *      overrides `traitOrdinal`: the tapped column wins over the
-     *      recorder's trait selector, which is the whole point of tapping a
-     *      specific cell. It rides `defaultTarget` (not `plot`/`subsample`) —
-     *      see `anchorToWire` for why that keeps the confidence review gate
-     *      relaxed;
+     *   1. **the write anchor** — a tap on a grid row, but ONLY for this
+     *      clip's trial (`isAnchorForTrial`; plot numbers repeat, so a foreign
+     *      trial's tap must never seed this one). The anchor is row-only: it
+     *      rides `defaultTarget` WITHOUT a `traitOrdinal` pin, so the server
+     *      scans from column C and the write lands on the tapped row's first
+     *      empty cell — see `anchorToWire` for why the default-target chain
+     *      also keeps the confidence review gate relaxed;
      *   2. **`resolveNextTarget`** — the file-derived next target (last-
-     *      written pair + the sheet payload's rows[]);
+     *      written pair + `blockFull` + the sheet payload's rows[]);
      *   3. **null** — nothing to send.
      *
      * Retries then replay the target the clip was INTENDED for, even when
@@ -114,8 +113,9 @@ export async function autoSync(recordingId: string): Promise<boolean> {
      * `lib/api.ts` already keys on that, untouched here). `defaultTarget` is
      * persisted with the row (the `status: 'syncing'` update below carries
      * it), so a failure keeps the snapshot for the fix path. `null` snapshots
-     * are also persisted — the read was done. The anchor is READ, never
-     * cleared: clearing it is a UI gesture only (tapping the cell again).
+     * are also persisted — the read was done. The anchor is consumed by the
+     * SUCCESSFUL write it drove (one-shot, in the Written branch below), not
+     * here — a failed send must not swallow the tap.
      */
     const needsSnapshot =
       !('defaultTarget' in rec) && rec.plot == null && rec.subsample == null;
@@ -159,20 +159,41 @@ export async function autoSync(recordingId: string): Promise<boolean> {
     }
 
     // Remember the resolved write target ("plot/subsample default memory"):
-    // the store now holds the LAST-WRITTEN pair as-is, and the next
-    // values-only clip continues at the row that follows it in the sheet
-    // payload (derived at read time — `lib/nextTarget.ts`), so the run can
-    // cross plot boundaries and never invents a pair the file lacks.
-    // Flagged/SkippedPresent/Replay results do NOT move it — the operator
-    // gets a correction surface, not a silent continuation.
-    // `advanceSheetTarget` = `rememberWrittenTarget` (persistence)
-    // + the last-written atom (N3), seeded with the trait column.
+    // the store now holds the LAST-WRITTEN pair plus `blockFull`, and the
+    // next values-only clip is derived from that plus the sheet payload at
+    // read time (`lib/nextTarget.ts`) — STAY on the same subsample while its
+    // category block is unfilled, advance to the next subsample of the SAME
+    // plot once it is full, and stop (null) at the end of a plot — never a
+    // cross-plot wrap, never an invented pair. Flagged/SkippedPresent/Replay
+    // results do NOT move it — the operator gets a correction surface, not a
+    // silent continuation.
+    // `advanceSheetTarget` = `rememberWrittenTarget` (persistence, with the
+    // `blockFull` it computes from `writtenCells`) + the last-written atom.
     if (result.status === 'Written') {
-      advanceSheetTarget(sendRec.trialId ?? '', {
+      const trialId = sendRec.trialId ?? '';
+      advanceSheetTarget(trialId, {
         plot: result.plot,
         subsample: result.subsample,
-        traitOrdinal: result.traitOrdinal,
+        writtenCells: result.writtenCells,
       });
+
+      // One-shot anchor consumption: the successful write the tap drove
+      // releases the anchor, so a tap arms exactly ONE run. Only clear the
+      // LIVE anchor when it still points at the row we just wrote — a newer
+      // tap elsewhere (or a spoken plot/subsample that overrode the anchor)
+      // is left untouched for the operator to use or release. Failed and
+      // flagged sends never reach here, so a failed tap is never swallowed.
+      const liveAnchor = isAnchorForTrial(
+        getDefaultStore().get(sheetSelectedAtom),
+        trialId,
+      );
+      if (
+        liveAnchor !== null &&
+        liveAnchor.plot === result.plot &&
+        liveAnchor.subsample === result.subsample
+      ) {
+        getDefaultStore().set(sheetSelectedAtom, null);
+      }
     }
 
     await updateRecording({
@@ -329,13 +350,16 @@ export async function applyCorrection(
     const result = await api.correctRecording(recordingId, fields);
 
     // A human-confirmed correction that lands a Written write also records
-    // the last-written target — the next values-only clip continues from the
-    // row after it. Same seam as autoSync: persistence first, then the atom.
+    // the last-written target (pair + `blockFull`) — the next values-only
+    // clip continues by the sub-sample rule. Same seam as autoSync:
+    // persistence first, then the atom. It does NOT consume the write anchor:
+    // a correction is driven by the fix form, not by a tap, so the operator's
+    // anchor (if any) is left in place.
     if (result.status === 'Written') {
       advanceSheetTarget(result.trialId, {
         plot: result.plot,
         subsample: result.subsample,
-        traitOrdinal: result.traitOrdinal,
+        writtenCells: result.writtenCells,
       });
     }
 

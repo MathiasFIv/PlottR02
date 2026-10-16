@@ -3,6 +3,7 @@ import type { AudioRecording } from './audioDb';
 import type { SheetColumn, SheetRow, TrialSheet } from '../types';
 import { ApiError, api, readApiErrorMessage } from './api';
 import { writeDefaultTarget } from './defaultTarget';
+import type { DefaultTargetMemory } from './defaultTarget';
 import { resolveNextTarget } from './nextTarget';
 import { writeSheetSnapshot } from './sheetSnapshot';
 
@@ -286,9 +287,12 @@ function stubSyncTransport(): {
   return { fetch: fetchStub, storage };
 }
 
-/** Last written 101/3 + payload rows 101/1..101/4 → next derives to 101/4. */
-function seedFile(storage: Storage): void {
-  writeDefaultTarget('trial-1', { plot: 101, subsample: 3 }, storage);
+/** Last written 101/3 (full block) + payload rows 101/1..101/4 → next is 101/4. */
+function seedFile(
+  storage: Storage,
+  written: DefaultTargetMemory = { plot: 101, subsample: 3, blockFull: true },
+): void {
+  writeDefaultTarget('trial-1', written, storage);
   writeSheetSnapshot('trial-1', syncSheet, 'network', storage);
 }
 
@@ -325,6 +329,24 @@ describe('syncRecording default-target fields', () => {
     const body = wireOf(fetch);
     expect(body.get('defaultPlot')).toBe('101');
     expect(body.get('defaultSubsample')).toBe('4');
+    expect(body.get('plot')).toBe('');
+    expect(body.get('subsample')).toBe('');
+  });
+
+  it('an end-of-plot derived null ships NO default target fields', async () => {
+    const { fetch, storage } = stubSyncTransport();
+    // Last written 101/4 (full block) — the last row of the only plot in the
+    // payload, so the file-derived next target is null (no cross-plot wrap).
+    seedFile(storage, { plot: 101, subsample: 4, blockFull: true });
+    expect(resolveNextTarget('trial-1')).toBeNull();
+
+    await api.syncRecording(valuesOnly()); // key ABSENT → resolves at send time
+
+    const body = wireOf(fetch);
+    // The null resolution adds nothing: no defaults on the wire, and the
+    // clip's own (absent) spoken fields stay empty.
+    expect(body.get('defaultPlot')).toBeNull();
+    expect(body.get('defaultSubsample')).toBeNull();
     expect(body.get('plot')).toBe('');
     expect(body.get('subsample')).toBe('');
   });

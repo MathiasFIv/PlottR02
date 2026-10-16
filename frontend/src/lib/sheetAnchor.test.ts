@@ -8,21 +8,17 @@ import {
 } from './sheetAnchor';
 import type { SheetCellTap } from './sheetAnchor';
 
-/** A tapped cell on trial-1: row 101/2, column traitOrdinal 3 (values[2]). */
+/** A tapped ROW on trial-1: plot 101, subsample 2. Row-only — no column. */
 const anchor: SheetSelected = {
   trialId: 'trial-1',
   plot: 101,
   subsample: 2,
-  traitOrdinal: 3,
-  valuesIndex: 2,
 };
 
 const otherTrialAnchor: SheetSelected = {
   trialId: 'trial-2',
   plot: 101,
   subsample: 2,
-  traitOrdinal: 3,
-  valuesIndex: 2,
 };
 
 describe('isAnchorForTrial', () => {
@@ -43,17 +39,19 @@ describe('isAnchorForTrial', () => {
 });
 
 describe('formatAnchor', () => {
-  it('formats as `Plot <n> · Sub <n> · Col <n>` with U+00B7 MIDDLE DOT separators', () => {
+  it('formats as `Plot <n> · Sub <n>` with a single U+00B7 MIDDLE DOT', () => {
     const text = formatAnchor(anchor);
-    expect(text).toBe('Plot 101 \u00B7 Sub 2 \u00B7 Col 3');
+    expect(text).toBe('Plot 101 \u00B7 Sub 2');
 
-    // Pin the exact codepoint (0x00B7), not just a lookalike glyph: index 9
-    // is the first separator, index 17 the second ('Plot 101' = 0..7).
+    // Pin the exact codepoint (0x00B7), not just a lookalike glyph. Layout:
+    // "Plot " 0..4 · "101" 5..7 · " " 8 · "·" 9 · " Sub " 10..14 · "2" 15.
+    expect(text.length).toBe(16);
     expect(text.charCodeAt(9)).toBe(0x00b7);
-    expect(text.charCodeAt(17)).toBe(0x00b7);
-    // A hyphen was the rejected option — assert it can never sneak in.
+    // A hyphen was the rejected option — assert neither it nor dash lookalikes
+    // can sneak in.
     expect(text).not.toContain('-');
     expect(text).not.toContain('\u2013'); // en dash lookalike
+    expect(text).not.toContain('\u2014'); // em dash lookalike
     // Encoding-safe: the ONLY non-ASCII codepoint allowed anywhere in the
     // string is U+00B7 (no mojibake, no lookalike separators).
     expect(
@@ -64,25 +62,25 @@ describe('formatAnchor', () => {
     ).toBe(true);
   });
 
-  it('formats single-digit and multi-digit coordinates verbatim', () => {
+  it('formats single-digit and multi-digit coordinates verbatim (no padding)', () => {
     expect(
-      formatAnchor({
-        trialId: 'trial-1',
-        plot: 7,
-        subsample: 12,
-        traitOrdinal: 9,
-        valuesIndex: 8,
-      }),
-    ).toBe('Plot 7 \u00B7 Sub 12 \u00B7 Col 9');
+      formatAnchor({ trialId: 'trial-1', plot: 7, subsample: 12 }),
+    ).toBe('Plot 7 \u00B7 Sub 12');
+    expect(
+      formatAnchor({ trialId: 'trial-1', plot: 414, subsample: 1 }),
+    ).toBe('Plot 414 \u00B7 Sub 1');
   });
 });
 
 describe('anchorToWire', () => {
-  it('maps the tap onto { defaultTarget, traitOrdinal } — the syncQueue freeze shape', () => {
+  it('maps the tap onto { defaultTarget } ONLY — no traitOrdinal', () => {
     expect(anchorToWire(anchor)).toEqual({
       defaultTarget: { plot: 101, subsample: 2 },
-      traitOrdinal: 3,
     });
+    // The wire mapping is row-only: it never carries a column pin, because
+    // the server scans from column C for the row's first empty cell.
+    expect(Object.keys(anchorToWire(anchor))).toEqual(['defaultTarget']);
+    expect('traitOrdinal' in anchorToWire(anchor)).toBe(false);
   });
 
   it('composes onto a values-only record exactly the way syncQueue freezes it', () => {
@@ -91,12 +89,14 @@ describe('anchorToWire', () => {
     // `lib/api.ts` turns into defaultPlot/defaultSubsample — the default
     // chain ("use this when the transcript omits it"), which is also what
     // keeps `usedDefaultTarget` true and the confidence review gate relaxed.
-    const rec = { plot: null, subsample: null, traitOrdinal: 9 };
+    const rec = { plot: null, subsample: null, traitOrdinal: 7 };
     const sendRec = { ...rec, ...anchorToWire(anchor) };
 
     expect(sendRec.defaultTarget).toEqual({ plot: 101, subsample: 2 });
-    // The tapped column wins over the recorder's trait selector (9 → 3).
-    expect(sendRec.traitOrdinal).toBe(3);
+    // The tap is ROW-ONLY: it never overrides the recorder's own trait
+    // selector — the rec keeps its own traitOrdinal (7).
+    expect(sendRec.traitOrdinal).toBe(7);
+    expect('traitOrdinal' in anchorToWire(anchor)).toBe(false);
     // The key is PRESENT, so api.ts's `'defaultTarget' in rec` gate ships it
     // (and a frozen null would stay null — presence is what decides).
     expect('defaultTarget' in sendRec).toBe(true);
@@ -104,83 +104,54 @@ describe('anchorToWire', () => {
     expect(sendRec.plot).toBeNull();
     expect(sendRec.subsample).toBeNull();
   });
+
+  it('a record WITHOUT its own traitOrdinal gains none from the tap', () => {
+    const rec: { plot: null; subsample: null } = { plot: null, subsample: null };
+    const sendRec = { ...rec, ...anchorToWire(anchor) };
+    expect('traitOrdinal' in sendRec).toBe(false);
+    expect(sendRec).toEqual({ plot: null, subsample: null, defaultTarget: { plot: 101, subsample: 2 } });
+  });
 });
 
 describe('decideAnchorTap', () => {
-  /** The very cell `anchor` was tapped on — empty, trial-1, row 101/2 col 3. */
-  const anchoredCell: SheetCellTap = {
-    plot: 101,
-    subsample: 2,
-    traitOrdinal: 3,
-    valuesIndex: 2,
-    value: null,
-  };
+  /** The very row `anchor` was tapped on — trial-1, 101/2. */
+  const anchoredRow: SheetCellTap = { plot: 101, subsample: 2 };
 
-  it('a FILLED cell is refused with NO anchor change — even when a valid current anchor exists', () => {
-    // Regression guard (owner decision: "refuse"): the old behaviour cleared
-    // the anchor here, so one stray tap on a filled cell silently destroyed
-    // a perfectly valid anchor. The decision carries NO anchor payload, so
-    // the host has nothing to write to `sheetSelectedAtom`.
-    expect(
-      decideAnchorTap({ ...anchoredCell, value: 4.2 }, anchor, 'trial-1'),
-    ).toEqual({ kind: 'refuse-filled' });
-
-    // Same refusal when there is no anchor at all (nothing to lose, still
-    // no state change) and for a filled cell the anchor does NOT point at.
-    expect(decideAnchorTap({ ...anchoredCell, value: 0 }, null, 'trial-1'))
-      .toEqual({ kind: 'refuse-filled' });
-    expect(
-      decideAnchorTap(
-        { ...anchoredCell, plot: 999, value: 1.5 },
-        anchor,
-        'trial-1',
-      ),
-    ).toEqual({ kind: 'refuse-filled' });
-  });
-
-  it('an empty cell MATCHING the current anchor → clear (tap the selected cell again)', () => {
-    expect(decideAnchorTap(anchoredCell, anchor, 'trial-1')).toEqual({
+  it('a row MATCHING the current anchor → clear (tap the selected row again)', () => {
+    expect(decideAnchorTap(anchoredRow, anchor, 'trial-1')).toEqual({
       kind: 'clear',
     });
-    // Identity is plot/subsample/traitOrdinal only — valuesIndex is derived
-    // from the same column and never participates in the comparison.
-    expect(
-      decideAnchorTap(
-        { ...anchoredCell, valuesIndex: 99 },
-        anchor,
-        'trial-1',
-      ),
-    ).toEqual({ kind: 'clear' });
   });
 
-  it('an empty cell DIFFERING from the current anchor → set with the exact SheetSelected', () => {
-    const decision = decideAnchorTap(
-      { plot: 202, subsample: 1, traitOrdinal: 5, valuesIndex: 4, value: null },
-      anchor,
-      'trial-1',
-    );
+  it('a DIFFERENT row → set with the exact row-only SheetSelected', () => {
+    const decision = decideAnchorTap({ plot: 202, subsample: 1 }, anchor, 'trial-1');
     expect(decision).toEqual({
       kind: 'set',
-      anchor: {
-        trialId: 'trial-1',
-        plot: 202,
-        subsample: 1,
-        traitOrdinal: 5,
-        valuesIndex: 4,
-      },
+      anchor: { trialId: 'trial-1', plot: 202, subsample: 1 },
     });
   });
 
-  it('an empty cell with NO current anchor → set', () => {
-    expect(decideAnchorTap(anchoredCell, null, 'trial-1')).toEqual({
+  it('a row with NO current anchor → set', () => {
+    expect(decideAnchorTap(anchoredRow, null, 'trial-1')).toEqual({
       kind: 'set',
-      anchor: {
-        trialId: 'trial-1',
-        plot: 101,
-        subsample: 2,
-        traitOrdinal: 3,
-        valuesIndex: 2,
-      },
+      anchor: { trialId: 'trial-1', plot: 101, subsample: 2 },
+    });
+  });
+
+  it('same plot but a different subsample is a DIFFERENT row → set', () => {
+    expect(decideAnchorTap({ plot: 101, subsample: 3 }, anchor, 'trial-1')).toEqual({
+      kind: 'set',
+      anchor: { trialId: 'trial-1', plot: 101, subsample: 3 },
+    });
+  });
+
+  it('the decision carries the CALLER\'s trialId, not the current anchor\'s', () => {
+    // The host always passes its own (guarded) trial; the pure decision
+    // simply stamps it on. A cross-trial `current` never reaches here
+    // (isAnchorForTrial guards it), but the stamp is the caller's trial.
+    expect(decideAnchorTap({ plot: 5, subsample: 1 }, anchor, 'trial-9')).toEqual({
+      kind: 'set',
+      anchor: { trialId: 'trial-9', plot: 5, subsample: 1 },
     });
   });
 });

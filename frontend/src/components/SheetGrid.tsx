@@ -8,38 +8,31 @@ type SheetGridProps = {
   columns: SheetColumn[];
   rows: SheetRow[];
   /**
-   * N3 — the unified target's current-cell highlight (`lib/sheetTarget.ts`).
-   * The hosts derive it from the last-written atom (`sheetLastWrittenAtom`)
-   * + the payload on every render — `deriveNextTarget` walks `rows[]` to the
-   * next row, `targetHighlight` maps it here; `row` matches the row's
-   * `SheetRow.row`, `valuesIndex` is the exact value cell (null = whole-row
-   * tint).
+   * N3 — the current-cell highlight (`lib/sheetTarget.ts`). The hosts derive
+   * it from the last-written atom (`sheetLastWrittenAtom`) + the payload on
+   * every render — `deriveNextTarget` picks the row (STAY on the same
+   * subsample while its block is unfilled, advance to the next subsample of
+   * the same plot once full), `targetHighlight` maps it here; `row` matches
+   * the row's `SheetRow.row`. Row-only: the write cursor is a row, so no
+   * column is pinned.
    */
   highlight?: SheetHighlight | null;
   /**
-   * Write anchor — the TAPPED empty cell, mapped by the hosts through
-   * `targetSelection` (`lib/sheetTarget.ts`) against the current payload.
-   * Same render shape as `highlight` but always the exact cell. Renders
-   * `.sheet-cell--selected` (+ `data-selected="true"`) and the
-   * `.sheet-row--selected` row tint — INDEPENDENT of `highlight`, so the
-   * anchor (strong accent + pulse) and the auto-continue cursor (soft amber)
-   * can coexist and stay visually distinct.
+   * Write anchor — the TAPPED row, mapped by the hosts through
+   * `targetHighlight` against the current payload. Same row-only render shape
+   * as `highlight`. Renders the `.sheet-row--selected` row tint — INDEPENDENT
+   * of `highlight`, so the anchor (strong accent) and the auto-continue
+   * cursor (soft amber) can coexist and stay visually distinct.
    */
-  selected?: { row: number; valuesIndex: number } | null;
+  selected?: { row: number } | null;
   /**
    * Tap-to-anchor: fired for VALUE cells only (never the sticky key column,
-   * never headers), carrying everything the host needs to accept or refuse
-   * the tap — identity (`plot` + `subsample`), the column
-   * (`traitOrdinal`/`valuesIndex`) and the current `value` (a filled cell is
-   * REFUSED by the hosts; `null` = empty = anchorable).
+   * never headers), carrying the row identity (`plot` + `subsample`). The tap
+   * is ROW-ONLY: no column is ever pinned — the write always starts at the
+   * tapped row's first empty cell (the server scans forward from column C),
+   * so the host cannot and does not learn which column was tapped.
    */
-  onSelectCell?: (cell: {
-    plot: number;
-    subsample: number;
-    traitOrdinal: number;
-    valuesIndex: number;
-    value: number | null;
-  }) => void;
+  onSelectCell?: (cell: { plot: number; subsample: number }) => void;
   /**
    * N3/N4 seam — cell addresses currently flashing. Accepted, NOT rendered
    * (N4 owns `flashCellsAtom` + the `.cell--flash` keyframes).
@@ -76,19 +69,17 @@ type SheetGridProps = {
  * `0` and an empty cell never renders as `0`.
  *
  * **N3 current cell:** `highlight` tints the matched `<tr>` with
- * `.sheet-row--current` and, when it carries a `valuesIndex`, that one value
- * cell with `.sheet-cell--current`. Background-only (see `index.css`), so no
- * box model changes and no new horizontal scroll at 360–390 px; the value
- * render path (`sheetCellValue` / `sheetCellState`) is untouched, so a
- * highlighted `0` still renders `0` and an empty cell still renders blank.
- * `flashes` stays accepted-but-unrendered (N4).
+ * `.sheet-row--current`. Background-only (see `index.css`), so no box model
+ * changes and no new horizontal scroll at 360–390 px; the value render path
+ * (`sheetCellValue` / `sheetCellState`) is untouched, so a highlighted `0`
+ * still renders `0` and an empty cell still renders blank. `flashes` stays
+ * accepted-but-unrendered (N4).
  *
- * **Write anchor:** `selected` styles the tapped cell
- * (`.sheet-cell--selected` + `data-selected="true"`, `.sheet-row--selected`
+ * **Write anchor:** `selected` styles the tapped row (`.sheet-row--selected`
  * row tint) and `onSelectCell` handles taps on VALUE `<td>`s only. Both are
- * derived from the row's `SheetRow` and the column's `SheetColumn` — never
+ * derived from the row's `SheetRow` identity (`plot` + `subsample`) — never
  * from Excel letters or `SheetRow.row` arithmetic — and the anchor channel
- * renders independently of `highlight` (the two can point at different cells
+ * renders independently of `highlight` (the two can point at different rows
  * at once).
  */
 export function SheetGrid({
@@ -169,23 +160,16 @@ export function SheetGrid({
                   // Contract invariant: values[i] ↔ columns[i]. `?? null` keeps a
                   // short row blank instead of rendering `undefined`.
                   const value = row.values[index] ?? null;
-                  // Anchor cell = the tapped row AND the tapped column.
-                  const isSelected =
-                    sel !== null && sel.valuesIndex === index;
                   return (
                     <td
                       key={column.traitOrdinal}
-                      className={`sheet-col--value ${sheetCellState(value)}${hl?.valuesIndex === index ? ' sheet-cell--current' : ''}${isSelected ? ' sheet-cell--selected' : ''}`}
-                      data-selected={isSelected ? 'true' : undefined}
+                      className={`sheet-col--value ${sheetCellState(value)}`}
                       onClick={
                         onSelectCell !== undefined
                           ? () =>
                               onSelectCell({
                                 plot: row.plot,
                                 subsample: row.subsample,
-                                traitOrdinal: column.traitOrdinal,
-                                valuesIndex: index,
-                                value,
                               })
                           : undefined
                       }
