@@ -137,8 +137,6 @@ public sealed class AuthServiceTests
 
             return Task.FromResult(revoked);
         }
-
-        public Task<int> CleanupExpiredAsync(CancellationToken ct = default) => Task.FromResult(0);
     }
 
     // ------------------------------------------------------------- test setup

@@ -89,14 +89,4 @@ public sealed class RefreshTokenRepository : IRefreshTokenRepository
                     .SetProperty(rt => rt.RevokedAt, now),
                 ct);
     }
-
-    /// <inheritdoc />
-    public async Task<int> CleanupExpiredAsync(CancellationToken ct = default)
-    {
-        var now = DateTime.UtcNow;
-
-        return await _db.RefreshTokens
-            .Where(rt => rt.ExpiresAt < now || rt.IsRevoked)
-            .ExecuteDeleteAsync(ct);
-    }
 }

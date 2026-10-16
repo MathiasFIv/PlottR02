@@ -366,21 +366,12 @@ export const api = {
       false,
     ),
 
-  refresh: (input: { refreshToken: string }) =>
-    jsonRequest<RefreshResponse>(
-      '/api/Auth/refresh',
-      { method: 'POST', body: JSON.stringify(input) },
-      false,
-    ),
-
   logout: () =>
     noContentRequest('/api/Auth/logout', { method: 'POST' }),
 
   getMe: () => jsonRequest<User>('/api/Users/me'),
 
   getUsers: () => jsonRequest<User[]>('/api/Users'),
-
-  getUser: (id: string) => jsonRequest<User>(`/api/Users/${id}`),
 
   createUser: (input: CreateUserInput) =>
     jsonRequest<User>('/api/Users', {

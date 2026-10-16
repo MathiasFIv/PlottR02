@@ -35,6 +35,4 @@ public interface IRefreshTokenRepository
     /// a detected replay.
     /// </summary>
     Task<int> RevokeAllForUserAsync(Guid userId, CancellationToken ct = default);
-
-    Task<int> CleanupExpiredAsync(CancellationToken ct = default);
 }
