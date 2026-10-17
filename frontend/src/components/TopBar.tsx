@@ -29,9 +29,11 @@ interface TopBarProps {
  * "Dashboard" nav link.
  *
  * User management lives here now that the dashboard has no Users panel:
- * "Create user" (SystemAdmin, Researcher, TrialManager) opens the create
- * dialog; "Manage users" (SystemAdmin, TrialManager) opens the edit/delete
- * dialog. The dialogs render as siblings of the header, not children of it.
+ * "Create user" (Researcher, TrialManager) opens the create dialog; "Manage
+ * users" (SystemAdmin, TrialManager) opens the edit/delete dialog. A System
+ * admin creates users from inside the Manage users panel instead, so their
+ * topbar shows only "Manage users"; every other creating role keeps the topbar
+ * button. The dialogs render as siblings of the header, not children of it.
  *
  * RESPONSIVE COMPACTNESS — everything below `lg` (1024px) is treated as the
  * compact regime and every rule for it is gated behind `max-lg:` / `max-md:`
@@ -77,7 +79,7 @@ export function TopBar({ links = [], onLogout }: TopBarProps) {
               Signed in as <strong>{currentUser.name}</strong>
             </span>
           )}
-          {canCreateUsers(role) && (
+          {canCreateUsers(role) && role !== 'SystemAdmin' && (
             <Button
               className="btn-sm max-lg:btn-xs max-md:btn-square"
               type="button"

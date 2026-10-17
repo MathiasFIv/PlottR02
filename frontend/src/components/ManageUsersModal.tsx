@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Button } from './Button';
+import { CreateUserModal } from './CreateUserModal';
 import { FormField } from './FormField';
 import { useUsers } from '../hooks/useUsers';
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape';
@@ -28,6 +29,12 @@ type ManageUsersModalProps = {
  * unchanged role can be saved, and a legacy no-role row gets a "no role
  * (unchanged)" option. Mutation failures are shown from this hook instance's
  * LOCAL `operationError`, never the shared list `errorAtom`.
+ *
+ * A System admin gets a "Create user" entry point in the footer, right before
+ * Close. It opens `CreateUserModal` as a SIBLING of this dialog's `.modal` div
+ * (so the create overlay paints above the panel) and closes back to the panel
+ * on success or cancel. While the create form is stacked, the Escape handler is
+ * guarded so one Escape closes only the create form, not this panel too.
  */
 export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) {
   const { users, loading, error, operationError, updateUser, deleteUser } =
@@ -46,8 +53,11 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
 
   const [attempted, setAttempted] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
-  useCloseOnEscape(onClose);
+  useCloseOnEscape(() => {
+    if (!createOpen) onClose();
+  });
 
   function startEdit(user: User) {
     setStatus(null);
@@ -99,204 +109,220 @@ export function ManageUsersModal({ actorRole, onClose }: ManageUsersModalProps) 
   }
 
   return (
-    <div className="modal modal-open">
-      <div
-        className="modal-box max-w-[520px]"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="manage-users-title"
-      >
-        <h2
-          id="manage-users-title"
-          className="text-lg font-semibold text-base-content mb-3"
+    <>
+      <div className="modal modal-open">
+        <div
+          className="modal-box max-w-[520px]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="manage-users-title"
         >
-          Manage users
-        </h2>
+          <h2
+            id="manage-users-title"
+            className="text-lg font-semibold text-base-content mb-3"
+          >
+            Manage users
+          </h2>
 
-        {users.length === 0 ? (
-          loading ? (
-            <p className="text-sm text-base-content/70">Loading users…</p>
-          ) : error ? (
-            <p className="text-sm text-error">{error}</p>
+          {users.length === 0 ? (
+            loading ? (
+              <p className="text-sm text-base-content/70">Loading users…</p>
+            ) : error ? (
+              <p className="text-sm text-error">{error}</p>
+            ) : (
+              <p className="text-sm text-base-content/70">No users found yet.</p>
+            )
           ) : (
-            <p className="text-sm text-base-content/70">No users found yet.</p>
-          )
-        ) : (
-          <ul className="list">
-            {users.map((user) => {
-              const roleOptions = editableRolesFor(actorRole, user.role);
-              const hasPreservedRole = roleOptions.some(
-                (option) => option.isPreserved,
-              );
-              return (
-                <li key={user.id} className="list-row">
-                  {editingId === user.id ? (
-                    <form
-                      className="flex flex-col w-full list-col-grow"
-                      onSubmit={(e) => void handleSaveEdit(e, user)}
-                    >
-                      <FormField
-                        label="Name"
-                        htmlFor={`edit-name-${user.id}`}
-                        inputProps={{
-                          value: editName,
-                          onChange: (e) => setEditName(e.target.value),
-                          required: true,
-                        }}
-                      />
-                      <FormField
-                        label="Email"
-                        htmlFor={`edit-email-${user.id}`}
-                        inputProps={{
-                          value: editEmail,
-                          onChange: (e) => setEditEmail(e.target.value),
-                          type: 'email',
-                          autoComplete: 'email',
-                          required: true,
-                        }}
-                      />
-                      <FormField label="Role" htmlFor={`edit-role-${user.id}`}>
-                        <select
-                          id={`edit-role-${user.id}`}
-                          name={`edit-role-${user.id}`}
-                          className="select w-full"
-                          value={editRole}
-                          onChange={(e) =>
-                            setEditRole(e.target.value as UserRole | '')
-                          }
-                          required={user.role !== null}
-                        >
-                          {roleOptions.map((option) => (
-                            <option
-                              key={option.role ?? 'no-role'}
-                              value={option.value}
-                              title={
-                                option.isPreserved
-                                  ? "You can't change a member with this role — only keep it as is."
-                                  : undefined
-                              }
-                            >
-                              {option.role === null
-                                ? 'No role (unchanged)'
-                                : option.isPreserved
-                                  ? `${roleLabel(option.role)} (current)`
-                                  : roleLabel(option.role)}
-                            </option>
-                          ))}
-                        </select>
-                      </FormField>
-                      {hasPreservedRole && (
-                        <p className="text-xs text-base-content/60 mt-1">
-                          You can’t change members with this role — you can only
-                          keep it as is.
-                        </p>
-                      )}
-                      <div className="flex justify-end gap-2 mt-2">
-                        <Button
-                          variant="secondary"
-                          type="button"
-                          onClick={cancelEdit}
-                          disabled={savingEdit}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          type="submit"
-                          disabled={
-                            !editName.trim() ||
-                            !editEmail.trim() ||
-                            (!editRole && user.role !== null) ||
-                            savingEdit
-                          }
-                        >
-                          {savingEdit ? 'Saving…' : 'Save'}
-                        </Button>
-                      </div>
-                    </form>
-                  ) : confirmingDeleteId === user.id ? (
-                    <>
-                      <p className="text-sm text-base-content list-col-grow">
-                        Delete <span className="font-medium">{user.name}</span>?
-                      </p>
-                      <div className="flex gap-2 shrink-0 self-center">
-                        <button
-                          type="button"
-                          className="btn btn-sm"
-                          onClick={() => setConfirmingDeleteId(null)}
-                          disabled={deletingId === user.id}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-error btn-sm"
-                          onClick={() => void handleDelete(user)}
-                          disabled={deletingId === user.id}
-                        >
-                          {deletingId === user.id ? 'Deleting…' : 'Delete'}
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="list-col-grow">
-                        <p className="font-medium text-base-content">
-                          {user.name}
-                        </p>
-                        {user.email && (
-                          <p className="text-sm text-base-content/70">
-                            {user.email}
-                          </p>
-                        )}
-                        {user.role && (
-                          <p className="text-sm text-base-content/70">
-                            {roleLabel(user.role)}
-                          </p>
-                        )}
-                      </div>
-                      <div className="flex gap-2 shrink-0 self-center">
-                        <button
-                          type="button"
-                          className="btn btn-sm"
-                          onClick={() => startEdit(user)}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-error btn-sm"
-                          onClick={() => {
-                            setStatus(null);
-                            setEditingId(null);
-                            setConfirmingDeleteId(user.id);
+            <ul className="list">
+              {users.map((user) => {
+                const roleOptions = editableRolesFor(actorRole, user.role);
+                const hasPreservedRole = roleOptions.some(
+                  (option) => option.isPreserved,
+                );
+                return (
+                  <li key={user.id} className="list-row">
+                    {editingId === user.id ? (
+                      <form
+                        className="flex flex-col w-full list-col-grow"
+                        onSubmit={(e) => void handleSaveEdit(e, user)}
+                      >
+                        <FormField
+                          label="Name"
+                          htmlFor={`edit-name-${user.id}`}
+                          inputProps={{
+                            value: editName,
+                            onChange: (e) => setEditName(e.target.value),
+                            required: true,
                           }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
+                        />
+                        <FormField
+                          label="Email"
+                          htmlFor={`edit-email-${user.id}`}
+                          inputProps={{
+                            value: editEmail,
+                            onChange: (e) => setEditEmail(e.target.value),
+                            type: 'email',
+                            autoComplete: 'email',
+                            required: true,
+                          }}
+                        />
+                        <FormField label="Role" htmlFor={`edit-role-${user.id}`}>
+                          <select
+                            id={`edit-role-${user.id}`}
+                            name={`edit-role-${user.id}`}
+                            className="select w-full"
+                            value={editRole}
+                            onChange={(e) =>
+                              setEditRole(e.target.value as UserRole | '')
+                            }
+                            required={user.role !== null}
+                          >
+                            {roleOptions.map((option) => (
+                              <option
+                                key={option.role ?? 'no-role'}
+                                value={option.value}
+                                title={
+                                  option.isPreserved
+                                    ? "You can't change a member with this role — only keep it as is."
+                                    : undefined
+                                }
+                              >
+                                {option.role === null
+                                  ? 'No role (unchanged)'
+                                  : option.isPreserved
+                                    ? `${roleLabel(option.role)} (current)`
+                                    : roleLabel(option.role)}
+                              </option>
+                            ))}
+                          </select>
+                        </FormField>
+                        {hasPreservedRole && (
+                          <p className="text-xs text-base-content/60 mt-1">
+                            You can’t change members with this role — you can
+                            only keep it as is.
+                          </p>
+                        )}
+                        <div className="flex justify-end gap-2 mt-2">
+                          <Button
+                            variant="secondary"
+                            type="button"
+                            onClick={cancelEdit}
+                            disabled={savingEdit}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            type="submit"
+                            disabled={
+                              !editName.trim() ||
+                              !editEmail.trim() ||
+                              (!editRole && user.role !== null) ||
+                              savingEdit
+                            }
+                          >
+                            {savingEdit ? 'Saving…' : 'Save'}
+                          </Button>
+                        </div>
+                      </form>
+                    ) : confirmingDeleteId === user.id ? (
+                      <>
+                        <p className="text-sm text-base-content list-col-grow">
+                          Delete{' '}
+                          <span className="font-medium">{user.name}</span>?
+                        </p>
+                        <div className="flex gap-2 shrink-0 self-center">
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => setConfirmingDeleteId(null)}
+                            disabled={deletingId === user.id}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-error btn-sm"
+                            onClick={() => void handleDelete(user)}
+                            disabled={deletingId === user.id}
+                          >
+                            {deletingId === user.id ? 'Deleting…' : 'Delete'}
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="list-col-grow">
+                          <p className="font-medium text-base-content">
+                            {user.name}
+                          </p>
+                          {user.email && (
+                            <p className="text-sm text-base-content/70">
+                              {user.email}
+                            </p>
+                          )}
+                          {user.role && (
+                            <p className="text-sm text-base-content/70">
+                              {roleLabel(user.role)}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex gap-2 shrink-0 self-center">
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => startEdit(user)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-error btn-sm"
+                            onClick={() => {
+                              setStatus(null);
+                              setEditingId(null);
+                              setConfirmingDeleteId(user.id);
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
 
-        {attempted && operationError && (
-          <p className="text-sm mt-3 text-error">{operationError}</p>
-        )}
-        {status && (
-          <p className="text-sm mt-3 text-success" role="status">
-            {status}
-          </p>
-        )}
+          {attempted && operationError && (
+            <p className="text-sm mt-3 text-error">{operationError}</p>
+          )}
+          {status && (
+            <p className="text-sm mt-3 text-success" role="status">
+              {status}
+            </p>
+          )}
 
-        <div className="flex justify-end gap-3 mt-5">
-          <Button variant="secondary" type="button" onClick={onClose}>
-            Close
-          </Button>
+          <div className="flex justify-end gap-3 mt-5">
+            {actorRole === 'SystemAdmin' && (
+              <Button type="button" onClick={() => setCreateOpen(true)}>
+                Create user
+              </Button>
+            )}
+            <Button variant="secondary" type="button" onClick={onClose}>
+              Close
+            </Button>
+          </div>
         </div>
       </div>
-    </div>
+
+      {createOpen && (
+        <CreateUserModal
+          actorRole={actorRole}
+          onClose={() => setCreateOpen(false)}
+          onCreated={() => setCreateOpen(false)}
+        />
+      )}
+    </>
   );
 }
