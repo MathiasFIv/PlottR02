@@ -3,7 +3,8 @@
  * is positioned / will write next, rendered as the read-only grid's
  * current-cell highlight (row tint).
  *
- * Two halves:
+ * Three pure helpers (current-cell highlight, tapped-cell highlight,
+ * write-through seam):
  * - `targetHighlight` — pure: maps a `{plot, subsample}` target onto the
  *   grid's `{row}` render shape against the CURRENT payload. The hosts call
  *   it during render (never memoized), so a payload replacement (refresh /
@@ -64,6 +65,34 @@ export function targetHighlight(
   );
   if (rowIndex === -1) return null;
   return { row: rows[rowIndex].row };
+}
+
+/**
+ * The grid's render shape for the tapped anchor CELL: `row` — the
+ * `SheetRow.row` to tint (matched by plot+subsample identity, exactly like
+ * `targetHighlight`) — plus `valuesIndex`, the 0-based column index of the
+ * tapped cell (`SheetRow.values[valuesIndex]`), so `SheetGrid` can paint the
+ * strong per-cell highlight.
+ */
+export type SheetCellSelection = { row: number; valuesIndex: number };
+
+/**
+ * Resolves the tapped anchor onto the payload on screen: the matched row's
+ * `row` cross-ref plus the anchor's `valuesIndex`, or null when there is no
+ * anchor or its plot+subsample is not in this payload. Pure — the row is
+ * matched by identity (never `Row`), and the cells' own values are never read.
+ */
+export function targetSelection(
+  target: { plot: number; subsample: number; valuesIndex: number } | null,
+  rows: SheetRow[],
+): SheetCellSelection | null {
+  if (target === null) return null;
+
+  const rowIndex = rows.findIndex(
+    (r) => r.plot === target.plot && r.subsample === target.subsample,
+  );
+  if (rowIndex === -1) return null;
+  return { row: rows[rowIndex].row, valuesIndex: target.valuesIndex };
 }
 
 /** One written cell of a sync result — only the column ordinal matters here. */

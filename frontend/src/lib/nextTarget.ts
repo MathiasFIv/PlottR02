@@ -10,18 +10,18 @@
  * - **Block not full → STAY**: return the last-written row itself, so the
  *   next values-only clip appends to the SAME subsample's block (the server
  *   writes into the first empty cell of the row's current block).
- * - **Block full → advance within the plot**: return the NEXT row in
- *   `rows[]` order, but ONLY when it belongs to the SAME plot. A plot end
- *   (next row is a different plot, or there is no next row) yields `null` —
- *   no cross-plot wrap, no invented pair. The caller renders nothing.
+ * - **Block full → advance to the NEXT row**: return the next pair in
+ *   `rows[]` order, crossing from the last subsample of one plot into the
+ *   first subsample of the next (the operator keeps rating, plot after plot).
+ *   Only the TRUE end of the sheet (no next row at all) yields `null` — no
+ *   invented pair; the caller then renders the "end of sheet" notice.
  *
  * Why derivation instead of `subsample + 1`: the workbook decides what comes
  * next. Every plot has its own subsample count, so arithmetic invents pairs
  * the file does not contain — the old `+ 1` turned `101 4` (the last
  * subsample of plot 101) into a phantom `101 5` that highlighted nothing,
  * rendered a lie, and went out on the wire. Derivation instead gives
- * `101 1 → 101 2` (the by-subsample advance) and `null` at the end of a
- * plot.
+ * `101 1 → 101 2` within a plot and `101 4 → 102 1` across the plot edge.
  *
  * Matching rules — deliberately narrow:
  * - **Identity only**: `plot` + `subsample` equality against `SheetRow`.
@@ -29,7 +29,7 @@
  *   cross-reference, NOT an order/match key — array order decides), never a
  *   read of `values[]` (Rule 2: the value channel is `lib/sheetCell.ts`'s).
  * - **`null` means "no derivable next"**: no `from`, `from` not present in
- *   `rows`, empty `rows`, or the end of a plot. A caller that gets `null`
+ *   `rows`, empty `rows`, or the end of the sheet. A caller that gets `null`
  *   must render NOTHING (never a guessed pair).
  *
  * The resolvers below (`rowsForTrial` / `resolveNextTarget`) exist for
@@ -57,9 +57,8 @@ type TargetStorage = Pick<Storage, 'getItem' | 'setItem'>;
  * - `from === null` → null;
  * - `blockFull` false → STAY, returning `from` itself (the next values-only
  *   clip appends to the same subsample's block);
- * - `blockFull` true → the next row in array order ONLY when it shares
- *   `from`'s plot; a plot end or end of sheet → null (honest stop, never a
- *   wrap).
+ * - `blockFull` true → the NEXT row in array order, crossing plot boundaries
+ *   (`101 4 → 102 1`); only the true end of the sheet (no next row) → null.
  */
 export function deriveNextTarget(
   rows: SheetRow[],
@@ -73,16 +72,16 @@ export function deriveNextTarget(
   if (index === -1) return null;
   if (!blockFull) return { plot: from.plot, subsample: from.subsample };
   const nextRow = rows[index + 1];
-  if (nextRow === undefined || nextRow.plot !== from.plot) return null;
+  if (nextRow === undefined) return null;
   return { plot: nextRow.plot, subsample: nextRow.subsample };
 }
 
 /**
  * The last-written pair when it is the TRUE last row of the sheet (array
- * end), else null. `deriveNextTarget` already yields `null` at a mid-array
- * plot end too (no next row in the same plot), but this marker fires ONLY at
- * the array end — a mid-array plot end is simply "no next", not "end of
- * sheet".
+ * end), else null — the "nothing left to write" marker. `deriveNextTarget`
+ * also returns null at the array end (no next row), but `null` alone is
+ * silent; this names the row so the caller can say
+ * "End of sheet — last: …".
  */
 export function deriveEndOfSheet(
   rows: SheetRow[] | null,
@@ -94,35 +93,6 @@ export function deriveEndOfSheet(
   );
   if (index === -1) return null;
   if (index + 1 < rows.length) return null;
-  return lastWritten;
-}
-
-/**
- * The last-written pair when it sits at the END of its PLOT (block full) and
- * the run therefore has NOTHING LEFT TO WRITE — else null.
- *
- * `deriveNextTarget` already returns `null` at a plot boundary (no wrap, no
- * invented pair), but `null` alone is silent: the operator cannot tell "the
- * block is still open, keep talking" (STAY) from "this plot is done". This
- * marker makes the honest stop visible: `blockFull` true AND no next row in
- * the SAME plot (array end, or the next row is a different plot).
- *
- * A plot end that is ALSO the true sheet end returns the pair here too — the
- * caller renders "End of sheet" (`deriveEndOfSheet`) FIRST and suppresses this
- * one, so the two never compete.
- */
-export function deriveEndOfPlot(
-  rows: SheetRow[] | null,
-  lastWritten: { plot: number; subsample: number } | null,
-  blockFull: boolean,
-): { plot: number; subsample: number } | null {
-  if (rows === null || lastWritten === null || !blockFull) return null;
-  const index = rows.findIndex(
-    (r) => r.plot === lastWritten.plot && r.subsample === lastWritten.subsample,
-  );
-  if (index === -1) return null;
-  const nextRow = rows[index + 1];
-  if (nextRow !== undefined && nextRow.plot === lastWritten.plot) return null;
   return lastWritten;
 }
 

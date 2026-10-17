@@ -8,7 +8,7 @@ import { SheetStatusPill } from '../components/SheetStatusPill';
 import { TopBar } from '../components/TopBar';
 import { useAuth } from '../hooks/useAuth';
 import { useTrialSheet } from '../hooks/useTrialSheet';
-import { deriveEndOfPlot, deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
+import { deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
 import {
   decideAnchorTap,
   formatAnchor,
@@ -16,7 +16,7 @@ import {
 } from '../lib/sheetAnchor';
 import type { SheetCellTap } from '../lib/sheetAnchor';
 import { isNonArmSheetError } from '../lib/sheetStatus';
-import { rehydrateSheetTarget, targetHighlight } from '../lib/sheetTarget';
+import { rehydrateSheetTarget, targetHighlight, targetSelection } from '../lib/sheetTarget';
 import { sheetLastWrittenAtom, sheetSelectedAtom } from '../store/atoms';
 
 /**
@@ -70,15 +70,11 @@ export function SheetView() {
   // true when BOTH sides are undefined and does not narrow `sheet`.
   const rows = sheet !== null && sheet.trialId === trialId ? sheet.rows : null;
   // Next row: STAY on the written row while its block is unfilled, else the
-  // next subsample of the SAME plot (payload-derived — never arithmetic,
-  // never a guessed pair; null at the end of a plot).
+  // NEXT row (crossing plot boundaries) (payload-derived — never arithmetic,
+  // never a guessed pair; only the true end of the sheet is null).
   const next =
     rows !== null ? deriveNextTarget(rows, forTrial, forTrial?.blockFull ?? false) : null;
   const endOfSheet = deriveEndOfSheet(rows, forTrial);
-  // End of a PLOT (block full, no next row in the same plot): the run has
-  // nothing left to write here. Suppressed below when this row is also the
-  // true end of the sheet (End of sheet wins).
-  const endOfPlot = deriveEndOfPlot(rows, forTrial, forTrial?.blockFull ?? false);
   // No param ⇒ no trial to load: treat it as the same "not found" the API
   // would answer with, instead of a misleading "not loaded yet".
   const viewStatus = trialId === undefined ? 'not-found' : status;
@@ -95,7 +91,7 @@ export function SheetView() {
    * Tap-to-anchor — the SAME behaviour as the embedded `SheetPanel` host:
    * the decision itself is shared in `lib/sheetAnchor.ts#decideAnchorTap`
    * (one grid, two hosts — no duplicated rules), this host only guards the
-   * id-less route and applies the result: a cell of the anchored row → clear;
+   * id-less route and applies the result: a tap on the anchored row → clear;
    * any other row → anchor it (row-only). Never touches
    * `sheetLastWrittenAtom` (a tap is not a written fact).
    */
@@ -158,7 +154,7 @@ export function SheetView() {
               columns={columns}
               rows={rows}
               highlight={targetHighlight(next, rows)}
-              selected={targetHighlight(forTrialAnchor, rows)}
+              selected={targetSelection(forTrialAnchor, rows)}
               onSelectCell={handleSelectCell}
             />
           )}
@@ -166,13 +162,6 @@ export function SheetView() {
           {hasPayload && rows !== null && endOfSheet !== null && (
             <p className="text-sm text-base-content/70" role="status">
               End of sheet — last: Plot {endOfSheet.plot} · Sub {endOfSheet.subsample}
-            </p>
-          )}
-
-          {hasPayload && rows !== null && endOfSheet === null && endOfPlot !== null && (
-            <p className="text-sm text-base-content/70" role="status">
-              Nothing to write — stopped at the end of this plot (Plot{' '}
-              {endOfPlot.plot} · Sub {endOfPlot.subsample})
             </p>
           )}
         </section>

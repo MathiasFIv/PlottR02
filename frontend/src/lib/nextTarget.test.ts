@@ -3,7 +3,7 @@ import { getDefaultStore } from 'jotai/vanilla';
 import { sheetLastWrittenAtom, trialSheetAtom } from '../store/atoms';
 import type { SheetRow, TrialSheet } from '../types';
 import { writeDefaultTarget } from './defaultTarget';
-import { deriveEndOfPlot, deriveEndOfSheet, deriveNextTarget, resolveNextTarget, rowsForTrial } from './nextTarget';
+import { deriveEndOfSheet, deriveNextTarget, resolveNextTarget, rowsForTrial } from './nextTarget';
 import { sheetSnapshotKey, writeSheetSnapshot } from './sheetSnapshot';
 
 const TRIAL = 'trial-1';
@@ -99,7 +99,7 @@ describe('deriveNextTarget — STAY (block not full)', () => {
 });
 
 describe('deriveNextTarget — advance (block full)', () => {
-  it('blockFull=true steps to the NEXT row, but only within the SAME plot', () => {
+  it('blockFull=true steps to the NEXT row, including across a plot edge', () => {
     expect(deriveNextTarget(rows, { plot: 101, subsample: 1 }, true)).toEqual({
       plot: 101,
       subsample: 2,
@@ -108,23 +108,47 @@ describe('deriveNextTarget — advance (block full)', () => {
       plot: 101,
       subsample: 4,
     });
+    // 101/4 is followed by 102/1 in array order: the advance ROLLS OVER the
+    // plot boundary to the next plot's first subsample.
+    expect(deriveNextTarget(rows, { plot: 101, subsample: 4 }, true)).toEqual({
+      plot: 102,
+      subsample: 1,
+    });
   });
 
-  it('the last subsample of a plot derives null — no cross-plot wrap', () => {
-    // 101/4 is followed by 102/1 in array order, but a different plot: the
-    // advance must STOP (the old `+ 1` / cross-plot behaviour is gone).
-    expect(deriveNextTarget(rows, { plot: 101, subsample: 4 }, true)).toBeNull();
-    expect(deriveNextTarget(rows, { plot: 102, subsample: 4 }, true)).toBeNull();
-    // The TRUE last row of the sheet (414/4) is also null — nothing follows.
+  it('only the true end of the sheet derives null', () => {
+    // The last subsample of a MID-sheet plot rolls into the next plot.
+    expect(deriveNextTarget(rows, { plot: 102, subsample: 4 }, true)).toEqual({
+      plot: 103,
+      subsample: 1,
+    });
+    // The TRUE last row of the sheet (414/4) is null — nothing follows it.
     expect(rows[rows.length - 1].plot).toBe(414);
     expect(rows[rows.length - 1].subsample).toBe(4);
     expect(deriveNextTarget(rows, { plot: 414, subsample: 4 }, true)).toBeNull();
-    // One step earlier still resolves within the plot — the null comes from
-    // the plot boundary, not from the pair itself.
+    // One step earlier still resolves within the plot.
     expect(deriveNextTarget(rows, { plot: 414, subsample: 3 }, true)).toEqual({
       plot: 414,
       subsample: 4,
     });
+  });
+
+  it('MID-sheet plot boundary rolls over; ONLY the true last row is null / end-of-sheet', () => {
+    // 101/4 sits MID-sheet (rows for 102, 103 and 414 all FOLLOW it): a full
+    // block advances to the next plot's FIRST subsample — never null — and no
+    // end-of-sheet is claimed for it.
+    expect(deriveNextTarget(rows, { plot: 101, subsample: 4 }, true)).toEqual({
+      plot: 102,
+      subsample: 1,
+    });
+    expect(deriveEndOfSheet(rows, { plot: 101, subsample: 4 })).toBeNull();
+    // The TRUE last row of the whole sheet (414/4): nothing follows it, and
+    // it is the only row deriveEndOfSheet ever names.
+    const last = rows[rows.length - 1];
+    const lastPair = { plot: last.plot, subsample: last.subsample };
+    expect(lastPair).toEqual({ plot: 414, subsample: 4 });
+    expect(deriveNextTarget(rows, lastPair, true)).toBeNull();
+    expect(deriveEndOfSheet(rows, lastPair)).toEqual({ plot: 414, subsample: 4 });
   });
 
   it('returns null when `from` is not in rows, rows are empty, or from is null', () => {
@@ -171,7 +195,7 @@ describe('deriveNextTarget — advance (block full)', () => {
     ).toEqual({ plot: 101, subsample: 2 });
   });
 
-  it('uneven subsample counts advance within a plot and stop at its end', () => {
+  it('uneven subsample counts advance through plot edges to the sheet end', () => {
     const uneven: SheetRow[] = [
       { row: 40, plot: 7, subsample: 1, values: [] },
       { row: 41, plot: 7, subsample: 2, values: [] },
@@ -192,9 +216,16 @@ describe('deriveNextTarget — advance (block full)', () => {
       plot: 8,
       subsample: 5,
     });
-    // Plot edges stop: 7/3 → 8/1 crosses plots → null (not 8/1); 8/5 → 9/1 → null.
-    expect(deriveNextTarget(uneven, { plot: 7, subsample: 3 }, true)).toBeNull();
-    expect(deriveNextTarget(uneven, { plot: 8, subsample: 5 }, true)).toBeNull();
+    // Plot edges ROLL OVER to the next plot's first subsample (7/3 → 8/1,
+    // 8/5 → 9/1); only the true sheet end (9/1, the last row) is null.
+    expect(deriveNextTarget(uneven, { plot: 7, subsample: 3 }, true)).toEqual({
+      plot: 8,
+      subsample: 1,
+    });
+    expect(deriveNextTarget(uneven, { plot: 8, subsample: 5 }, true)).toEqual({
+      plot: 9,
+      subsample: 1,
+    });
     expect(deriveNextTarget(uneven, { plot: 9, subsample: 1 }, true)).toBeNull();
     // … but a STAY on any of those rows still returns the row itself.
     expect(deriveNextTarget(uneven, { plot: 7, subsample: 3 }, false)).toEqual({
@@ -300,12 +331,12 @@ describe('resolveNextTarget', () => {
     expect(resolveNextTarget(TRIAL, storage)).toEqual({ plot: 102, subsample: 3 });
   });
 
-  it('a full block at the END of a plot still resolves null (no cross-plot wrap)', () => {
+  it('a full block at the END of a plot rolls into the next plot', () => {
     const storage = memoryStorage();
     writeDefaultTarget(TRIAL, { plot: 101, subsample: 4, blockFull: true }, storage);
     getDefaultStore().set(trialSheetAtom, sheetWith(rows));
 
-    expect(resolveNextTarget(TRIAL, storage)).toBeNull();
+    expect(resolveNextTarget(TRIAL, storage)).toEqual({ plot: 102, subsample: 1 });
   });
 
   it('neither atom nor snapshot → null (rows never invented)', () => {
@@ -400,65 +431,5 @@ describe('deriveEndOfSheet', () => {
 
   it('returns null when lastWritten is null', () => {
     expect(deriveEndOfSheet(rows, null)).toBeNull();
-  });
-});
-
-describe('deriveEndOfPlot', () => {
-  it('returns the last-written pair at a mid-sheet plot end (block full)', () => {
-    // 101/4 is the last row of plot 101; the next row (102/1) is a different
-    // plot → the run stops here: nothing to write, no cross-plot wrap.
-    expect(deriveEndOfPlot(rows, { plot: 101, subsample: 4 }, true)).toEqual({
-      plot: 101,
-      subsample: 4,
-    });
-    expect(deriveEndOfPlot(rows, { plot: 102, subsample: 4 }, true)).toEqual({
-      plot: 102,
-      subsample: 4,
-    });
-  });
-
-  it('returns null mid-plot — the run still has a next row in the same plot', () => {
-    expect(deriveEndOfPlot(rows, { plot: 101, subsample: 3 }, true)).toBeNull();
-    expect(deriveEndOfPlot(rows, { plot: 101, subsample: 1 }, true)).toBeNull();
-  });
-
-  it('returns null when the block is not full — the run STAYS, it does not stop', () => {
-    expect(deriveEndOfPlot(rows, { plot: 101, subsample: 4 }, false)).toBeNull();
-    expect(deriveEndOfPlot(rows, { plot: 414, subsample: 4 }, false)).toBeNull();
-  });
-
-  it('returns the pair at the true sheet end too (callers hide it behind End of sheet)', () => {
-    expect(deriveEndOfPlot(rows, { plot: 414, subsample: 4 }, true)).toEqual({
-      plot: 414,
-      subsample: 4,
-    });
-  });
-
-  it('returns null for a stale pair, empty rows, or a null pair', () => {
-    expect(deriveEndOfPlot(rows, { plot: 101, subsample: 5 }, true)).toBeNull();
-    expect(deriveEndOfPlot(rows, { plot: 999, subsample: 1 }, true)).toBeNull();
-    expect(deriveEndOfPlot([], { plot: 101, subsample: 1 }, true)).toBeNull();
-    expect(deriveEndOfPlot(rows, null, true)).toBeNull();
-    expect(deriveEndOfPlot(null, { plot: 101, subsample: 1 }, true)).toBeNull();
-  });
-
-  it('uneven plots: each plot end stops, mid-plot does not', () => {
-    const uneven: SheetRow[] = [
-      { row: 40, plot: 7, subsample: 1, values: [] },
-      { row: 41, plot: 7, subsample: 2, values: [] },
-      { row: 42, plot: 7, subsample: 3, values: [] }, // plot 7 ends at 3 …
-      { row: 43, plot: 8, subsample: 1, values: [] }, // … so this is a plot edge
-      { row: 44, plot: 8, subsample: 2, values: [] },
-    ];
-    expect(deriveEndOfPlot(uneven, { plot: 7, subsample: 3 }, true)).toEqual({
-      plot: 7,
-      subsample: 3,
-    });
-    expect(deriveEndOfPlot(uneven, { plot: 7, subsample: 2 }, true)).toBeNull();
-    // The TRUE last row of the sheet is a plot end too (and the sheet end).
-    expect(deriveEndOfPlot(uneven, { plot: 8, subsample: 2 }, true)).toEqual({
-      plot: 8,
-      subsample: 2,
-    });
   });
 });

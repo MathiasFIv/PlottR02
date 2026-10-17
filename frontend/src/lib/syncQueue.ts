@@ -161,10 +161,11 @@ export async function autoSync(recordingId: string): Promise<boolean> {
     // Remember the resolved write target ("plot/subsample default memory"):
     // the store now holds the LAST-WRITTEN pair plus `blockFull`, and the
     // next values-only clip is derived from that plus the sheet payload at
-    // read time (`lib/nextTarget.ts`) — STAY on the same subsample while its
-    // category block is unfilled, advance to the next subsample of the SAME
-    // plot once it is full, and stop (null) at the end of a plot — never a
-    // cross-plot wrap, never an invented pair. Flagged/SkippedPresent/Replay
+    // read time (`lib/nextTarget.ts`) — STAY on the same row while its
+    // category block is unfilled; once the block is full, advance to the NEXT
+    // row (crossing plot boundaries — there is no plot-bounded stop), and only
+    // the true end of the sheet yields null. Never an invented pair.
+    // Flagged/SkippedPresent/Replay
     // results do NOT move it — the operator gets a correction surface, not a
     // silent continuation.
     // `advanceSheetTarget` = `rememberWrittenTarget` (persistence, with the

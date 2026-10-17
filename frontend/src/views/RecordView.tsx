@@ -9,7 +9,7 @@ import { useTrials } from '../hooks/useTrials';
 import { useVoiceQueue } from '../hooks/useVoiceQueue';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { getRecordingById } from '../lib/audioDb';
-import { deriveEndOfPlot, deriveEndOfSheet, deriveNextTarget, resolveNextTarget } from '../lib/nextTarget';
+import { deriveEndOfSheet, deriveNextTarget, resolveNextTarget } from '../lib/nextTarget';
 import { formatAnchor, isAnchorForTrial } from '../lib/sheetAnchor';
 import { summarizeSync } from '../lib/syncQueue';
 import {
@@ -203,10 +203,10 @@ export function RecordView() {
   // Next write target for a "values-only" clip — derived reactively, never a
   // stored "+1": the last-written pair plus its `blockFull` flag (atom,
   // guarded to THIS trial) STAYS on the written row while the block is
-  // unfilled and advances to the next subsample of the SAME plot once it is
-  // full. When no payload is loaded yet (sheet still fetching, offline), fall
-  // back to the persisted snapshot-derived resolution — same derivation, best
-  // rows available.
+  // unfilled and advances to the NEXT row (crossing plot boundaries) once it
+  // is full; only the true end of the sheet yields no target. When no payload
+  // is loaded yet (sheet still fetching, offline), fall back to the persisted
+  // snapshot-derived resolution — same derivation, best rows available.
   const rows =
     activeTrialId !== null && sheetPayload?.trialId === activeTrialId
       ? sheetPayload.rows
@@ -222,15 +222,6 @@ export function RecordView() {
         ? deriveNextTarget(rows, lastWritten, lastWritten?.blockFull ?? false)
         : resolveNextTarget(activeTrialId);
   const endOfSheetTarget = deriveEndOfSheet(rows, lastWritten);
-  // End of a PLOT (block full + no next row in the same plot): the run has
-  // nothing left to write here — distinct from the silent mid-sheet `null`
-  // (an unfilled block STAYS and `nextTarget` covers it). Suppressed by the
-  // render order below when the SAME row is also the true end of the sheet.
-  const endOfPlotTarget = deriveEndOfPlot(
-    rows,
-    lastWritten,
-    lastWritten?.blockFull ?? false,
-  );
 
   /**
    * Variant-aware color class for the inline outcome banner. The `synced` case
@@ -321,13 +312,6 @@ export function RecordView() {
               <p className="text-sm text-base-content/70 mt-0" role="status">
                 End of sheet - last: Plot {endOfSheetTarget.plot} · Sub{' '}
                 {endOfSheetTarget.subsample}
-              </p>
-            ) : endOfPlotTarget !== null &&
-              activeTrialId !== null &&
-              sheetPayload?.trialId === activeTrialId ? (
-              <p className="text-sm text-base-content/70 mt-0" role="status">
-                Nothing to write — stopped at the end of this plot (Plot{' '}
-                {endOfPlotTarget.plot} · Sub {endOfPlotTarget.subsample})
               </p>
             ) : null}
 

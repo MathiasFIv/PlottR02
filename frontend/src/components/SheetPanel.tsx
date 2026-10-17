@@ -1,11 +1,11 @@
 import { useAtom, useAtomValue } from 'jotai';
 import { useEffect } from 'react';
 import { useTrialSheet } from '../hooks/useTrialSheet';
-import { deriveEndOfPlot, deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
+import { deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
 import { decideAnchorTap, isAnchorForTrial } from '../lib/sheetAnchor';
 import type { SheetCellTap } from '../lib/sheetAnchor';
 import { isNonArmSheetError } from '../lib/sheetStatus';
-import { rehydrateSheetTarget, targetHighlight } from '../lib/sheetTarget';
+import { rehydrateSheetTarget, targetHighlight, targetSelection } from '../lib/sheetTarget';
 import { sheetLastWrittenAtom, sheetSelectedAtom } from '../store/atoms';
 import { SheetGrid } from './SheetGrid';
 import { SheetMetaStrip } from './SheetMetaStrip';
@@ -34,17 +34,18 @@ type SheetPanelProps = {
  * The N3 current-cell highlight is derived DURING RENDER from
  * `sheetLastWrittenAtom` (the last-written pair + `blockFull`, trial-guarded)
  * + the payload on screen: `deriveNextTarget` STAYS on the written row while
- * its category block is unfilled and advances to the next subsample of the
- * SAME plot once it is full (`null` at the end of a plot — no wrap), and
+ * its category block is unfilled and advances to the NEXT row (crossing plot
+ * boundaries) once it is full; only the true end of the sheet is null, and
  * `targetHighlight` maps it onto the grid, so a refresh or snapshot hydrate
  * re-derives it for free and the persisted pair is re-seeded by the effect
  * below (mount / trial change).
  *
  * **Write anchor (tap-to-anchor):** the grid is tappable through
  * `onSelectCell` below. A tapped ROW becomes the anchor (`sheetSelectedAtom`,
- * trial-guarded with `isAnchorForTrial` and mapped through `targetHighlight`
- * — the same identity rule as the highlight); the tap is ROW-ONLY, so the
- * write starts at that row's first empty cell and no column is pinned.
+ * trial-guarded with `isAnchorForTrial` and mapped through `targetSelection`
+ * — the same identity rule as the highlight); the tap is ROW-ONLY for the
+ * WRITE, so it fills from that row's first empty cell and pins no column -
+ * the tapped CELL is carried only to render the anchor highlight.
  * Tapping the currently-anchored row again clears the anchor. A tap on a
  * fully-filled row still selects it — an honest write then reports "already
  * filled" via the sync banner. The anchor atom is NOT cleared by this
@@ -81,21 +82,17 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
     !isNonArmSheetError(error);
 
   // Next row: STAY on the written row while its block is unfilled, else the
-  // next subsample of the SAME plot (payload-derived — never arithmetic,
-  // never a guessed pair; null at the end of a plot).
+  // NEXT row (crossing plot boundaries) — payload-derived, never arithmetic,
+  // never a guessed pair; only the true end of the sheet is null.
   const next =
     rows !== null ? deriveNextTarget(rows, forTrial, forTrial?.blockFull ?? false) : null;
   const endOfSheet = deriveEndOfSheet(rows, forTrial);
-  // End of a PLOT (block full, no next row in the same plot): the run has
-  // nothing left to write here. Suppressed below when this row is also the
-  // true end of the sheet (End of sheet wins).
-  const endOfPlot = deriveEndOfPlot(rows, forTrial, forTrial?.blockFull ?? false);
 
   /**
    * Tap-to-anchor. The DECISION is shared with the `views/SheetView.tsx`
    * host in `lib/sheetAnchor.ts#decideAnchorTap` (one grid, two hosts — no
    * duplicated rules); this host only applies it:
-   * - a cell of the anchored row → clear the anchor;
+   * - a tap on the anchored row → clear the anchor;
    * - any other row → anchor it (row-only; the write starts at that row's
    *   first empty cell).
    * The tap never touches `sheetLastWrittenAtom`: it is an intent, not a
@@ -129,7 +126,7 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
           columns={columns}
           rows={rows}
           highlight={targetHighlight(next, rows)}
-          selected={targetHighlight(forTrialAnchor, rows)}
+          selected={targetSelection(forTrialAnchor, rows)}
           onSelectCell={handleSelectCell}
         />
       )}
@@ -137,13 +134,6 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
       {hasPayload && rows !== null && endOfSheet !== null && (
         <p className="text-sm text-base-content/70" role="status">
           End of sheet — last: Plot {endOfSheet.plot} · Sub {endOfSheet.subsample}
-        </p>
-      )}
-
-      {hasPayload && rows !== null && endOfSheet === null && endOfPlot !== null && (
-        <p className="text-sm text-base-content/70" role="status">
-          Nothing to write — stopped at the end of this plot (Plot{' '}
-          {endOfPlot.plot} · Sub {endOfPlot.subsample})
         </p>
       )}
     </div>

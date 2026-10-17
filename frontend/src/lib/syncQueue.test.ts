@@ -727,12 +727,13 @@ describe('current cell target (N3 highlight atom)', () => {
 });
 
 describe('write anchor (tap-to-anchor on a grid row)', () => {
-  /** A tap on a row: plot 102, subsample 2. Row-only — no column, no value. */
+  /** A tap on a cell: plot 102, subsample 2, column index 2 (ordinal 3). */
   function tappedCell(overrides: Partial<SheetSelected> = {}): SheetSelected {
     return {
       trialId: 'trial-1',
       plot: 102,
       subsample: 2,
+      valuesIndex: 2,
       ...overrides,
     };
   }
@@ -743,6 +744,83 @@ describe('write anchor (tap-to-anchor on a grid row)', () => {
     if (call === undefined) throw new Error(`no send captured at index ${index}`);
     return call[0];
   }
+
+  /**
+   * REAL `api.syncRecording` (FormData built for real) + a fake fetch, so a
+   * test can assert the ACTUAL multipart field list — the record-level
+   * assertions above only see the object handed to the mocked API.
+   */
+  function stubAnchorWire(): ReturnType<typeof vi.fn> {
+    syncMock.mockImplementation(realSyncRecordingHolder.current as typeof syncMock);
+    const fetchStub = vi.fn(
+      async (_url: string, init?: RequestInit) => {
+        const defaults =
+          init?.body instanceof FormData &&
+          Number(init.body.get('defaultPlot')) > 0
+            ? {
+                plot: Number(init.body.get('defaultPlot')),
+                subsample: Number(init.body.get('defaultSubsample')),
+              }
+            : null;
+        return new Response(
+          JSON.stringify(
+            syncResponse(
+              defaults === null
+                ? { writtenCells: [] }
+                : { ...defaults, usedDefaultTarget: true, writtenCells: [] },
+            ),
+          ),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      },
+    );
+    vi.stubGlobal('fetch', fetchStub);
+    vi.stubGlobal('localStorage', {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => {},
+      clear: () => {},
+      key: () => null,
+      length: 0,
+    } satisfies Storage);
+    return fetchStub;
+  }
+
+  it('the tapped COLUMN never reaches the multipart wire (real FormData, end-to-end)', async () => {
+    const fetchStub = stubAnchorWire();
+    // Values-only clip with NO traitOrdinal of its own — so anything
+    // column-shaped on the wire could only have leaked from the tap.
+    const rec = makeRec({ plot: null, subsample: null, value: 5 });
+    await saveRecording(rec);
+    // The tap carries valuesIndex 2 (see tappedCell) …
+    getDefaultStore().set(sheetSelectedAtom, tappedCell());
+
+    expect(await autoSync(rec.id)).toBe(true);
+
+    const body = fetchStub.mock.calls[0]?.[1]?.body as FormData;
+    expect(body).toBeInstanceOf(FormData);
+    // … the ROW rides out as the defaults …
+    expect(body.get('defaultPlot')).toBe('102');
+    expect(body.get('defaultSubsample')).toBe('2');
+    // … and NO column coord of any name does: exact multipart field set —
+    // a leaked traitOrdinal/valuesIndex/column would fail this.
+    expect([...new Set(body.keys())].sort()).toEqual(
+      [
+        'clientRecordingId',
+        'createdAt',
+        'defaultPlot',
+        'defaultSubsample',
+        'file',
+        'plot',
+        'subsample',
+        'trialId',
+        'value',
+      ].sort(),
+    );
+    expect(body.get('traitOrdinal')).toBeNull();
+    expect(body.get('valuesIndex')).toBeNull();
+    expect(body.get('column')).toBeNull();
+  });
 
   it('wins over resolveNextTarget, sends the tapped ROW, and keeps the recorder\'s own traitOrdinal', async () => {
     const rec = makeRec({ plot: null, subsample: null, value: 5, traitOrdinal: 2 });

@@ -10,6 +10,7 @@ import {
   deriveBlockFull,
   rehydrateSheetTarget,
   targetHighlight,
+  targetSelection,
 } from './sheetTarget';
 
 const TRIAL = 'trial-1';
@@ -121,6 +122,43 @@ describe('targetHighlight (row-only)', () => {
     ];
     expect(targetHighlight({ plot: 101, subsample: 1 }, base)).toEqual({ row: 22 });
     expect(targetHighlight({ plot: 101, subsample: 1 }, zeros)).toEqual({ row: 22 });
+  });
+});
+
+describe('targetSelection (tapped anchor cell)', () => {
+  it('(a) resolves the ROW for plot + subsample and carries the tapped valuesIndex', () => {
+    expect(targetSelection({ plot: 101, subsample: 1, valuesIndex: 2 }, rows)).toEqual({
+      row: 12,
+      valuesIndex: 2,
+    });
+    expect(targetSelection({ plot: 102, subsample: 1, valuesIndex: 0 }, rows)).toEqual({
+      row: 99,
+      valuesIndex: 0,
+    });
+  });
+
+  it('(b) matches by plot + subsample, never by the Excel Row cross-ref or index', () => {
+    const hit = targetSelection({ plot: 101, subsample: 1, valuesIndex: 1 }, rows);
+    // The 101/1 row is at array index 1 (Excel Row 12); a plot-only match
+    // (rows[0], Row 57) or the index (1) must not decide the row.
+    expect(hit?.row).toBe(12);
+    expect(hit?.row).not.toBe(rows[0].row);
+    expect(hit?.row).not.toBe(0);
+  });
+
+  it('(c) a null anchor highlights nothing', () => {
+    expect(targetSelection(null, rows)).toBeNull();
+  });
+
+  it('(d) an anchor row missing from the payload returns null — never a wrap', () => {
+    expect(targetSelection({ plot: 101, subsample: 9, valuesIndex: 2 }, rows)).toBeNull();
+    expect(targetSelection({ plot: 999, subsample: 1, valuesIndex: 0 }, rows)).toBeNull();
+  });
+
+  it('(e) shape: exactly `row` + `valuesIndex`, nothing else', () => {
+    const hit = targetSelection({ plot: 101, subsample: 2, valuesIndex: 2 }, rows);
+    expect(hit).not.toBeNull();
+    expect(Object.keys(hit as object)).toEqual(['row', 'valuesIndex']);
   });
 });
 
@@ -403,12 +441,12 @@ describe('deriveNextTarget feeding targetHighlight (the host wiring)', () => {
     expect(targetHighlight(next, rows)).toEqual({ row: 57 });
   });
 
-  it('a full block at a plot edge derives null → no highlight at all', () => {
+  it('a full block at a plot edge ROLLS OVER to the next plot → highlight follows', () => {
     // 101/1 is the last 101 row in array order (index 1); the next row is
-    // 102/1, a different plot → null, so nothing is highlighted.
+    // 102/1 — rollover reverses the old plot-boundary stop, so it is targeted.
     const next = deriveNextTarget(rows, { plot: 101, subsample: 1 }, true);
-    expect(next).toBeNull();
-    expect(targetHighlight(next, rows)).toBeNull();
+    expect(next).toEqual({ plot: 102, subsample: 1 });
+    expect(targetHighlight(next, rows)).toEqual({ row: 99 });
   });
 
   it('a stale/legacy last-written pair not present in rows derives null (nothing claimed)', () => {

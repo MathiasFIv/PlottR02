@@ -115,9 +115,10 @@ export const sheetRefreshTickAtom = atom<SheetRefreshTick | null>(null);
  * (`blockFull`, computed from the response's `writtenCells` against the
  * payload's `columns`). It is NOT a "next" pair: the next target is derived
  * at read time from the payload's `rows[]` (`deriveNextTarget`) — STAY on
- * this row while the block is unfilled, advance to the next subsample of the
- * SAME plot once it is full. Consumers MUST guard on `trialId` before using
- * it for a given trial's grid.
+ * this row while the block is unfilled; once the block is full, advance to
+ * the NEXT row, crossing plot boundaries, and only the true end of the sheet
+ * yields null. Consumers MUST guard on `trialId` before using it for a given
+ * trial's grid.
  */
 export type SheetLastWritten = {
   trialId: string;
@@ -154,12 +155,15 @@ export const sheetLastWrittenAtom = atom<SheetLastWritten | null>(null);
  * `subsample` (row identity — the Excel `SheetRow.row` cross-ref is never a
  * key). A tap is deliberately ROW-ONLY: the write always starts at the row's
  * first empty cell (the server scans forward from column C), so no column is
- * ever pinned.
+ * ever pinned on the wire; `valuesIndex` only carries the tapped cell's column
+ * so the grid can render the anchor highlight.
  */
 export type SheetSelected = {
   trialId: string;
   plot: number;
   subsample: number;
+  /** 0-based index into `SheetRow.values` (`traitOrdinal - 1`); highlight only. */
+  valuesIndex: number;
 };
 
 export const sheetSelectedAtom = atom<SheetSelected | null>(null);

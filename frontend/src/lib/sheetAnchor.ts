@@ -92,19 +92,23 @@ export function anchorToWire(anchor: SheetSelected): {
 /**
  * The tap payload `components/SheetGrid.tsx` hands `onSelectCell` — the one
  * shape both hosts (`components/SheetPanel.tsx`, `views/SheetView.tsx`)
- * receive and `decideAnchorTap` consumes. Row-only: no column, no value.
+ * receive and `decideAnchorTap` consumes. The ROW decides the write, so the
+ * anchor never pins a column on the wire; `valuesIndex` carries the tapped
+ * cell's column purely for the grid's anchor highlight.
  */
 export type SheetCellTap = {
   plot: number;
   subsample: number;
+  valuesIndex: number;
 };
 
 /**
  * The outcome of one tap, decided purely — the HOST applies it:
  * - `clear` — a cell of the CURRENT anchor's row: tap it again to release.
- * - `set` — any other row: make that row the anchor. Tapping a cell of a
- *   fully-filled row still selects the row (an honest write then reports
- *   "already filled" via the sync banner — the tap is never destructive).
+ * - `set` — any other row: make that row the anchor, carrying the tapped
+ *   cell's coords so the grid highlights it. Tapping a cell of a fully-filled
+ *   row still selects the row (an honest write then reports "already filled"
+ *   via the sync banner — the tap is never destructive).
  */
 export type AnchorDecision =
   | { kind: 'clear' }
@@ -122,9 +126,10 @@ export type AnchorDecision =
  * Rules, in order:
  * 1. `current` matches this cell's ROW (plot + subsample) → `{ kind: 'clear' }`
  *    — tapping the anchored row again releases it;
- * 2. otherwise → `{ kind: 'set', anchor: { trialId, plot, subsample } }` —
+ * 2. otherwise → `{ kind: 'set', anchor: { trialId, plot, subsample, valuesIndex } }` —
  *    the tapped ROW becomes the anchor (filled rows included; the row's
- *    values are deliberately NOT consulted).
+ *    values are deliberately NOT consulted) and the tapped cell's column
+ *    rides along so the grid can highlight it.
  */
 export function decideAnchorTap(
   cell: SheetCellTap,
@@ -144,6 +149,7 @@ export function decideAnchorTap(
       trialId,
       plot: cell.plot,
       subsample: cell.subsample,
+      valuesIndex: cell.valuesIndex,
     },
   };
 }

@@ -8,17 +8,19 @@ import {
 } from './sheetAnchor';
 import type { SheetCellTap } from './sheetAnchor';
 
-/** A tapped ROW on trial-1: plot 101, subsample 2. Row-only — no column. */
+/** A tapped CELL on trial-1: plot 101, subsample 2, column index 2 (ordinal 3). */
 const anchor: SheetSelected = {
   trialId: 'trial-1',
   plot: 101,
   subsample: 2,
+  valuesIndex: 2,
 };
 
 const otherTrialAnchor: SheetSelected = {
   trialId: 'trial-2',
   plot: 101,
   subsample: 2,
+  valuesIndex: 2,
 };
 
 describe('isAnchorForTrial', () => {
@@ -64,16 +66,16 @@ describe('formatAnchor', () => {
 
   it('formats single-digit and multi-digit coordinates verbatim (no padding)', () => {
     expect(
-      formatAnchor({ trialId: 'trial-1', plot: 7, subsample: 12 }),
+      formatAnchor({ trialId: 'trial-1', plot: 7, subsample: 12, valuesIndex: 0 }),
     ).toBe('Plot 7 \u00B7 Sub 12');
     expect(
-      formatAnchor({ trialId: 'trial-1', plot: 414, subsample: 1 }),
+      formatAnchor({ trialId: 'trial-1', plot: 414, subsample: 1, valuesIndex: 8 }),
     ).toBe('Plot 414 \u00B7 Sub 1');
   });
 });
 
 describe('anchorToWire', () => {
-  it('maps the tap onto { defaultTarget } ONLY — no traitOrdinal', () => {
+  it('maps the tap onto { defaultTarget } ONLY — no column coords', () => {
     expect(anchorToWire(anchor)).toEqual({
       defaultTarget: { plot: 101, subsample: 2 },
     });
@@ -81,6 +83,7 @@ describe('anchorToWire', () => {
     // the server scans from column C for the row's first empty cell.
     expect(Object.keys(anchorToWire(anchor))).toEqual(['defaultTarget']);
     expect('traitOrdinal' in anchorToWire(anchor)).toBe(false);
+    expect('valuesIndex' in anchorToWire(anchor)).toBe(false);
   });
 
   it('composes onto a values-only record exactly the way syncQueue freezes it', () => {
@@ -111,11 +114,32 @@ describe('anchorToWire', () => {
     expect('traitOrdinal' in sendRec).toBe(false);
     expect(sendRec).toEqual({ plot: null, subsample: null, defaultTarget: { plot: 101, subsample: 2 } });
   });
+
+  it('a FRESH tap serializes row-only — decideAnchorTap → anchorToWire emits no column coords', () => {
+    // End-to-end over the pure chain a fresh tap actually takes: the cell tap
+    // carries the tapped column (valuesIndex 8) …
+    const decision = decideAnchorTap(
+      { plot: 303, subsample: 7, valuesIndex: 8 },
+      null,
+      'trial-1',
+    );
+    expect(decision.kind).toBe('set');
+    if (decision.kind !== 'set') throw new Error('unreachable');
+    // … the decision carries it for the grid highlight …
+    expect(decision.anchor.valuesIndex).toBe(8);
+    // … but the WIRE mapping drops every column coord: exact shape, exact keys.
+    const wire = anchorToWire(decision.anchor);
+    expect(wire).toEqual({ defaultTarget: { plot: 303, subsample: 7 } });
+    expect(Object.keys(wire)).toEqual(['defaultTarget']);
+    expect('traitOrdinal' in wire).toBe(false);
+    expect('valuesIndex' in wire).toBe(false);
+    expect('column' in wire).toBe(false);
+  });
 });
 
 describe('decideAnchorTap', () => {
   /** The very row `anchor` was tapped on — trial-1, 101/2. */
-  const anchoredRow: SheetCellTap = { plot: 101, subsample: 2 };
+  const anchoredRow: SheetCellTap = { plot: 101, subsample: 2, valuesIndex: 2 };
 
   it('a row MATCHING the current anchor → clear (tap the selected row again)', () => {
     expect(decideAnchorTap(anchoredRow, anchor, 'trial-1')).toEqual({
@@ -123,25 +147,62 @@ describe('decideAnchorTap', () => {
     });
   });
 
-  it('a DIFFERENT row → set with the exact row-only SheetSelected', () => {
-    const decision = decideAnchorTap({ plot: 202, subsample: 1 }, anchor, 'trial-1');
+  it('a DIFFERENT column of the SAME row still clears (matching is row-based)', () => {
+    // The anchor is row-based: tapping another cell in the anchored row is the
+    // same "release" gesture, regardless of which column was tapped.
+    expect(
+      decideAnchorTap(
+        { plot: 101, subsample: 2, valuesIndex: 6 },
+        anchor,
+        'trial-1',
+      ),
+    ).toEqual({ kind: 'clear' });
+  });
+
+  it('a DIFFERENT row → set carrying the tapped cell coords', () => {
+    const decision = decideAnchorTap(
+      { plot: 202, subsample: 1, valuesIndex: 4 },
+      anchor,
+      'trial-1',
+    );
     expect(decision).toEqual({
       kind: 'set',
-      anchor: { trialId: 'trial-1', plot: 202, subsample: 1 },
+      anchor: {
+        trialId: 'trial-1',
+        plot: 202,
+        subsample: 1,
+        valuesIndex: 4,
+      },
     });
   });
 
   it('a row with NO current anchor → set', () => {
     expect(decideAnchorTap(anchoredRow, null, 'trial-1')).toEqual({
       kind: 'set',
-      anchor: { trialId: 'trial-1', plot: 101, subsample: 2 },
+      anchor: {
+        trialId: 'trial-1',
+        plot: 101,
+        subsample: 2,
+        valuesIndex: 2,
+      },
     });
   });
 
   it('same plot but a different subsample is a DIFFERENT row → set', () => {
-    expect(decideAnchorTap({ plot: 101, subsample: 3 }, anchor, 'trial-1')).toEqual({
+    expect(
+      decideAnchorTap(
+        { plot: 101, subsample: 3, valuesIndex: 5 },
+        anchor,
+        'trial-1',
+      ),
+    ).toEqual({
       kind: 'set',
-      anchor: { trialId: 'trial-1', plot: 101, subsample: 3 },
+      anchor: {
+        trialId: 'trial-1',
+        plot: 101,
+        subsample: 3,
+        valuesIndex: 5,
+      },
     });
   });
 
@@ -149,9 +210,20 @@ describe('decideAnchorTap', () => {
     // The host always passes its own (guarded) trial; the pure decision
     // simply stamps it on. A cross-trial `current` never reaches here
     // (isAnchorForTrial guards it), but the stamp is the caller's trial.
-    expect(decideAnchorTap({ plot: 5, subsample: 1 }, anchor, 'trial-9')).toEqual({
+    expect(
+      decideAnchorTap(
+        { plot: 5, subsample: 1, valuesIndex: 1 },
+        anchor,
+        'trial-9',
+      ),
+    ).toEqual({
       kind: 'set',
-      anchor: { trialId: 'trial-9', plot: 5, subsample: 1 },
+      anchor: {
+        trialId: 'trial-9',
+        plot: 5,
+        subsample: 1,
+        valuesIndex: 1,
+      },
     });
   });
 });
