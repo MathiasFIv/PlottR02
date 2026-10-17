@@ -26,6 +26,7 @@ public class TrialService : ITrialService
     private readonly ILogger<TrialService> _logger;
     private readonly IRatingRepository _ratingRepository;
     private readonly IUserRepository _userRepository;
+    private readonly ITrialWriteGate _writeGate;
 
     public TrialService(
         ITrialRepository trialRepository,
@@ -34,7 +35,8 @@ public class TrialService : ITrialService
         ICurrentUser currentUser,
         ILogger<TrialService> logger,
         IRatingRepository ratingRepository,
-        IUserRepository userRepository)
+        IUserRepository userRepository,
+        ITrialWriteGate writeGate)
     {
         _trialRepository = trialRepository;
         _workbookStore = workbookStore;
@@ -43,6 +45,7 @@ public class TrialService : ITrialService
         _logger = logger;
         _ratingRepository = ratingRepository;
         _userRepository = userRepository;
+        _writeGate = writeGate;
     }
 
     /// <inheritdoc />
@@ -233,6 +236,106 @@ public class TrialService : ITrialService
             trialId.ToString(), export.Version, Changed: true,
             export.FileName, DateTime.UtcNow,
             region.Columns, region.Rows, region.Metadata);
+    }
+
+    /// <inheritdoc />
+    public async Task<CellEditResult> EditCellAsync(
+        Guid trialId, EditCellRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // Validate the addressed cell and the new value BEFORE any lookup or write. Value is
+        // nullable on the DTO so a MISSING value is rejected here — never silently written as 0.
+        if (request.Plot <= 0)
+            throw new ArgumentException("Plot must be greater than zero.", nameof(request));
+        if (request.Subsample <= 0)
+            throw new ArgumentException("Subsample must be greater than zero.", nameof(request));
+        if (request.TraitOrdinal is < 1 or > 9)
+            throw new ArgumentException("TraitOrdinal must be within 1..9.", nameof(request));
+        if (request.Value is not int value || value is < 0 or > 10)
+            throw new ArgumentException("Value must be present and within 0..10.", nameof(request));
+
+        // Load the trial first so an unknown id stays a 404 (existence-check-wins, matching
+        // the other trial endpoints), then enforce per-trial access (managers or assigned).
+        var trial = await _trialRepository.GetByIdAsync(trialId, ct);
+        if (trial is null)
+            throw new KeyNotFoundException($"Trial '{trialId}' was not found.");
+
+        await EnsureCanAccessTrialAsync(trialId, ct);
+
+        var outputDirectory = _workbookStore.GetWorkingDirectory(trialId);
+
+        // Serialize the whole read-modify-write below against other writers of THIS trial.
+        // Two edits that resolve the same input copy in parallel would each export a new
+        // _out_ copy from it and the later export would silently drop the earlier write (see
+        // ITrialWriteGate); ordering them makes the second copy chain on the first. Trials
+        // other than this one are unaffected and keep writing in parallel.
+        using var writeGate = await _writeGate.AcquireAsync(trialId, ct);
+
+        // The newest accumulated output copy (rehydrated from durable storage on a cold cache)
+        // is the input; the pristine source is the fallback. A null result is surfaced as a
+        // FileNotFoundException so the controller maps it to 404.
+        var export = await _workbookStore.ResolveExportAsync(
+            trialId, trial.SourceWorkbookPath ?? string.Empty, ct)
+            ?? throw new FileNotFoundException($"Workbook for trial '{trialId}' was not found on disk.");
+
+        var result = _ratingRepository.WriteSingleCell(
+            export.FilePath,
+            outputDirectory,
+            request.Plot,
+            request.Subsample,
+            request.TraitOrdinal,
+            value,
+            request.Overwrite);
+
+        // Persist + audit ONLY when a cell actually landed — a refused write (filled cell,
+        // overwrite off) or a missing row is a no-op with nothing to mirror or record.
+        if (result.Written)
+        {
+            await _workbookStore.PersistTrialFilesAsync(trialId, ct);
+
+            await _auditService.LogAsync(
+                "Trial.CellEdited",
+                "Trial",
+                trialId.ToString(),
+                _currentUser.UserId,
+                _currentUser.Name,
+                JsonSerializer.Serialize(new
+                {
+                    trialId,
+                    plot = request.Plot,
+                    subsample = request.Subsample,
+                    traitOrdinal = request.TraitOrdinal,
+                    cellAddress = result.CellAddress,
+                    priorValue = result.PriorValue,
+                    newValue = value,
+                    overwrite = request.Overwrite,
+                }),
+                ct);
+        }
+
+        // Re-resolve so the returned Version/FileName reflect the just-written copy: exporting
+        // a new _out_ file changes the opaque version the client must poll with. On a skip the
+        // resolution is unchanged (no new copy was exported). A null re-resolve (the copy
+        // vanished mid-call) falls back to the pre-write resolution rather than failing a write
+        // that already succeeded.
+        var resolved = await _workbookStore.ResolveExportAsync(
+            trialId, trial.SourceWorkbookPath ?? string.Empty, ct);
+
+        return new CellEditResult(
+            trialId.ToString(),
+            request.Plot,
+            request.Subsample,
+            request.TraitOrdinal,
+            value,
+            result.Written,
+            result.Skipped,
+            result.SkippedReason,
+            result.PriorValue,
+            result.CellAddress,
+            resolved?.Version ?? export.Version,
+            resolved?.FileName,
+            DateTime.UtcNow);
     }
 
     /// <inheritdoc />

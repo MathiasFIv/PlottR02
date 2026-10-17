@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PlottR0._2.Contracts.Dtos.Trial;
 using PlottR0._2.Contracts.Dtos.User;
+using PlottR0._2.Contracts.Ratings;
 using PlottR0._2.Services.Abstractions;
 
 namespace PlottR0._2.Api.Controllers;
@@ -224,6 +225,47 @@ public class TrialsController : ControllerBase
         catch (ForbiddenAccessException) { return Forbid(); }
         catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
         catch (FileNotFoundException ex) { return NotFound(ex.Message); }
+        catch (InvalidDataException ex) { return BadRequest(ex.Message); }
+    }
+
+    /// <summary>Edits one ratings cell of a trial's sheet (the inline "edit a sheet cell"
+    /// feature). The addressed <c>(plot, subsample, traitOrdinal)</c> cell is written and a
+    /// fresh <c>_out_</c> workbook copy is exported; the response carries the new opaque
+    /// <c>version</c> to poll the sheet with. Writing into a cell that already holds a value
+    /// requires <c>overwrite: true</c> — without it the write is REFUSED with a 409 so the UI
+    /// can read <c>priorValue</c> and ask the user to confirm. Managers may edit any trial;
+    /// other callers must be assigned to it.</summary>
+    /// <param name="trialId">The trial whose sheet cell is edited.</param>
+    /// <param name="request">The addressed cell, the new value and the overwrite opt-in.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>200 with the write outcome; 400 for an invalid payload; 403 when the caller may
+    /// not access the trial; 404 when the trial or its workbook is missing; 409 when the target
+    /// cell already holds a value and overwrite was not requested.</returns>
+    [HttpPost("{trialId:guid}/cells")]
+    [Consumes("application/json")]
+    [ProducesResponseType(typeof(CellEditResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(CellEditResult), StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<CellEditResult>> EditCell(
+        Guid trialId, [FromBody] EditCellRequest request, CancellationToken ct = default)
+    {
+        try
+        {
+            var result = await _trialService.EditCellAsync(trialId, request, ct);
+
+            // A filled-cell refusal is not an error: 409 signals "confirm to overwrite" and the
+            // body still carries PriorValue so the UI can show what is currently there.
+            if (result.Skipped && result.SkippedReason == SingleCellWriteResult.CellAlreadyFilled)
+                return Conflict(result);
+
+            return Ok(result);
+        }
+        catch (ForbiddenAccessException) { return Forbid(); }
+        catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+        catch (FileNotFoundException ex) { return NotFound(ex.Message); }
+        catch (ArgumentException ex) { return BadRequest(ex.Message); }
         catch (InvalidDataException ex) { return BadRequest(ex.Message); }
     }
 }

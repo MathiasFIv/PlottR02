@@ -89,4 +89,34 @@ public interface ITrialService
     /// The resolved workbook has no "Subsample Plot Data" sheet (non-ARM upload).
     /// </exception>
     Task<TrialSheet> GetSheetAsync(Guid trialId, string? since, CancellationToken ct = default);
+
+    /// <summary>
+    /// Edits ONE ratings cell of a trial's sheet (the inline "edit a sheet cell" feature):
+    /// resolves the current workbook, writes the addressed <c>(plot, subsample, traitOrdinal)</c>
+    /// cell under the locked-overwrite policy, and — only when a cell was actually written —
+    /// mirrors the trial's files to durable storage and records a "Trial.CellEdited" audit
+    /// entry. A cell that already holds a value is REFUSED (reported as skipped, not an error)
+    /// unless <see cref="EditCellRequest.Overwrite"/> is set. The returned
+    /// <see cref="CellEditResult.Version"/> reflects the just-written copy.
+    /// <para/>
+    /// Orchestration only — the workbook read/write lives behind <c>IRatingRepository</c>;
+    /// no ClosedXML/file I/O happens here.
+    /// </summary>
+    /// <param name="trialId">The trial whose sheet cell is edited.</param>
+    /// <param name="request">The addressed cell, the new value and the overwrite opt-in.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The write outcome plus the workbook's new opaque version.</returns>
+    /// <exception cref="ArgumentException">
+    /// A field is out of range: plot/subsample ≤ 0, traitOrdinal outside 1..9, or a missing or
+    /// out-of-range (0..10) value.
+    /// </exception>
+    /// <exception cref="KeyNotFoundException">The trial does not exist.</exception>
+    /// <exception cref="ForbiddenAccessException">
+    /// The caller is not a manager and is not assigned to the trial.
+    /// </exception>
+    /// <exception cref="FileNotFoundException">
+    /// The trial exists but no workbook file is left on disk.
+    /// </exception>
+    /// <exception cref="InvalidDataException"><c>traitOrdinal</c> is outside 1..9 (repository defense in depth).</exception>
+    Task<CellEditResult> EditCellAsync(Guid trialId, EditCellRequest request, CancellationToken ct = default);
 }

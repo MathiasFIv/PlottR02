@@ -2,11 +2,13 @@ import { useAtom, useAtomValue } from 'jotai';
 import { useEffect } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { SheetGrid } from '../components/SheetGrid';
+import { SheetEditNotice } from '../components/SheetEditNotice';
 import { SheetMetaStrip } from '../components/SheetMetaStrip';
 import { SheetStates } from '../components/SheetStates';
 import { SheetStatusPill } from '../components/SheetStatusPill';
 import { TopBar } from '../components/TopBar';
 import { useAuth } from '../hooks/useAuth';
+import { useSheetCellEdit } from '../hooks/useSheetCellEdit';
 import { useTrialSheet } from '../hooks/useTrialSheet';
 import { deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
 import {
@@ -57,6 +59,13 @@ export function SheetView() {
    * so an id-less route can never match a stored tap.
    */
   const forTrialAnchor = isAnchorForTrial(anchor, trialId ?? null);
+
+  /**
+   * Double-tap-to-edit state + handlers — the SAME shared hook the embedded
+   * `SheetPanel` uses (one grid, two hosts). It clears its atoms on unmount /
+   * trial change, so the id-less route closes any editor too.
+   */
+  const edit = useSheetCellEdit(trialId ?? null);
 
   // Re-seed from the persisted last-written target on mount
   // and on route/trial change (a missing id rehydrates to "no current cell").
@@ -149,6 +158,20 @@ export function SheetView() {
             </p>
           )}
 
+          {/* Inline cell-edit notice — ABOVE the grid (same reason as the
+              anchor status): the conflict offer must stay visible while the
+              grid itself is scrolled. `role="alert"` inside the notice
+              announces a failed save. */}
+          {hasPayload && (
+            <SheetEditNotice
+              error={edit.error}
+              conflict={edit.conflict}
+              saving={edit.saving}
+              onConfirmOverwrite={edit.onConfirmOverwrite}
+              onDismissConflict={edit.onDismissConflict}
+            />
+          )}
+
           {hasPayload && rows !== null && rows.length > 0 && columns !== null && (
             <SheetGrid
               columns={columns}
@@ -156,6 +179,13 @@ export function SheetView() {
               highlight={targetHighlight(next, rows)}
               selected={targetSelection(forTrialAnchor, rows)}
               onSelectCell={handleSelectCell}
+              onEditCell={edit.onEditCell}
+              editing={edit.editing}
+              editDraft={edit.draft}
+              editSaving={edit.saving}
+              onEditDraftChange={edit.onEditDraftChange}
+              onEditCommit={edit.onEditCommit}
+              onEditCancel={edit.onEditCancel}
             />
           )}
 

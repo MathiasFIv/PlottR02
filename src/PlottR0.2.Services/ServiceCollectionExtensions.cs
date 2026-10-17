@@ -59,6 +59,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ITrialService, TrialService>();
         services.AddScoped<IRecordingSyncService, RecordingSyncService>();
 
+        // Per-trial workbook write gate — SINGLETON on purpose: its serialization only
+        // works if every scoped consumer (TrialService cell edits, RecordingSyncService
+        // syncs and corrections) contends on the same set of semaphores.
+        services.AddSingleton<ITrialWriteGate, TrialWriteGate>();
+
         // IHttpClientFactory plumbing (managed sockets/DNS) + the two transcription
         // implementations registered as themselves. NOT typed
         // AddHttpClient<ITranscriptionService, ...> registrations: each implementation's

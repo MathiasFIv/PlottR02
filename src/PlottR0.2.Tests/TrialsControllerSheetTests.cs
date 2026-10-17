@@ -168,6 +168,9 @@ public sealed class TrialsControllerSheetTests
                 : Task.FromResult(SheetToReturn);
         }
 
+        public Task<CellEditResult> EditCellAsync(Guid trialId, EditCellRequest request, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
         public Task<TrialSummary> CreateTrialAsync(string fileName, Stream content, CancellationToken ct = default)
             => throw new NotSupportedException();
 

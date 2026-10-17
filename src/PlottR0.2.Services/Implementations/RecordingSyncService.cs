@@ -55,6 +55,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
     private readonly ITrialRepository _trials;
     private readonly IRatingRepository _ratings;
     private readonly ITrialWorkbookStore _trialWorkbooks;
+    private readonly ITrialWriteGate _writeGate;
     private readonly ICurrentUser _currentUser;
     private readonly ILogger<RecordingSyncService> _logger;
 
@@ -104,6 +105,11 @@ public sealed class RecordingSyncService : IRecordingSyncService
     /// pristine source) and exposing the trial's working directory; also rehydrates a cold
     /// local cache from durable storage and persists written artifacts after a successful sync.
     /// </param>
+    /// <param name="writeGate">
+    /// Per-trial write serialization held around each workbook critical section below, so a
+    /// sync and a correction (or a manual cell edit) of one trial never resolve the same input
+    /// copy in parallel. See <see cref="ITrialWriteGate"/>.
+    /// </param>
     /// <param name="currentUser">
     /// The acting identity, used for the per-trial access gate: a field worker may only sync
     /// to (or correct) trials they are assigned to.
@@ -116,6 +122,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         ITrialRepository trials,
         IRatingRepository ratings,
         ITrialWorkbookStore trialWorkbooks,
+        ITrialWriteGate writeGate,
         ICurrentUser currentUser,
         ILogger<RecordingSyncService> logger)
     {
@@ -125,6 +132,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         _trials = trials;
         _ratings = ratings;
         _trialWorkbooks = trialWorkbooks;
+        _writeGate = writeGate;
         _currentUser = currentUser;
         _logger = logger;
     }
@@ -379,6 +387,12 @@ public sealed class RecordingSyncService : IRecordingSyncService
         {
             try
             {
+                // Serialize this read-modify-write against every other writer of the trial
+                // (a concurrent sync, correction or manual cell edit): without the gate both
+                // sides resolve the same input copy and the later export overwrites the
+                // earlier write. Other trials are unaffected. See ITrialWriteGate.
+                using var writeGate = await _writeGate.AcquireAsync(trial.Id, ct);
+
                 var outputDirectory = _trialWorkbooks.GetWorkingDirectory(trial.Id);
 
                 // Successive syncs chain the read source: the newest output copy (if any) is
@@ -600,6 +614,10 @@ public sealed class RecordingSyncService : IRecordingSyncService
         {
             try
             {
+                // Same per-trial serialization as the sync path above — a correction racing a
+                // sync (or another correction) on this trial must not resolve the same input.
+                using var writeGate = await _writeGate.AcquireAsync(trial.Id, ct);
+
                 var outputDirectory = _trialWorkbooks.GetWorkingDirectory(trial.Id);
 
                 // Same chained read source as the voice sync: the newest accumulated output copy

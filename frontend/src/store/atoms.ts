@@ -1,6 +1,7 @@
 import { atom } from 'jotai';
 import type { Theme } from '../lib/theme';
 import type { TrialSheetSource, TrialSheetStatus } from '../lib/sheetStatus';
+import type { SheetCellEdit } from '../lib/sheetCellEdit';
 import type {
   CurrentUser,
   TrialSheet,
@@ -167,6 +168,47 @@ export type SheetSelected = {
 };
 
 export const sheetSelectedAtom = atom<SheetSelected | null>(null);
+
+// ---------------------------------------------------------------------------
+// Inline cell edit (double-tap a value cell) — also declared OUTSIDE and ABOVE
+// the trial-sheet payload block, for the same reasons as the anchor above: it
+// is NOT cleared by `clearSheetState()` in `useTrialSheet` (which owns only
+// the payload block), and it is NEVER read by the status pills. Deliberately
+// SEPARATE from `sheetSelectedAtom`: a tap anchors a ROW (an intent for voice
+// capture), while an edit targets ONE cell — reopening the same cell must
+// never disturb the anchor, and vice-versa. The host hook
+// (`hooks/useSheetCellEdit.ts`) is the single writer.
+//
+// It DOES close when the host unmounts or the trial changes: the hook clears
+// both atoms in an effect cleanup, so navigating away never leaves a stranded
+// editor (or a stale conflict banner) behind. The row/column fields are the
+// tap identity (`lib/sheetCellEdit.ts`) and `value` is the DRAFT string
+// (pre-filled from the cell, `''` when empty) so an in-progress invalid entry
+// can sit in the store without ever holding a non-number.
+// ---------------------------------------------------------------------------
+
+/** The cell the inline editor is open on (see `lib/sheetCellEdit.ts`). */
+export const sheetCellEditAtom = atom<SheetCellEdit | null>(null);
+
+/**
+ * Save lifecycle for the open editor: `saving` in flight, `error` a transport
+ * / validation / row-not-found message to show inline, and `conflict` the
+ * 409 offer ("cell already holds `priorValue` — overwrite with `value`?").
+ * Reset to idle whenever the edit opens, commits successfully, or cancels.
+ */
+export type SheetCellEditConflict = { priorValue: number | null; value: number };
+
+export type SheetCellEditStatus = {
+  saving: boolean;
+  error: string | null;
+  conflict: SheetCellEditConflict | null;
+};
+
+export const sheetCellEditStatusAtom = atom<SheetCellEditStatus>({
+  saving: false,
+  error: null,
+  conflict: null,
+});
 
 // ---------------------------------------------------------------------------
 // Trial sheet atoms (N2 — read-only grid)

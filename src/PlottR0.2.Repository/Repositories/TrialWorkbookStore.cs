@@ -377,8 +377,9 @@ public sealed class TrialWorkbookStore : ITrialWorkbookStore
     /// whose name contains <c>_out_yyyyMMdd_HHmmss.xlsx</c> with the greatest timestamp — or
     /// <see langword="null"/> when no copy exists yet. The <see langword="last"/> <c>_out_</c>
     /// marker is used, so a chained copy (one created from another output copy) parses to its
-    /// own newest stamp. Ported from <c>RecordingSyncService.TryGetNewestOutputCopy</c> so the
-    /// exported workbook matches the copy a subsequent sync would read from.
+    /// own newest stamp. Copies sharing a second-granular stamp resolve to the longest
+    /// (deepest-chained, hence newest) name. Ported from <c>RecordingSyncService.TryGetNewestOutputCopy</c>
+    /// so the exported workbook matches the copy a subsequent sync would read from.
     /// </summary>
     private static string? TryGetNewestOutputCopy(string outputDirectory)
     {
@@ -400,13 +401,29 @@ public sealed class TrialWorkbookStore : ITrialWorkbookStore
             }
 
             var stamp = name[(markerIndex + marker.Length)..];
-            if (DateTime.TryParseExact(
+            if (!DateTime.TryParseExact(
                     stamp,
                     "yyyyMMdd_HHmmss",
                     CultureInfo.InvariantCulture,
                     DateTimeStyles.None,
-                    out var parsedStamp)
-                && (newestPath is null || parsedStamp > newestStamp))
+                    out var parsedStamp))
+            {
+                continue;
+            }
+
+            // Stamps are SECOND-granular, so two writes within one second produce a chained
+            // copy whose stamp equals its parent's. A chained copy is always the longer name
+            // (its own _out_ segment was appended last) and is strictly the newer state — it
+            // was written after its parent — so ties go to the longer name. Without that rule
+            // the winner would be whichever file the directory enumerates first: the parent
+            // (it sorts shorter) would keep serving the older content and the pre-tie version,
+            // hiding the second write from the next reader.
+            var isNewest = newestPath is null
+                || parsedStamp > newestStamp
+                || (parsedStamp == newestStamp
+                    && name.Length > Path.GetFileNameWithoutExtension(newestPath).Length);
+
+            if (isNewest)
             {
                 newestStamp = parsedStamp;
                 newestPath = file;

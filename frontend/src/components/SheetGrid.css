@@ -205,4 +205,54 @@
    (the key column and headers never are — they carry no click handler). */
 .sheet-grid--selectable tbody td.sheet-col--value {
   cursor: pointer;
+  /* Kill the 300 ms tap delay / double-tap-zoom so the second tap of a
+     double-tap registers inside `DOUBLE_TAP_WINDOW_MS`. */
+  touch-action: manipulation;
+}
+
+/* --- inline cell editor (double-tap to edit) -------------------------------
+   The editing cell supersedes the row wash AND the anchor-cell ring: the input
+   carries the focus, so the amber editor wash + the input's own primary border
+   replace the anchor ring (no double ring, no pulse). Specificity 0-3-3 —
+   EQUAL to `.sheet-cell--selected`, placed AFTER it, so it wins the tie; the
+   doubled class is what buys that rank without an `!important`.
+   The `.sheet-cell--empty::after` dot is suppressed below (the input owns the
+   cell), so an edit of an empty cell never shows a stray dot. */
+.sheet-grid tbody tr > td.sheet-cell--editing.sheet-cell--editing {
+  background: color-mix(in oklch, var(--color-warning) 22%, var(--color-base-100));
+  box-shadow: none;
+  animation: none;
+  padding: 2px;
+  cursor: text;
+}
+
+.sheet-cell--editing::after {
+  content: none;
+}
+
+.sheet-cell__editor {
+  width: 100%;
+  min-width: 56px;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  border: 2px solid var(--color-primary);
+  border-radius: 4px;
+  background: var(--color-base-100);
+  color: var(--color-base-content);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  /* Hide the number spinners (Firefox + Chrome) so the cell stays compact. */
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.sheet-cell__editor:focus {
+  outline: none;
+}
+
+.sheet-cell__editor::-webkit-outer-spin-button,
+.sheet-cell__editor::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }

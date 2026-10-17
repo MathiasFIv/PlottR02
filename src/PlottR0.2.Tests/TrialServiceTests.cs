@@ -208,7 +208,8 @@ public sealed class TrialServiceTests : IAsyncLifetime
             NullLogger<PlottR0._2.Services.Implementations.TrialService>.Instance,
             new ClosedXmlRatingRepository(
                 NullLogger<ClosedXmlRatingRepository>.Instance),
-            userRepository);
+            userRepository,
+            new PlottR0._2.Services.Implementations.TrialWriteGate());
 
         // We need a trialId to know which Working/<id>/ dir to check. Generate one ourselves.
         var trialId = Guid.NewGuid();
@@ -469,7 +470,8 @@ public sealed class TrialServiceTests : IAsyncLifetime
                     _fixture.CurrentUser,
                     NullLogger<PlottR0._2.Services.Implementations.TrialService>.Instance,
                     new ClosedXmlRatingRepository(NullLogger<ClosedXmlRatingRepository>.Instance),
-                    userRepository);
+                    userRepository,
+                    new PlottR0._2.Services.Implementations.TrialWriteGate());
 
                 export = await service.GetWorkbookExportAsync(trialId);
             }

@@ -396,3 +396,116 @@ describe('syncRecording default-target fields', () => {
     expect(body.get('defaultSubsample')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// editCell — single-cell write (double-tap-to-edit)
+// ---------------------------------------------------------------------------
+
+/** A landed write: `written:true`, 200, NEW version to re-poll with. */
+const writtenResult = {
+  trialId: 'trial-1',
+  plot: 101,
+  subsample: 2,
+  traitOrdinal: 3,
+  value: 4,
+  written: true,
+  skipped: false,
+  skippedReason: null,
+  priorValue: null,
+  cellAddress: 'E23',
+  version: '9f2a91c4-63991234567890123-245760',
+  fileName: '4 subsamples_out.xlsx',
+  generatedAt: '2026-10-17T09:45:13.402Z',
+};
+
+/** 409 conflict body: SAME shape, skipped, prior value offered. */
+const conflictResult = {
+  ...writtenResult,
+  value: 4,
+  written: false,
+  skipped: true,
+  skippedReason: 'cell_already_filled',
+  priorValue: 7,
+};
+
+describe('api.editCell', () => {
+  const input = {
+    plot: 101,
+    subsample: 2,
+    traitOrdinal: 3,
+    value: 4,
+    overwrite: false,
+  };
+
+  it('POSTs the body to /api/Trials/{trialId}/cells and returns the result', async () => {
+    const fetchStub = stubTransport();
+    fetchStub.mockResolvedValueOnce(jsonResponse(writtenResult));
+
+    const result = await api.editCell('trial-1', input);
+
+    expect(result.written).toBe(true);
+    expect(result.version).toBe('9f2a91c4-63991234567890123-245760');
+    const [url, init] = fetchStub.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/Trials/trial-1/cells');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual(input);
+  });
+
+  it('returns the result for a 409 conflict instead of throwing', async () => {
+    const fetchStub = stubTransport();
+    fetchStub.mockResolvedValueOnce(jsonResponse(conflictResult, 409));
+
+    const result = await api.editCell('trial-1', input);
+
+    expect(result.written).toBe(false);
+    expect(result.skipped).toBe(true);
+    expect(result.skippedReason).toBe('cell_already_filled');
+    // The prior value survives (an ApiError could not carry it).
+    expect(result.priorValue).toBe(7);
+  });
+
+  it('returns a skipped row_not_found result on 200 (not an error)', async () => {
+    const fetchStub = stubTransport();
+    fetchStub.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          ...writtenResult,
+          written: false,
+          skipped: true,
+          skippedReason: 'row_not_found',
+        },
+        200,
+      ),
+    );
+
+    const result = await api.editCell('trial-1', input);
+    expect(result.written).toBe(false);
+    expect(result.skippedReason).toBe('row_not_found');
+  });
+
+  it('throws ApiError with the server message on 400', async () => {
+    const fetchStub = stubTransport();
+    fetchStub.mockResolvedValueOnce(
+      new Response('Value must be between 0 and 10.', { status: 400 }),
+    );
+
+    const error = (await api.editCell('trial-1', input).catch(
+      (e: unknown) => e,
+    )) as ApiError;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(400);
+    expect(error.message).toBe(
+      'API request failed (400): /api/Trials/trial-1/cells — Value must be between 0 and 10.',
+    );
+  });
+
+  it('throws ApiError(404) when the trial is missing', async () => {
+    const fetchStub = stubTransport();
+    fetchStub.mockResolvedValueOnce(new Response(null, { status: 404 }));
+
+    const error = (await api.editCell('trial-1', input).catch(
+      (e: unknown) => e,
+    )) as ApiError;
+    expect(error.status).toBe(404);
+  });
+});

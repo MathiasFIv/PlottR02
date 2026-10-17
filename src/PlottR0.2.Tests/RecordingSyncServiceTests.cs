@@ -2729,6 +2729,7 @@ await AssertStoredAsync(clientId, row =>
             scope.ServiceProvider.GetRequiredService<ITrialRepository>(),
             scope.ServiceProvider.GetRequiredService<IRatingRepository>(),
             scope.ServiceProvider.GetRequiredService<ITrialWorkbookStore>(),
+            scope.ServiceProvider.GetRequiredService<ITrialWriteGate>(),
             _fixture.CurrentUser,
             NullLogger<RecordingSyncService>.Instance);
 

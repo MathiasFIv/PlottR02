@@ -1,8 +1,16 @@
+import { useRef } from 'react';
 import { sheetCellState, sheetCellValue } from '../lib/sheetCell';
+import {
+  decideCellTap,
+  emptyTapTracker,
+} from '../lib/cellEditGesture';
+import type { TapTracker } from '../lib/cellEditGesture';
 import { buildSheetHeader } from '../lib/sheetHeader';
 import type { SheetCellTap } from '../lib/sheetAnchor';
+import type { SheetCellEditSelection } from '../lib/sheetCellEdit';
 import type { SheetCellSelection, SheetHighlight } from '../lib/sheetTarget';
 import type { SheetColumn, SheetRow } from '../types';
+import { SheetCellEditor } from './SheetCellEditor';
 import './SheetGrid.css';
 
 type SheetGridProps = {
@@ -40,6 +48,30 @@ type SheetGridProps = {
    * (N4 owns `flashCellsAtom` + the `.cell--flash` keyframes).
    */
   flashes?: readonly string[] | null;
+  /**
+   * Double-tap-to-edit: fired when a SECOND tap lands on the same value cell
+   * within `DOUBLE_TAP_WINDOW_MS` (`lib/cellEditGesture.ts`). The anchor path
+   * (`onSelectCell`) still runs for the FIRST tap; this fires only for the
+   * edit tap, so the two gestures never double-fire. Omit to keep the grid
+   * strictly tap-to-anchor.
+   */
+  onEditCell?: (cell: SheetCellTap) => void;
+  /**
+   * The cell the inline editor is open on (resolved by the host hook against
+   * the current payload), or null. Matched to a cell by the row's `SheetRow`
+   * identity (`row` cross-ref) + `valuesIndex`, exactly like `selected`.
+   */
+  editing?: SheetCellEditSelection | null;
+  /** Draft text for the open editor (controlled). */
+  editDraft?: string;
+  /** True while the edit is being saved — disables the input. */
+  editSaving?: boolean;
+  /** Fired on every keystroke in the open editor. */
+  onEditDraftChange?: (next: string) => void;
+  /** Fired on Enter and on blur — the host validates, saves and dedupes. */
+  onEditCommit?: () => void;
+  /** Fired on Escape — the host closes the editor without saving. */
+  onEditCancel?: () => void;
 };
 
 /**
@@ -91,13 +123,60 @@ export function SheetGrid({
   highlight,
   selected,
   onSelectCell,
+  onEditCell,
+  editing,
+  editDraft,
+  editSaving,
+  onEditDraftChange,
+  onEditCommit,
+  onEditCancel,
 }: SheetGridProps) {
   const header = buildSheetHeader(columns);
+
+  // Double-tap tracker — a ref, so a tape-check never re-renders the grid on
+  // its own (only the edit atom change does). Reset on every edit.
+  const tapTrackerRef = useRef<TapTracker>(emptyTapTracker());
+
+  // A value cell is interactive when EITHER handler is wired. With no edit
+  // handler the tap stays exactly as before (immediate anchor); with one, the
+  // gesture decides select-vs-edit.
+  const valueCellsInteractive = onSelectCell !== undefined || onEditCell !== undefined;
+
+  // The inline input needs ALL three handlers; a half-wired host falls back to
+  // a plain read-only cell rather than a dead editor.
+  const editorWired =
+    onEditDraftChange !== undefined &&
+    onEditCommit !== undefined &&
+    onEditCancel !== undefined;
+
+  // Bundle them once (narrowed), so the per-cell render stays a plain
+  // `object | null` check instead of re-testing optional props inside a loop.
+  const editorHandlers = editorWired
+    ? { onChange: onEditDraftChange, onCommit: onEditCommit, onCancel: onEditCancel }
+    : null;
+
+  function handleValueCellTap(cell: SheetCellTap, now: number): void {
+    if (onEditCell === undefined) {
+      onSelectCell?.(cell);
+      return;
+    }
+    const { decision, tracker } = decideCellTap(
+      tapTrackerRef.current,
+      cell,
+      now,
+    );
+    tapTrackerRef.current = tracker;
+    if (decision.kind === 'edit') {
+      onEditCell(decision.cell);
+    } else {
+      onSelectCell?.(cell);
+    }
+  }
 
   return (
     <div className="sheet-scroll">
       <table
-        className={`sheet-grid${onSelectCell ? ' sheet-grid--selectable' : ''}`}
+        className={`sheet-grid${valueCellsInteractive ? ' sheet-grid--selectable' : ''}`}
         aria-label="Trial ratings sheet"
       >
         <thead>
@@ -166,30 +245,53 @@ export function SheetGrid({
                   // The tapped cell (only inside the selected row): the same
                   // `valuesIndex` the host resolved via `targetSelection`.
                   const cellSelected = sel !== null && sel.valuesIndex === index;
+                  // The open editor targets this cell (row cross-ref + column,
+                  // the same identity rule the host used to resolve it).
+                  const isEditing =
+                    editorWired &&
+                    editing != null &&
+                    editing.row === row.row &&
+                    editing.valuesIndex === index;
                   const cellClassName = [
                     'sheet-col--value',
                     sheetCellState(value),
                     cellSelected ? 'sheet-cell--selected' : null,
+                    isEditing ? 'sheet-cell--editing' : null,
                   ]
                     .filter((name) => name !== null)
                     .join(' ');
+                  const cell: SheetCellTap = {
+                    plot: row.plot,
+                    subsample: row.subsample,
+                    valuesIndex: index,
+                  };
                   return (
                     <td
                       key={column.traitOrdinal}
                       className={cellClassName}
                       data-selected={cellSelected ? 'true' : undefined}
+                      data-editing={isEditing ? 'true' : undefined}
+                      // No tap handling while THIS cell is open for editing —
+                      // the input owns the pointer, and a tap inside it must
+                      // not restart the gesture on the cell underneath.
                       onClick={
-                        onSelectCell !== undefined
-                          ? () =>
-                              onSelectCell({
-                                plot: row.plot,
-                                subsample: row.subsample,
-                                valuesIndex: index,
-                              })
+                        valueCellsInteractive && !isEditing
+                          ? (event) => handleValueCellTap(cell, event.timeStamp)
                           : undefined
                       }
                     >
-                      {sheetCellValue(value)}
+                      {isEditing && editorHandlers !== null ? (
+                        <SheetCellEditor
+                          value={editDraft ?? ''}
+                          onChange={editorHandlers.onChange}
+                          onCommit={editorHandlers.onCommit}
+                          onCancel={editorHandlers.onCancel}
+                          disabled={editSaving ?? false}
+                          label={`Edit plot ${row.plot} subsample ${row.subsample}, column ${column.column}`}
+                        />
+                      ) : (
+                        sheetCellValue(value)
+                      )}
                     </td>
                   );
                 })}

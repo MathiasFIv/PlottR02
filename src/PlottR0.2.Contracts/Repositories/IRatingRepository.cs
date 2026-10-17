@@ -75,4 +75,38 @@ public interface IRatingRepository
         IReadOnlyList<int> values,
         IReadOnlySet<int> subsampleIndices,
         bool scanForFreeCells);
+
+    /// <summary>
+    /// Writes a SINGLE value into the one cell addressed by
+    /// <c>(plot, subsample, traitOrdinal)</c> of the workbook at <paramref name="workbookPath"/>
+    /// (the inline "edit a sheet cell" feature). The target cell is written when it is EMPTY
+    /// or holds "missing" text (0 is a legal value). When it already holds a value (numeric —
+    /// 0 included — or non-"missing" text) the write is REFUSED, not erroring, unless
+    /// <paramref name="allowOverwrite"/> is <see langword="true"/>; the prior value is carried
+    /// on the result either way. A missing <c>(plot, subsample)</c> row is reported as skipped.
+    /// The result is exported as a fresh copy into <paramref name="outputDirectory"/> ONLY when
+    /// a cell was actually written; the input workbook is never mutated.
+    /// </summary>
+    /// <param name="workbookPath">ABSOLUTE path to the workbook to write (e.g. a trial's workbook).</param>
+    /// <param name="outputDirectory">ABSOLUTE directory for the exported copy.</param>
+    /// <param name="plot">The plot number.</param>
+    /// <param name="subsample">The 1-indexed subsample index.</param>
+    /// <param name="traitOrdinal">1-indexed trait ordinal (1..9): 1 → column C, 9 → column K.</param>
+    /// <param name="value">The rating value to write (validated 0..10 by the service).</param>
+    /// <param name="allowOverwrite">
+    /// When <see langword="true"/>, an already-filled cell is overwritten and its prior value
+    /// is reported. When <see langword="false"/> (the default policy), an already-filled cell
+    /// is left untouched and reported as skipped with <see cref="SingleCellWriteResult.CellAlreadyFilled"/>.
+    /// </param>
+    /// <returns>Whether the cell was written, or why the write was skipped, plus the prior value and address.</returns>
+    /// <exception cref="InvalidDataException"><paramref name="traitOrdinal"/> is outside 1..9.</exception>
+    /// <exception cref="FileNotFoundException">The workbook does not exist at <paramref name="workbookPath"/>.</exception>
+    SingleCellWriteResult WriteSingleCell(
+        string workbookPath,
+        string outputDirectory,
+        int plot,
+        int subsample,
+        int traitOrdinal,
+        int value,
+        bool allowOverwrite);
 }

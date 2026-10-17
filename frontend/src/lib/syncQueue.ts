@@ -21,13 +21,12 @@ import {
   getRecordingsByStatus,
   updateRecording,
 } from './audioDb';
-import { nextTick } from './sheetRefreshTick';
+import { bumpSheetRefresh } from './sheetRefreshSignal';
 import { resolveNextTarget } from './nextTarget';
 import { advanceSheetTarget } from './sheetTarget';
 import { anchorToWire, isAnchorForTrial } from './sheetAnchor';
 import {
   recordingsNeedingAttentionCountAtom,
-  sheetRefreshTickAtom,
   sheetSelectedAtom,
 } from '../store/atoms';
 
@@ -50,20 +49,6 @@ export async function refreshAttentionCount(): Promise<void> {
   } catch {
     // IndexedDB read failure — non-critical; refreshed on the next event.
   }
-}
-
-/**
- * Signals a mounted sheet host to re-check the grid — call ONLY where the
- * server was actually contacted for a send attempt (a tick is a *check*, not
- * a claim: the sheet's `changed:false` fast path answers without touching the
- * payload atoms, so a no-op outcome can never fabricate a change). A null or
- * empty trial id has no sheet to refresh, so it never bumps. Same non-React
- * write path as `refreshAttentionCount` above — `getDefaultStore()`.
- */
-function bumpSheetRefresh(trialId: string | null): void {
-  if (trialId === null || trialId === '') return;
-  const store = getDefaultStore();
-  store.set(sheetRefreshTickAtom, nextTick(store.get(sheetRefreshTickAtom), trialId));
 }
 
 /**

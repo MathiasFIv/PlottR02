@@ -1,5 +1,6 @@
 import { useAtom, useAtomValue } from 'jotai';
 import { useEffect } from 'react';
+import { useSheetCellEdit } from '../hooks/useSheetCellEdit';
 import { useTrialSheet } from '../hooks/useTrialSheet';
 import { deriveEndOfSheet, deriveNextTarget } from '../lib/nextTarget';
 import { decideAnchorTap, isAnchorForTrial } from '../lib/sheetAnchor';
@@ -8,6 +9,7 @@ import { isNonArmSheetError } from '../lib/sheetStatus';
 import { rehydrateSheetTarget, targetHighlight, targetSelection } from '../lib/sheetTarget';
 import { sheetLastWrittenAtom, sheetSelectedAtom } from '../store/atoms';
 import { SheetGrid } from './SheetGrid';
+import { SheetEditNotice } from './SheetEditNotice';
 import { SheetMetaStrip } from './SheetMetaStrip';
 import { SheetStates } from './SheetStates';
 import { SheetStatusPill } from './SheetStatusPill';
@@ -62,6 +64,12 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
   const [anchor, setAnchor] = useAtom(sheetSelectedAtom);
   /** Only THIS trial's tap may anchor this trial's grid. */
   const forTrialAnchor = isAnchorForTrial(anchor, trialId);
+  /**
+   * Double-tap-to-edit state + handlers. Kept separate from the anchor: the
+   * first tap anchors (as before), the second opens this editor. The hook
+   * clears both its atoms on unmount / trial change.
+   */
+  const edit = useSheetCellEdit(trialId);
 
   // Seed / re-seed from the persisted last-written target on mount
   // and on trial change (the atom survives route changes; storage is the
@@ -121,6 +129,16 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
         rowCount={hasPayload && rows !== null ? rows.length : null}
       />
 
+      {hasPayload && (
+        <SheetEditNotice
+          error={edit.error}
+          conflict={edit.conflict}
+          saving={edit.saving}
+          onConfirmOverwrite={edit.onConfirmOverwrite}
+          onDismissConflict={edit.onDismissConflict}
+        />
+      )}
+
       {hasPayload && rows !== null && rows.length > 0 && columns !== null && (
         <SheetGrid
           columns={columns}
@@ -128,6 +146,13 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
           highlight={targetHighlight(next, rows)}
           selected={targetSelection(forTrialAnchor, rows)}
           onSelectCell={handleSelectCell}
+          onEditCell={edit.onEditCell}
+          editing={edit.editing}
+          editDraft={edit.draft}
+          editSaving={edit.saving}
+          onEditDraftChange={edit.onEditDraftChange}
+          onEditCommit={edit.onEditCommit}
+          onEditCancel={edit.onEditCancel}
         />
       )}
 

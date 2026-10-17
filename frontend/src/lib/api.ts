@@ -355,6 +355,47 @@ function fileNameFromContentDisposition(
 }
 
 // ---------------------------------------------------------------------------
+// Inline cell edit (POST /api/Trials/{trialId}/cells)
+// ---------------------------------------------------------------------------
+
+/**
+ * Body for POST /api/Trials/{trialId}/cells. `traitOrdinal` is the 1-based
+ * column ordinal (`valuesIndex + 1`; ordinal 1 → column C, 9 → column K), and
+ * `overwrite` is the explicit second attempt after a 409 conflict.
+ */
+export interface EditCellInput {
+  plot: number;
+  subsample: number;
+  traitOrdinal: number;
+  value: number;
+  overwrite: boolean;
+}
+
+/**
+ * Result of an inline cell write (mirrors the backend `CellEditResult`). The
+ * `version` is the NEW opaque workbook version AFTER the write — re-poll the
+ * sheet with it (dropping the old one makes the next fetch a full payload).
+ * `written === true` means the value landed; otherwise the write was SKIPPED —
+ * `skippedReason` is `'cell_already_filled'` (offered as an overwrite) or
+ * `'row_not_found'` (the row is gone from the workbook).
+ */
+export interface CellEditResult {
+  trialId: string;
+  plot: number;
+  subsample: number;
+  traitOrdinal: number;
+  value: number | null;
+  written: boolean;
+  skipped: boolean;
+  skippedReason: 'cell_already_filled' | 'row_not_found' | null;
+  priorValue: number | null;
+  cellAddress: string;
+  version: string;
+  fileName: string | null;
+  generatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
 // Public API surface
 // ---------------------------------------------------------------------------
 
@@ -465,6 +506,34 @@ export const api = {
       `/api/Trials/${trialId}/sheet${since ? `?since=${encodeURIComponent(since)}` : ''}`,
       { signal },
     ),
+
+  /**
+   * Writes ONE value cell (double-tap-to-edit). Parses the response for BOTH
+   * 200 and 409 and hands the caller the `CellEditResult` to branch on:
+   *
+   * - 200 `written: true`  → the value landed; re-poll the sheet with `version`.
+   * - 200 `skipped: true`  → `'row_not_found'` (row gone) — NOT an error.
+   * - 409 `skipped: true`  → `'cell_already_filled'` and `priorValue` set — the
+   *   caller offers an overwrite and retries with `overwrite: true`.
+   * - 400/403/404          → `ApiError` (validation / not-a-member / no trial).
+   *
+   * 409 is deliberately NOT turned into an `ApiError` here: its body is the
+   * same `CellEditResult` shape, and `ApiError` carries only a status, so the
+   * conflict offer would lose `priorValue`. Uses `requestWithRetry` directly
+   * (not `jsonRequest`, which throws on every non-2xx).
+   */
+  editCell: async (trialId: string, input: EditCellInput): Promise<CellEditResult> => {
+    const path = `/api/Trials/${trialId}/cells`;
+    const response = await requestWithRetry(path, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }, true);
+
+    if (response.ok || response.status === 409) {
+      return (await response.json()) as CellEditResult;
+    }
+    throw new ApiError(response.status, await readApiErrorMessage(response, path));
+  },
 
   // Recordings (V2E — "Send now") ---------------------------------------
 

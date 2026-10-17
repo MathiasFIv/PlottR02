@@ -225,6 +225,92 @@ public class ClosedXmlRatingRepository : IRatingRepository
         };
     }
 
+    /// <inheritdoc />
+    public SingleCellWriteResult WriteSingleCell(
+        string workbookPath,
+        string outputDirectory,
+        int plot,
+        int subsample,
+        int traitOrdinal,
+        int value,
+        bool allowOverwrite)
+    {
+        // Defense in depth: the rating region has exactly nine trait columns (C..K) and
+        // traitOrdinal 0 would address column B — the row-key column. Mirrors the guard in
+        // WritePlotColumnPreserving; no caller may ever write into a non-rating column.
+        if (traitOrdinal is < 1 or > 9)
+        {
+            throw new InvalidDataException(
+                $"traitOrdinal must be within 1..9 (one column per write), got {traitOrdinal}.");
+        }
+
+        using var wb = OpenWorkbook(workbookPath);
+        var sheet = wb.Worksheet(SheetName);
+
+        // Same (plot, subsample) → row resolution as the policy write: keys are parsed FROM
+        // the file (column B "{plot} {subsample}"), never computed.
+        var rows = FindSubsampleRows(sheet, plot).ToDictionary(kv => kv.Value.subsample, kv => kv.Value.row);
+        if (!rows.TryGetValue(subsample, out var row))
+        {
+            _logger.LogDebug(
+                "Plot {Plot} has no subsample {Subsample}; single-cell write skipped.", plot, subsample);
+            return new SingleCellWriteResult
+            {
+                Written = false,
+                Skipped = true,
+                SkippedReason = SingleCellWriteResult.RowNotFound,
+                CellAddress = string.Empty,
+                Plot = plot,
+                Subsample = subsample,
+                TraitOrdinal = traitOrdinal,
+                Value = value,
+            };
+        }
+
+        var cell = sheet.Cell(row, TraitColumn(traitOrdinal));
+        var priorValue = ReadIntSafe(cell);
+
+        // Locked-overwrite policy: an already-present cell (numeric — 0 included — or any
+        // non-"missing" text) is REFUSED unless the caller explicitly opted into overwriting.
+        // A refusal is not an error — it is how the UI learns to ask the user for confirmation.
+        if (!IsWritableCell(cell) && !allowOverwrite)
+        {
+            return new SingleCellWriteResult
+            {
+                Written = false,
+                Skipped = true,
+                SkippedReason = SingleCellWriteResult.CellAlreadyFilled,
+                PriorValue = priorValue,
+                CellAddress = cell.Address.ToString() ?? string.Empty,
+                Plot = plot,
+                Subsample = subsample,
+                TraitOrdinal = traitOrdinal,
+                Value = value,
+            };
+        }
+
+        // Empty / "missing" (normal path) or an allowed overwrite: write, keeping the prior
+        // value on the result so the caller can record/undo it.
+        cell.Value = value;
+
+        // Save an output copy ONLY when a cell was actually written — the same
+        // "new {source}_out_ copy, input never mutated" invariant as the policy write.
+        SaveCopyTo(wb, outputDirectory, workbookPath);
+
+        return new SingleCellWriteResult
+        {
+            Written = true,
+            Skipped = false,
+            SkippedReason = null,
+            PriorValue = priorValue,
+            CellAddress = cell.Address.ToString() ?? string.Empty,
+            Plot = plot,
+            Subsample = subsample,
+            TraitOrdinal = traitOrdinal,
+            Value = value,
+        };
+    }
+
     // ----- Workbook helpers (ClosedXML confined here) -----
 
     private static int TraitColumn(int traitOrdinal)
