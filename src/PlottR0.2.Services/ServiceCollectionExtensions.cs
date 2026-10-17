@@ -58,6 +58,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ITrialService, TrialService>();
         services.AddScoped<IRecordingSyncService, RecordingSyncService>();
+        services.AddScoped<IVoiceCellEditService, VoiceCellEditService>();
 
         // Per-trial workbook write gate — SINGLETON on purpose: its serialization only
         // works if every scoped consumer (TrialService cell edits, RecordingSyncService

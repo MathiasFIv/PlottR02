@@ -7,6 +7,7 @@ using PlottR0._2.Contracts.Dtos.Trial;
 using PlottR0._2.Contracts.Dtos.User;
 using PlottR0._2.Contracts.Ratings;
 using PlottR0._2.Services.Abstractions;
+using PlottR0._2.Tests.Support;
 
 namespace PlottR0._2.Tests;
 
@@ -40,7 +41,7 @@ public sealed class TrialsControllerCellEditTests
     {
         // Arrange
         var fake = new FakeTrialService { ResultToReturn = Result(written: true, skipped: false, reason: null) };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.EditCell(TrialId, Request());
@@ -61,7 +62,7 @@ public sealed class TrialsControllerCellEditTests
         {
             ResultToReturn = Result(written: false, skipped: true, reason: SingleCellWriteResult.CellAlreadyFilled),
         };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.EditCell(TrialId, Request());
@@ -80,7 +81,7 @@ public sealed class TrialsControllerCellEditTests
         {
             ResultToReturn = Result(written: false, skipped: true, reason: SingleCellWriteResult.RowNotFound),
         };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.EditCell(TrialId, Request());
@@ -98,7 +99,7 @@ public sealed class TrialsControllerCellEditTests
         {
             ExceptionToThrow = new KeyNotFoundException("Trial '33333333-3333-3333-3333-333333333333' was not found."),
         };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.EditCell(TrialId, Request());
@@ -116,7 +117,7 @@ public sealed class TrialsControllerCellEditTests
         {
             ExceptionToThrow = new FileNotFoundException($"Workbook for trial '{TrialId}' was not found on disk."),
         };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.EditCell(TrialId, Request());
@@ -131,7 +132,7 @@ public sealed class TrialsControllerCellEditTests
     {
         // Arrange — the caller may not access the trial
         var fake = new FakeTrialService { ExceptionToThrow = new ForbiddenAccessException("no") };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.EditCell(TrialId, Request());
@@ -145,7 +146,7 @@ public sealed class TrialsControllerCellEditTests
     {
         // Arrange — invalid payload (out-of-range field)
         var fake = new FakeTrialService { ExceptionToThrow = new ArgumentException("Value must be present and within 0..10.") };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.EditCell(TrialId, Request());
@@ -163,7 +164,7 @@ public sealed class TrialsControllerCellEditTests
         {
             ExceptionToThrow = new InvalidDataException("traitOrdinal must be within 1..9 (one column per write), got 0."),
         };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.EditCell(TrialId, Request());
@@ -252,6 +253,9 @@ public sealed class TrialsControllerCellEditTests
             => throw new NotSupportedException();
 
         public Task<TrialSheet> GetSheetAsync(Guid trialId, string? since, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task EnsureTrialAccessAsync(Guid trialId, CancellationToken ct = default)
             => throw new NotSupportedException();
     }
 }

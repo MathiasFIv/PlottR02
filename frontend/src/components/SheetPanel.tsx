@@ -16,6 +16,13 @@ import { SheetStatusPill } from './SheetStatusPill';
 
 type SheetPanelProps = {
   trialId: string;
+  /**
+   * Whether a double-tap ARMS the cell for a voice write (recorder available:
+   * RecordView passes `permissionState !== 'unsupported' && !== 'denied'`)
+   * instead of opening the inline keyboard editor. The standalone `/sheet`
+   * route has no recorder, so it never sets this.
+   */
+  voiceEnabled?: boolean;
 };
 
 /**
@@ -54,7 +61,7 @@ type SheetPanelProps = {
  * component's trial change either — that is the point of declaring it
  * outside the payload block.
  */
-export function SheetPanel({ trialId }: SheetPanelProps) {
+export function SheetPanel({ trialId, voiceEnabled = false }: SheetPanelProps) {
   const { sheet, status, source, error, updatedAt } = useTrialSheet(trialId);
   /** N3 last-written pair + blockFull — read live; written by the sync engine. */
   const target = useAtomValue(sheetLastWrittenAtom);
@@ -66,10 +73,11 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
   const forTrialAnchor = isAnchorForTrial(anchor, trialId);
   /**
    * Double-tap-to-edit state + handlers. Kept separate from the anchor: the
-   * first tap anchors (as before), the second opens this editor. The hook
-   * clears both its atoms on unmount / trial change.
+   * first tap anchors (as before), the second ARMS this cell — a voice write
+   * (`voiceEnabled`) or the inline keyboard editor (fallback). The hook clears
+   * both its atoms on unmount / trial change.
    */
-  const edit = useSheetCellEdit(trialId);
+  const edit = useSheetCellEdit(trialId, { voiceEnabled });
 
   // Seed / re-seed from the persisted last-written target on mount
   // and on trial change (the atom survives route changes; storage is the
@@ -130,13 +138,7 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
       />
 
       {hasPayload && (
-        <SheetEditNotice
-          error={edit.error}
-          conflict={edit.conflict}
-          saving={edit.saving}
-          onConfirmOverwrite={edit.onConfirmOverwrite}
-          onDismissConflict={edit.onDismissConflict}
-        />
+        <SheetEditNotice error={edit.error} saving={edit.saving} />
       )}
 
       {hasPayload && rows !== null && rows.length > 0 && columns !== null && (
@@ -147,6 +149,7 @@ export function SheetPanel({ trialId }: SheetPanelProps) {
           selected={targetSelection(forTrialAnchor, rows)}
           onSelectCell={handleSelectCell}
           onEditCell={edit.onEditCell}
+          armed={edit.armed}
           editing={edit.editing}
           editDraft={edit.draft}
           editSaving={edit.saving}

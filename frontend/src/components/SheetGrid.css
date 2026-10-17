@@ -201,6 +201,19 @@
   }
 }
 
+/* The ARMED cell — the edit target for a voice arm (and the keyboard open
+   cell) turns YELLOW via the theme's warning token. Scoped through
+   `.sheet-grid tbody` so it outranks the row tints above (the same rank as
+   `.sheet-row--current`, placed AFTER them so it wins the tie) — otherwise a
+   current/selected row wash would hide the yellow on a voice-arm cell, which
+   is the ONLY affordance there is no editor to show. Declared before the
+   `.sheet-cell--editing` rule, which is stronger still. */
+.sheet-grid tbody td.sheet-cell--armed {
+  background: var(--color-warning);
+  color: var(--color-warning-content);
+  font-weight: 600;
+}
+
 /* Affordance: value cells are tappable only when a host wired the handler
    (the key column and headers never are — they carry no click handler). */
 .sheet-grid--selectable tbody td.sheet-col--value {

@@ -1,60 +1,48 @@
 import { describe, expect, it } from 'vitest';
-import type { CellEditResult } from './api';
 import type { CellEditOutcome, SheetCellEdit } from './sheetCellEdit';
-import { classifyCellEditResult } from './sheetCellEdit';
-import {
-  decideSubmitEdit,
-  formatConflictPrior,
-  planCellEditOutcome,
-  resolveConflictRetry,
-  shouldApplyOutcome,
-} from './sheetCellEditOutcome';
+import { decideSubmitEdit, planCellEditOutcome, shouldApplyOutcome } from './sheetCellEditOutcome';
+import type { KeyboardSheetCellEdit } from './sheetCellEditOutcome';
 
-const edit = (overrides: Partial<SheetCellEdit> = {}): SheetCellEdit => ({
+const edit = (
+  overrides: Partial<KeyboardSheetCellEdit> = {},
+): KeyboardSheetCellEdit => ({
   trialId: 'trial-1',
   plot: 101,
   subsample: 2,
   valuesIndex: 1,
+  mode: 'keyboard',
   value: '5',
   ...overrides,
 });
 
-const result = (overrides: Partial<CellEditResult>): CellEditResult => ({
+const voiceArm: SheetCellEdit = {
   trialId: 'trial-1',
   plot: 101,
   subsample: 2,
-  traitOrdinal: 2,
-  value: 5,
-  written: false,
-  skipped: true,
-  skippedReason: null,
-  priorValue: null,
-  cellAddress: 'E23',
-  version: 'ver-2',
-  fileName: 'trial.xlsx',
-  generatedAt: '2026-10-17T12:00:00Z',
-  ...overrides,
-});
+  valuesIndex: 1,
+  mode: 'voice',
+};
 
 const written: CellEditOutcome = { kind: 'written' };
-const conflict: CellEditOutcome = { kind: 'conflict', priorValue: 7 };
 const rowNotFound: CellEditOutcome = { kind: 'row_not_found' };
+const unexpected: CellEditOutcome = { kind: 'unexpected' };
 
 describe('decideSubmitEdit', () => {
   const base = {
     trialId: 'trial-1',
     target: edit(),
     draft: '5',
-    overwrite: false,
-    conflictPending: false,
     inFlight: null,
   } as const;
 
-  it('submits a valid draft and carries the parsed value', () => {
+  it('submits a valid draft, carrying the parsed value AND overwrite: true', () => {
+    // The ONE remaining commit path always overwrites — pinned here so the
+    // hook can never send `overwrite: false` by accident.
     expect(decideSubmitEdit({ ...base })).toEqual({
       kind: 'submit',
       target: edit(),
       value: 5,
+      overwrite: true,
     });
   });
 
@@ -75,17 +63,10 @@ describe('decideSubmitEdit', () => {
     ).toEqual({ kind: 'skip', reason: 'no_edit' });
   });
 
-  it('skips a non-overwrite commit while a conflict is pending (banner owns it)', () => {
-    expect(decideSubmitEdit({ ...base, conflictPending: true })).toEqual({
-      kind: 'skip',
-      reason: 'conflict_pending',
-    });
-  });
-
-  it('lets the explicit overwrite retry through while a conflict is pending', () => {
+  it('skips a VOICE arm (a voice write is not a draft commit)', () => {
     expect(
-      decideSubmitEdit({ ...base, conflictPending: true, overwrite: true }),
-    ).toEqual({ kind: 'submit', target: edit(), value: 5 });
+      decideSubmitEdit({ ...base, target: voiceArm, draft: '' }),
+    ).toEqual({ kind: 'skip', reason: 'no_edit' });
   });
 
   it('dedupes a second submit of the same in-flight edit (single writer)', () => {
@@ -100,10 +81,9 @@ describe('decideSubmitEdit', () => {
       decideSubmitEdit({
         ...base,
         target: edit({ plot: 102 }),
-        draft: '5',
         inFlight: edit(),
       }),
-    ).toEqual({ kind: 'submit', target: edit({ plot: 102 }), value: 5 });
+    ).toEqual({ kind: 'submit', target: edit({ plot: 102 }), value: 5, overwrite: true });
   });
 
   it('reports an out-of-range or non-numeric draft as invalid', () => {
@@ -144,6 +124,10 @@ describe('shouldApplyOutcome', () => {
   it('is false once the editor is closed', () => {
     expect(shouldApplyOutcome(edit(), null)).toBe(false);
   });
+
+  it('is false once the same cell flipped to a voice arm (mode changed)', () => {
+    expect(shouldApplyOutcome(edit(), voiceArm)).toBe(false);
+  });
 });
 
 describe('planCellEditOutcome', () => {
@@ -166,7 +150,7 @@ describe('planCellEditOutcome', () => {
   });
 
   it('drops a stale non-write entirely (never applied to the wrong cell)', () => {
-    expect(planCellEditOutcome(conflict, edit(), edit({ plot: 999 }))).toEqual({
+    expect(planCellEditOutcome(unexpected, edit(), edit({ plot: 999 }))).toEqual({
       reconcile: false,
       apply: false,
     });
@@ -181,64 +165,9 @@ describe('planCellEditOutcome', () => {
       reconcile: false,
       apply: true,
     });
-  });
-});
-
-describe('resolveConflictRetry', () => {
-  it('sets the overwrite offer only for `cell_already_filled`', () => {
-    expect(
-      resolveConflictRetry(
-        classifyCellEditResult(
-          result({ skippedReason: 'cell_already_filled', priorValue: 7 }),
-        ),
-        5,
-      ),
-    ).toEqual({ priorValue: 7, value: 5 });
-  });
-
-  it('carries a null prior value through (non-numeric cell)', () => {
-    expect(
-      resolveConflictRetry(
-        classifyCellEditResult(
-          result({ skippedReason: 'cell_already_filled', priorValue: null }),
-        ),
-        5,
-      ),
-    ).toEqual({ priorValue: null, value: 5 });
-  });
-
-  it('offers no overwrite for a landed write', () => {
-    expect(
-      resolveConflictRetry(
-        classifyCellEditResult(result({ written: true, skippedReason: null })),
-        5,
-      ),
-    ).toBeNull();
-  });
-
-  it('offers no overwrite for `row_not_found` or an unexpected body', () => {
-    expect(
-      resolveConflictRetry(
-        classifyCellEditResult(result({ skippedReason: 'row_not_found' })),
-        5,
-      ),
-    ).toBeNull();
-    expect(
-      resolveConflictRetry(
-        classifyCellEditResult(result({ skippedReason: null })),
-        5,
-      ),
-    ).toBeNull();
-  });
-});
-
-describe('formatConflictPrior', () => {
-  it('renders a numeric prior value as `value N`', () => {
-    expect(formatConflictPrior(7)).toBe('value 7');
-    expect(formatConflictPrior(0)).toBe('value 0');
-  });
-
-  it('describes a null prior value as a non-numeric entry, never "empty"', () => {
-    expect(formatConflictPrior(null)).toBe('a non-numeric entry');
+    expect(planCellEditOutcome(unexpected, edit(), edit())).toEqual({
+      reconcile: false,
+      apply: true,
+    });
   });
 });

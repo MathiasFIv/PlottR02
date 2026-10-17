@@ -257,11 +257,7 @@ public class TrialService : ITrialService
 
         // Load the trial first so an unknown id stays a 404 (existence-check-wins, matching
         // the other trial endpoints), then enforce per-trial access (managers or assigned).
-        var trial = await _trialRepository.GetByIdAsync(trialId, ct);
-        if (trial is null)
-            throw new KeyNotFoundException($"Trial '{trialId}' was not found.");
-
-        await EnsureCanAccessTrialAsync(trialId, ct);
+        var trial = await LoadTrialForAccessAsync(trialId, ct);
 
         var outputDirectory = _workbookStore.GetWorkingDirectory(trialId);
 
@@ -336,6 +332,14 @@ public class TrialService : ITrialService
             resolved?.Version ?? export.Version,
             resolved?.FileName,
             DateTime.UtcNow);
+    }
+
+    /// <inheritdoc />
+    public async Task EnsureTrialAccessAsync(Guid trialId, CancellationToken ct = default)
+    {
+        // Same existence-check-wins-then-access gates EditCellAsync runs, extracted so a
+        // caller can fail fast (before e.g. a speech-to-text spend) without duplicating them.
+        await LoadTrialForAccessAsync(trialId, ct);
     }
 
     /// <inheritdoc />
@@ -457,6 +461,25 @@ public class TrialService : ITrialService
             throw new ForbiddenAccessException(
                 $"You do not have access to trial '{trialId}'.");
         }
+    }
+
+    /// <summary>
+    /// Loads the trial and enforces per-trial access — the ONE place the
+    /// "existence-check-wins, then managers-or-assigned" gate lives, shared by
+    /// <see cref="EditCellAsync"/> and <see cref="EnsureTrialAccessAsync"/>. The existence
+    /// check deliberately runs first so an unknown trial stays a 404 even for a field worker
+    /// (no existence disclosure change).
+    /// </summary>
+    /// <exception cref="KeyNotFoundException">The trial does not exist.</exception>
+    /// <exception cref="ForbiddenAccessException">The actor is not permitted to access the trial.</exception>
+    private async Task<Trial> LoadTrialForAccessAsync(Guid trialId, CancellationToken ct)
+    {
+        var trial = await _trialRepository.GetByIdAsync(trialId, ct);
+        if (trial is null)
+            throw new KeyNotFoundException($"Trial '{trialId}' was not found.");
+
+        await EnsureCanAccessTrialAsync(trial.Id, ct);
+        return trial;
     }
 
     /// <summary>

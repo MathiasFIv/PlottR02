@@ -6,6 +6,7 @@ using PlottR0._2.Api.Controllers;
 using PlottR0._2.Contracts.Dtos.Trial;
 using PlottR0._2.Contracts.Dtos.User;
 using PlottR0._2.Services.Abstractions;
+using PlottR0._2.Tests.Support;
 
 namespace PlottR0._2.Tests;
 
@@ -26,7 +27,7 @@ public sealed class TrialsControllerSheetTests
     {
         // Arrange — a fake that records what the controller handed it.
         var fake = new FakeTrialService();
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.GetSheet(TrialId, since: "abc12345-1f2e3d");
@@ -43,7 +44,7 @@ public sealed class TrialsControllerSheetTests
     {
         // Arrange — `since` is optional in the query string; null means "full payload".
         var fake = new FakeTrialService();
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         await controller.GetSheet(TrialId, since: null);
@@ -60,7 +61,7 @@ public sealed class TrialsControllerSheetTests
         {
             ExceptionToThrow = new KeyNotFoundException("Trial '33333333-3333-3333-3333-333333333333' was not found."),
         };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.GetSheet(TrialId, since: null);
@@ -78,7 +79,7 @@ public sealed class TrialsControllerSheetTests
         {
             ExceptionToThrow = new FileNotFoundException($"Workbook for trial '{TrialId}' was not found on disk."),
         };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.GetSheet(TrialId, since: null);
@@ -97,7 +98,7 @@ public sealed class TrialsControllerSheetTests
             ExceptionToThrow = new InvalidDataException(
                 "Sheet 'Subsample Plot Data' was not found in workbook 'upload.xlsx'."),
         };
-        var controller = new TrialsController(fake);
+        var controller = new TrialsController(fake, new FakeVoiceCellEditService());
 
         // Act
         var result = await controller.GetSheet(TrialId, since: null);
@@ -184,6 +185,9 @@ public sealed class TrialsControllerSheetTests
             => throw new NotSupportedException();
 
         public Task<IReadOnlyList<UserResponse>> ListTrialUsersAsync(Guid trialId, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task EnsureTrialAccessAsync(Guid trialId, CancellationToken ct = default)
             => throw new NotSupportedException();
     }
 }

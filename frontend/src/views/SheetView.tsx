@@ -62,8 +62,10 @@ export function SheetView() {
 
   /**
    * Double-tap-to-edit state + handlers — the SAME shared hook the embedded
-   * `SheetPanel` uses (one grid, two hosts). It clears its atoms on unmount /
-   * trial change, so the id-less route closes any editor too.
+   * `SheetPanel` uses (one grid, two hosts). Voice is disabled here (no
+   * recorder on this route), so `onEditCell` always opens the keyboard
+   * fallback editor. It clears its atoms on unmount / trial change, so the
+   * id-less route closes any editor too.
    */
   const edit = useSheetCellEdit(trialId ?? null);
 
@@ -159,17 +161,12 @@ export function SheetView() {
           )}
 
           {/* Inline cell-edit notice — ABOVE the grid (same reason as the
-              anchor status): the conflict offer must stay visible while the
-              grid itself is scrolled. `role="alert"` inside the notice
-              announces a failed save. */}
+              anchor status): a failed save must stay visible while the grid
+              itself is scrolled. `role="alert"` inside the notice announces
+              it. Voice is disabled on this route, so this is the keyboard
+              editor's error surface only. */}
           {hasPayload && (
-            <SheetEditNotice
-              error={edit.error}
-              conflict={edit.conflict}
-              saving={edit.saving}
-              onConfirmOverwrite={edit.onConfirmOverwrite}
-              onDismissConflict={edit.onDismissConflict}
-            />
+            <SheetEditNotice error={edit.error} saving={edit.saving} />
           )}
 
           {hasPayload && rows !== null && rows.length > 0 && columns !== null && (
@@ -180,6 +177,7 @@ export function SheetView() {
               selected={targetSelection(forTrialAnchor, rows)}
               onSelectCell={handleSelectCell}
               onEditCell={edit.onEditCell}
+              armed={edit.armed}
               editing={edit.editing}
               editDraft={edit.draft}
               editSaving={edit.saving}

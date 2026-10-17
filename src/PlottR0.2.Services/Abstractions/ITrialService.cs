@@ -119,4 +119,19 @@ public interface ITrialService
     /// </exception>
     /// <exception cref="InvalidDataException"><c>traitOrdinal</c> is outside 1..9 (repository defense in depth).</exception>
     Task<CellEditResult> EditCellAsync(Guid trialId, EditCellRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Ensures the trial exists and the current actor may access it, using the SAME
+    /// existence-check-wins-then-per-trial-access gates <see cref="EditCellAsync"/> runs at
+    /// its start. A thin pre-check for callers that want to fail fast on a bad
+    /// <paramref name="trialId"/> BEFORE spending money/time downstream (e.g. before a
+    /// speech-to-text call) without re-running the full edit afterwards.
+    /// </summary>
+    /// <param name="trialId">The trial whose existence and access are checked.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="KeyNotFoundException">The trial does not exist.</exception>
+    /// <exception cref="ForbiddenAccessException">
+    /// The caller is not a manager and is not assigned to the trial.
+    /// </exception>
+    Task EnsureTrialAccessAsync(Guid trialId, CancellationToken ct = default);
 }

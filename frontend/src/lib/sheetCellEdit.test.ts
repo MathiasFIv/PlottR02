@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { SheetRow } from '../types';
 import type { SheetCellTap } from './sheetAnchor';
-import type { CellEditResult } from './api';
+import type { CellEditResult, VoiceCellEditResult } from './api';
 import {
   applyCellEdit,
   classifyCellEditResult,
+  classifyVoiceCellEditResult,
   editCellSelection,
   parseCellDraft,
+  resolveArmMode,
   sameSheetCellEdit,
+  shouldFallbackToKeyboard,
 } from './sheetCellEdit';
 import type { SheetCellEdit } from './sheetCellEdit';
 
@@ -113,33 +116,57 @@ describe('applyCellEdit', () => {
 });
 
 describe('sameSheetCellEdit', () => {
-  const base: SheetCellEdit = {
+  const keyboard: SheetCellEdit = {
     trialId: 'trial-1',
     plot: 101,
     subsample: 2,
     valuesIndex: 1,
+    mode: 'keyboard',
     value: '5',
   };
+  const voice: SheetCellEdit = {
+    trialId: 'trial-1',
+    plot: 101,
+    subsample: 2,
+    valuesIndex: 1,
+    mode: 'voice',
+  };
 
-  it('is true for identical descriptors', () => {
-    expect(sameSheetCellEdit(base, { ...base })).toBe(true);
+  it('is true for identical keyboard descriptors', () => {
+    expect(sameSheetCellEdit(keyboard, { ...keyboard })).toBe(true);
   });
 
-  it('is false when the draft changed', () => {
-    expect(sameSheetCellEdit(base, { ...base, value: '6' })).toBe(false);
+  it('is true for identical voice arms (no draft to compare)', () => {
+    expect(sameSheetCellEdit(voice, { ...voice })).toBe(true);
+  });
+
+  it('is false when the keyboard draft changed', () => {
+    expect(sameSheetCellEdit(keyboard, { ...keyboard, value: '6' })).toBe(false);
+  });
+
+  it('is false when the capture mode differs on the same cell', () => {
+    // A voice arm flipped to keyboard (or vice-versa) is a DIFFERENT edit.
+    expect(sameSheetCellEdit(voice, keyboard)).toBe(false);
+    expect(sameSheetCellEdit(keyboard, voice)).toBe(false);
   });
 
   it('is false when the cell identity changed', () => {
-    expect(sameSheetCellEdit(base, { ...base, valuesIndex: 2 })).toBe(false);
-    expect(sameSheetCellEdit(base, { ...base, subsample: 1 })).toBe(false);
-    expect(sameSheetCellEdit(base, { ...base, plot: 102 })).toBe(false);
-    expect(sameSheetCellEdit(base, { ...base, trialId: 'trial-2' })).toBe(false);
+    expect(sameSheetCellEdit(keyboard, { ...keyboard, valuesIndex: 2 })).toBe(
+      false,
+    );
+    expect(sameSheetCellEdit(keyboard, { ...keyboard, subsample: 1 })).toBe(
+      false,
+    );
+    expect(sameSheetCellEdit(keyboard, { ...keyboard, plot: 102 })).toBe(false);
+    expect(sameSheetCellEdit(keyboard, { ...keyboard, trialId: 'trial-2' })).toBe(
+      false,
+    );
   });
 
   it('handles nulls', () => {
     expect(sameSheetCellEdit(null, null)).toBe(true);
-    expect(sameSheetCellEdit(base, null)).toBe(false);
-    expect(sameSheetCellEdit(null, base)).toBe(false);
+    expect(sameSheetCellEdit(keyboard, null)).toBe(false);
+    expect(sameSheetCellEdit(null, keyboard)).toBe(false);
   });
 });
 
@@ -169,26 +196,20 @@ describe('classifyCellEditResult', () => {
     ).toEqual({ kind: 'written' });
   });
 
-  it('reads `cell_already_filled` as a conflict carrying the prior value', () => {
+  it('reads a 200 `row_not_found` as its own outcome', () => {
+    expect(
+      classifyCellEditResult(result({ skippedReason: 'row_not_found' })),
+    ).toEqual({ kind: 'row_not_found' });
+  });
+
+  it('reads `cell_already_filled` as `unexpected` (no conflict path any more)', () => {
+    // Regression: the keyboard commit always overwrites, so a filled-cell skip
+    // is a contract surprise, NOT an offer to overwrite.
     expect(
       classifyCellEditResult(
         result({ skippedReason: 'cell_already_filled', priorValue: 7 }),
       ),
-    ).toEqual({ kind: 'conflict', priorValue: 7 });
-  });
-
-  it('carries a null prior value through (filled-then-cleared edge)', () => {
-    expect(
-      classifyCellEditResult(
-        result({ skippedReason: 'cell_already_filled', priorValue: null }),
-      ),
-    ).toEqual({ kind: 'conflict', priorValue: null });
-  });
-
-  it('reads a 200 `row_not_found` as its own outcome, not a conflict', () => {
-    expect(
-      classifyCellEditResult(result({ skippedReason: 'row_not_found' })),
-    ).toEqual({ kind: 'row_not_found' });
+    ).toEqual({ kind: 'unexpected' });
   });
 
   it('treats any other non-write as `unexpected`', () => {
@@ -203,5 +224,114 @@ describe('classifyCellEditResult', () => {
         result({ written: true, skippedReason: 'cell_already_filled' }),
       ),
     ).toEqual({ kind: 'written' });
+  });
+});
+
+describe('classifyVoiceCellEditResult', () => {
+  const result = (
+    overrides: Partial<VoiceCellEditResult>,
+  ): VoiceCellEditResult => ({
+    trialId: 'trial-1',
+    plot: 101,
+    subsample: 2,
+    traitOrdinal: 2,
+    value: null,
+    status: 'unexpected',
+    written: false,
+    skipped: true,
+    skippedReason: null,
+    priorValue: null,
+    cellAddress: 'E23',
+    version: 'ver-2',
+    fileName: 'trial.xlsx',
+    transcript: '',
+    generatedAt: '2026-10-17T12:00:00Z',
+    ...overrides,
+  });
+
+  it('reads `written` with its value and prior value', () => {
+    expect(
+      classifyVoiceCellEditResult(
+        result({ status: 'written', written: true, value: 5, priorValue: 3 }),
+      ),
+    ).toEqual({ kind: 'written', value: 5, priorValue: 3 });
+  });
+
+  it('carries a null prior value through (empty-cell edge)', () => {
+    expect(
+      classifyVoiceCellEditResult(
+        result({ status: 'written', written: true, value: 0, priorValue: null }),
+      ),
+    ).toEqual({ kind: 'written', value: 0, priorValue: null });
+  });
+
+  it('falls back to 0 when a `written` body omits the value', () => {
+    // Unreachable server-side (a landed write always carries the value), but
+    // pins the non-null contract without a cast.
+    expect(
+      classifyVoiceCellEditResult(
+        result({ status: 'written', written: true, value: null }),
+      ),
+    ).toEqual({ kind: 'written', value: 0, priorValue: null });
+  });
+
+  it('reads `not_understood`', () => {
+    expect(
+      classifyVoiceCellEditResult(result({ status: 'not_understood' })),
+    ).toEqual({ kind: 'not_understood' });
+  });
+
+  it('reads `row_not_found`', () => {
+    expect(
+      classifyVoiceCellEditResult(result({ status: 'row_not_found' })),
+    ).toEqual({ kind: 'row_not_found' });
+  });
+
+  it('reads `cell_already_filled` with its prior value', () => {
+    expect(
+      classifyVoiceCellEditResult(
+        result({
+          status: 'cell_already_filled',
+          skippedReason: 'cell_already_filled',
+          priorValue: 7,
+        }),
+      ),
+    ).toEqual({ kind: 'cell_already_filled', priorValue: 7 });
+  });
+
+  it('carries a null prior value through `cell_already_filled`', () => {
+    expect(
+      classifyVoiceCellEditResult(
+        result({ status: 'cell_already_filled', priorValue: null }),
+      ),
+    ).toEqual({ kind: 'cell_already_filled', priorValue: null });
+  });
+
+  it('reads any other status as `unexpected`', () => {
+    expect(
+      classifyVoiceCellEditResult(result({ status: 'unexpected' })),
+    ).toEqual({ kind: 'unexpected' });
+  });
+});
+
+describe('resolveArmMode', () => {
+  it('arms for voice when the recorder is usable', () => {
+    expect(resolveArmMode(true)).toBe('voice');
+  });
+
+  it('falls back to keyboard when it is not', () => {
+    expect(resolveArmMode(false)).toBe('keyboard');
+  });
+});
+
+describe('shouldFallbackToKeyboard', () => {
+  it('falls back for an unsupported or denied mic', () => {
+    expect(shouldFallbackToKeyboard('unsupported')).toBe(true);
+    expect(shouldFallbackToKeyboard('denied')).toBe(true);
+  });
+
+  it('does NOT fall back while the mic is still promptable or granted', () => {
+    expect(shouldFallbackToKeyboard('prompt')).toBe(false);
+    expect(shouldFallbackToKeyboard('granted')).toBe(false);
   });
 });

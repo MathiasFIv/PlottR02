@@ -1,4 +1,4 @@
-import { useAtom, useAtomValue } from 'jotai';
+import { useAtom, useAtomValue, useStore } from 'jotai';
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ConfirmCard } from '../components/ConfirmCard';
@@ -8,12 +8,22 @@ import { useAuth } from '../hooks/useAuth';
 import { useTrials } from '../hooks/useTrials';
 import { useVoiceQueue } from '../hooks/useVoiceQueue';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
+import { api } from '../lib/api';
 import { getRecordingById } from '../lib/audioDb';
 import { deriveEndOfSheet, deriveNextTarget, resolveNextTarget } from '../lib/nextTarget';
 import { formatAnchor, isAnchorForTrial } from '../lib/sheetAnchor';
+import {
+  applyCellEdit,
+  classifyVoiceCellEditResult,
+  shouldFallbackToKeyboard,
+} from '../lib/sheetCellEdit';
+import type { SheetCellEdit } from '../lib/sheetCellEdit';
+import { bumpSheetRefresh } from '../lib/sheetRefreshSignal';
 import { summarizeSync } from '../lib/syncQueue';
 import {
   activeTrialIdAtom,
+  sheetCellEditAtom,
+  sheetCellEditStatusAtom,
   sheetLastWrittenAtom,
   sheetSelectedAtom,
   trialSheetAtom,
@@ -83,6 +93,40 @@ export function RecordView() {
   const handledBlobRef = useRef<Blob | null>(null);
 
   /**
+   * Non-React store access for the voice cell write: the stop branch reads the
+   * armed cell and clears it WITHOUT a render round-trip (the atom may change
+   * between the read and the write).
+   */
+  const store = useStore();
+
+  /**
+   * The live VOICE arm: a double-tapped cell on the WILLING trial, waiting for
+   * a spoken number. `null` in keyboard mode, for another trial, or when no
+   * edit is open. Identity is stable while the atom is unchanged, so the
+   * auto-start effect below can compare it by reference.
+   */
+  const edit = useAtomValue(sheetCellEditAtom);
+  const voiceArm =
+    edit !== null && edit.mode === 'voice' && edit.trialId === activeTrialId
+      ? edit
+      : null;
+  /**
+   * Whether a double-tap should ARM the cell for voice (recorder usable) or
+   * fall back to the inline keyboard editor. Passed to the sheet panel; the
+   * mirror of `shouldFallbackToKeyboard` but expressed positively here.
+   */
+  const voiceEnabled =
+    permissionState !== 'unsupported' && permissionState !== 'denied';
+
+  /**
+   * The arm the auto-start effect has already started a recorder for — a ref,
+   * not state, so it never re-renders and re-runs the effect on a loop. It
+   * blocks a re-start while the SAME arm is live (e.g. after a failed write,
+   * where the arm is kept for a manual mic retry).
+   */
+  const startedArmRef = useRef<SheetCellEdit | null>(null);
+
+  /**
    * Mirror of the active trial for the auto-save effect. Reading it through a
    * ref keeps `activeTrialId` out of that effect's dependency array — a trial
    * change mid-save must not re-run the effect or cancel an in-flight save
@@ -93,6 +137,62 @@ export function RecordView() {
   useEffect(() => {
     activeTrialIdRef.current = activeTrialId;
   }, [activeTrialId]);
+
+  /**
+   * Trial change while armed: never strand another trial's arm. The sheet
+   * panel's own hook clears on unmount/trial change, but RecordView reads the
+   * atom directly, so it clears here too — a switch can never leave a yellow
+   * cell (or a primed recorder) pointing at a sheet that is no longer shown.
+   */
+  useEffect(() => {
+    const current = store.get(sheetCellEditAtom);
+    if (current !== null && current.trialId !== activeTrialId) {
+      store.set(sheetCellEditAtom, null);
+      store.set(sheetCellEditStatusAtom, { saving: false, error: null });
+    }
+  }, [activeTrialId, store]);
+
+  /**
+   * Auto-start the recorder for a live voice arm:
+   * - a mic that cannot record (`unsupported`/`denied`) flips the arm IN PLACE
+   *   to the keyboard fallback, prefilled from the cell on screen;
+   * - otherwise the recorder starts exactly once per arm (the `startedArmRef`
+   *   guard stops a restart loop after a failed write, when the arm is kept
+   *   for a manual mic retry).
+   */
+  useEffect(() => {
+    if (voiceArm === null) {
+      startedArmRef.current = null;
+      return;
+    }
+    if (shouldFallbackToKeyboard(permissionState)) {
+      const payload =
+        sheetPayload !== null && sheetPayload.trialId === voiceArm.trialId
+          ? sheetPayload
+          : null;
+      const current =
+        payload?.rows?.find(
+          (r) => r.plot === voiceArm.plot && r.subsample === voiceArm.subsample,
+        )?.values[voiceArm.valuesIndex] ?? null;
+      store.set(sheetCellEditAtom, {
+        ...voiceArm,
+        mode: 'keyboard',
+        value: current === null ? '' : String(current),
+      });
+      return;
+    }
+    if (!isRecording && startedArmRef.current !== voiceArm) {
+      startedArmRef.current = voiceArm;
+      void startRecording();
+    }
+  }, [
+    voiceArm,
+    permissionState,
+    isRecording,
+    startRecording,
+    store,
+    sheetPayload,
+  ]);
 
   // Startup sweep: auto-send any crashed-mid-send 'pending' rows and legacy
   // 'ready' rows (idempotent — the engine's in-flight set guards double-sends),
@@ -129,8 +229,77 @@ export function RecordView() {
     }
     handledBlobRef.current = audioBlob;
 
+    // A matching VOICE arm means this clip is a CELL value, not a free-form
+    // note: write it straight to the addressed cell and NEVER fall through to
+    // the IndexedDB/autoSync path below. Read the atom live (the arm may have
+    // been cleared since this effect was scheduled).
+    const armed = store.get(sheetCellEditAtom);
+    const voiceArmNow =
+      armed !== null && armed.mode === 'voice' && armed.trialId === trialId
+        ? armed
+        : null;
+
     let cancelled = false;
     (async () => {
+      if (voiceArmNow !== null) {
+        try {
+          const data = await api.editCellFromVoice(trialId, {
+            plot: voiceArmNow.plot,
+            subsample: voiceArmNow.subsample,
+            traitOrdinal: voiceArmNow.valuesIndex + 1,
+            overwrite: true,
+            audio: audioBlob,
+            mimeType: mimeType ?? '',
+          });
+          if (cancelled) return;
+          const outcome = classifyVoiceCellEditResult(data);
+          if (outcome.kind === 'written') {
+            // Reconcile the grid optimistically (skip the write when the ref
+            // is unchanged), signal a re-check, close the arm, clear the clip.
+            const payload = store.get(trialSheetAtom);
+            if (
+              payload !== null &&
+              payload.trialId === trialId &&
+              payload.rows !== null
+            ) {
+              const nextRows = applyCellEdit(
+                payload.rows,
+                voiceArmNow,
+                outcome.value,
+              );
+              if (nextRows !== payload.rows) {
+                store.set(trialSheetAtom, { ...payload, rows: nextRows });
+              }
+            }
+            bumpSheetRefresh(trialId);
+            store.set(sheetCellEditAtom, null);
+            store.set(sheetCellEditStatusAtom, { saving: false, error: null });
+            reset();
+            return;
+          }
+          // not_understood / row_not_found / cell_already_filled /
+          // unexpected — KEEP the arm so a mic tap retries.
+          const message =
+            outcome.kind === 'not_understood'
+              ? "Couldn't understand a number from 0 to 10 — tap the mic and try again."
+              : outcome.kind === 'row_not_found'
+                ? 'That row is no longer in the sheet.'
+                : outcome.kind === 'cell_already_filled'
+                  ? 'That cell already has a value.'
+                  : 'That cell could not be updated.';
+          store.set(sheetCellEditStatusAtom, { saving: false, error: message });
+          reset();
+          return;
+        } catch (err) {
+          if (cancelled) return;
+          const message =
+            err instanceof Error ? err.message : 'Could not save the value.';
+          store.set(sheetCellEditStatusAtom, { saving: false, error: message });
+          reset();
+          return;
+        }
+      }
+
       const rec = await saveRecording(audioBlob, mimeType ?? '', trialId);
       if (cancelled || rec === null) {
         return; // save failure → existing error + Re-record affordance
@@ -148,7 +317,16 @@ export function RecordView() {
     return () => {
       cancelled = true;
     };
-  }, [audioBlob, isRecording, mimeType, saveRecording, autoSync, setPendingRec]);
+  }, [
+    audioBlob,
+    isRecording,
+    mimeType,
+    saveRecording,
+    autoSync,
+    setPendingRec,
+    store,
+    reset,
+  ]);
 
   /** Clears the held clip + queue guard so a new recording starts clean. */
   function clearHeldClip() {
@@ -179,6 +357,14 @@ export function RecordView() {
   }
 
   function handleStart() {
+    // A live voice arm took no queue row: this clip is a CELL value, so skip
+    // the discard/clear branch entirely and just reset the recorder — a mic
+    // tap then starts a fresh take and the stop branch rewrites the cell.
+    if (voiceArm !== null) {
+      reset();
+      void startRecording();
+      return;
+    }
     // Starting over is a discard: delete the saved pending row so tapping the
     // mic (instead of Re-record) can't orphan a 'pending' clip in IndexedDB.
     // Fire-and-forget — the card is cleared regardless, and a failure would
@@ -299,6 +485,17 @@ export function RecordView() {
               <p className="text-sm text-base-content/70 mt-0" role="status">
                 Anchored: {formatAnchor(anchor)} — speak numbers to fill. Tap
                 the row again to clear.
+              </p>
+            )}
+
+            {/* Voice-arm status — a double-tapped cell is armed and the
+                recorder runs: the same `muted + role=status` convention as
+                the anchor / next-target lines, and the ONLY on-screen cue
+                outside the grid that the next clip writes a cell. */}
+            {voiceArm !== null && (
+              <p className="text-sm text-warning mt-0" role="status">
+                Editing Plot {voiceArm.plot} · Sub {voiceArm.subsample} — speak
+                a number, then tap to stop.
               </p>
             )}
 
@@ -442,7 +639,7 @@ export function RecordView() {
             the prop, which clears the sheet atoms and refetches. */}
         {activeTrialId !== null && (
           <section className="record-sheet-card card card-border bg-base-100 shadow-sm p-6 min-w-0 sheet:sticky sheet:top-4 sheet:flex sheet:flex-col sheet:max-h-[calc(100vh-2rem)] sheet:overflow-hidden">
-            <SheetPanel trialId={activeTrialId} />
+            <SheetPanel trialId={activeTrialId} voiceEnabled={voiceEnabled} />
           </section>
         )}
       </main>

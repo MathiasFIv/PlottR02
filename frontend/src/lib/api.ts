@@ -395,6 +395,42 @@ export interface CellEditResult {
   generatedAt: string;
 }
 
+/**
+ * Result of a VOICE cell edit (POST /api/Trials/{trialId}/cells/voice) —
+ * mirrors the backend `VoiceCellEditResult` (camelCase). Unlike the keyboard
+ * `CellEditResult`, the status is a single discriminating field:
+ *
+ * - `'written'` — the transcribed value landed (always overwrites when the
+ *   client sends `overwrite: true`).
+ * - `'not_understood'` — the transcript held no number in 0…10.
+ * - `'row_not_found'` — the addressed row is gone from the workbook.
+ * - `'cell_already_filled'` — the target held a value and the client sent
+ *   `overwrite: false`; `priorValue` carries what is there.
+ * - `'unexpected'` — any other non-write (defensive).
+ */
+export interface VoiceCellEditResult {
+  trialId: string;
+  plot: number;
+  subsample: number;
+  traitOrdinal: number;
+  value: number | null;
+  status:
+    | 'written'
+    | 'not_understood'
+    | 'row_not_found'
+    | 'cell_already_filled'
+    | 'unexpected';
+  written: boolean;
+  skipped: boolean;
+  skippedReason: 'cell_already_filled' | 'row_not_found' | null;
+  priorValue: number | null;
+  cellAddress: string;
+  version: string;
+  fileName: string | null;
+  transcript: string;
+  generatedAt: string;
+}
+
 // ---------------------------------------------------------------------------
 // Public API surface
 // ---------------------------------------------------------------------------
@@ -533,6 +569,41 @@ export const api = {
       return (await response.json()) as CellEditResult;
     }
     throw new ApiError(response.status, await readApiErrorMessage(response, path));
+  },
+
+  /**
+   * Writes ONE value cell from a recorded audio clip (double-tap-arm → mic →
+   * stop). Multipart — the browser sets Content-Type (boundary) automatically,
+   * exactly as createTrial/syncRecording do. The server transcribes, parses a
+   * number in 0…10, and writes it into the addressed cell; with
+   * `overwrite: true` an already-filled cell is overwritten silently (no 409
+   * contract — every outcome comes back as a 200 `VoiceCellEditResult`).
+   */
+  editCellFromVoice: (
+    trialId: string,
+    input: {
+      plot: number;
+      subsample: number;
+      traitOrdinal: number;
+      overwrite: boolean;
+      audio: Blob;
+      mimeType: string;
+    },
+  ): Promise<VoiceCellEditResult> => {
+    const body = new FormData();
+    body.append('plot', String(input.plot));
+    body.append('subsample', String(input.subsample));
+    body.append('traitOrdinal', String(input.traitOrdinal));
+    body.append('overwrite', String(input.overwrite));
+    body.append(
+      'file',
+      input.audio,
+      `cell.${extensionForMimeType(input.mimeType)}`,
+    );
+    return formRequest<VoiceCellEditResult>(
+      `/api/Trials/${trialId}/cells/voice`,
+      body,
+    );
   },
 
   // Recordings (V2E — "Send now") ---------------------------------------

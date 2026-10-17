@@ -57,6 +57,15 @@ type SheetGridProps = {
    */
   onEditCell?: (cell: SheetCellTap) => void;
   /**
+   * The cell an edit is ARMED on (resolved by the host hook against the
+   * current payload), or null. Matched to a cell by the row's `SheetRow`
+   * identity (`row` cross-ref) + `valuesIndex`, exactly like `selected`.
+   * Renders `.sheet-cell--armed` (yellow) INDEPENDENTLY of `selected` /
+   * `editing` — for a voice arm it is the only affordance until the spoken
+   * number lands; for a keyboard edit it underlines the open input.
+   */
+  armed?: SheetCellEditSelection | null;
+  /**
    * The cell the inline editor is open on (resolved by the host hook against
    * the current payload), or null. Matched to a cell by the row's `SheetRow`
    * identity (`row` cross-ref) + `valuesIndex`, exactly like `selected`.
@@ -124,6 +133,7 @@ export function SheetGrid({
   selected,
   onSelectCell,
   onEditCell,
+  armed,
   editing,
   editDraft,
   editSaving,
@@ -245,6 +255,13 @@ export function SheetGrid({
                   // The tapped cell (only inside the selected row): the same
                   // `valuesIndex` the host resolved via `targetSelection`.
                   const cellSelected = sel !== null && sel.valuesIndex === index;
+                  // The ARMED cell (row cross-ref + column, the same identity
+                  // rule the host used to resolve it) — independent of
+                  // `selected` and `editing`.
+                  const isArmed =
+                    armed != null &&
+                    armed.row === row.row &&
+                    armed.valuesIndex === index;
                   // The open editor targets this cell (row cross-ref + column,
                   // the same identity rule the host used to resolve it).
                   const isEditing =
@@ -256,6 +273,7 @@ export function SheetGrid({
                     'sheet-col--value',
                     sheetCellState(value),
                     cellSelected ? 'sheet-cell--selected' : null,
+                    isArmed ? 'sheet-cell--armed' : null,
                     isEditing ? 'sheet-cell--editing' : null,
                   ]
                     .filter((name) => name !== null)
@@ -270,6 +288,7 @@ export function SheetGrid({
                       key={column.traitOrdinal}
                       className={cellClassName}
                       data-selected={cellSelected ? 'true' : undefined}
+                      data-armed={isArmed ? 'true' : undefined}
                       data-editing={isEditing ? 'true' : undefined}
                       // No tap handling while THIS cell is open for editing —
                       // the input owns the pointer, and a tap inside it must

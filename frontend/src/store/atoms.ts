@@ -181,33 +181,32 @@ export const sheetSelectedAtom = atom<SheetSelected | null>(null);
 //
 // It DOES close when the host unmounts or the trial changes: the hook clears
 // both atoms in an effect cleanup, so navigating away never leaves a stranded
-// editor (or a stale conflict banner) behind. The row/column fields are the
-// tap identity (`lib/sheetCellEdit.ts`) and `value` is the DRAFT string
-// (pre-filled from the cell, `''` when empty) so an in-progress invalid entry
-// can sit in the store without ever holding a non-number.
+// editor behind. The descriptor is a discriminated union on `mode`
+// (`lib/sheetCellEdit.ts`): a `voice` arm (yellow cell, recorder auto-starts,
+// silent overwrite — the yellow armed cell IS the affordance, there is no
+// conflict banner) or a `keyboard` edit carrying the DRAFT string (pre-filled
+// from the cell, `''` when empty) so an in-progress invalid entry can sit in
+// the store without ever holding a non-number.
 // ---------------------------------------------------------------------------
 
-/** The cell the inline editor is open on (see `lib/sheetCellEdit.ts`). */
+/** The cell the inline editor/voice arm is on (see `lib/sheetCellEdit.ts`). */
 export const sheetCellEditAtom = atom<SheetCellEdit | null>(null);
 
 /**
- * Save lifecycle for the open editor: `saving` in flight, `error` a transport
- * / validation / row-not-found message to show inline, and `conflict` the
- * 409 offer ("cell already holds `priorValue` — overwrite with `value`?").
- * Reset to idle whenever the edit opens, commits successfully, or cancels.
+ * Save lifecycle for the open editor: `saving` in flight and `error` a
+ * transport / validation / row-not-found message to show inline. There is NO
+ * conflict state — both capture modes overwrite — so the yellow armed cell is
+ * the only "this cell is being written" affordance. Reset to idle whenever the
+ * edit opens, commits successfully, or cancels.
  */
-export type SheetCellEditConflict = { priorValue: number | null; value: number };
-
 export type SheetCellEditStatus = {
   saving: boolean;
   error: string | null;
-  conflict: SheetCellEditConflict | null;
 };
 
 export const sheetCellEditStatusAtom = atom<SheetCellEditStatus>({
   saving: false,
   error: null,
-  conflict: null,
 });
 
 // ---------------------------------------------------------------------------
