@@ -37,17 +37,7 @@ public sealed class TrialWorkbookStore : ITrialWorkbookStore
     /// <summary>
     /// Creates a store that uses the default repo-root <c>Service/</c> directory.
     /// </summary>
-    public TrialWorkbookStore() : this(null) { }
-
-    /// <summary>
-    /// Creates a store rooted at <paramref name="baseDir"/> (used by tests to
-    /// avoid touching the shared workspace).
-    /// </summary>
-    /// <param name="baseDir">
-    /// The root directory under which <c>Working/</c> is created.
-    /// Pass <c>null</c> to fall back to <see cref="ResolveServiceDirectory"/>.
-    /// </param>
-    public TrialWorkbookStore(string? baseDir) : this(baseDir, null) { }
+    public TrialWorkbookStore() : this(null, null) { }
 
     /// <summary>
     /// Creates a store rooted at <paramref name="baseDir"/> that mirrors its writes
@@ -199,8 +189,13 @@ public sealed class TrialWorkbookStore : ITrialWorkbookStore
         }
     }
 
-    /// <inheritdoc />
-    public ResolvedWorkbookExport? ResolveExport(Guid trialId, string sourceRelativePath)
+    /// <summary>
+    /// Synchronous resolution core delegated to by <see cref="ResolveExportAsync"/> (which
+    /// handles rehydration first): prefers the newest accumulated sync output copy, falling
+    /// back to the pristine source, and returns the path, file name and opaque version —
+    /// or null when nothing resolvable exists or the source escapes the Service/ root.
+    /// </summary>
+    private ResolvedWorkbookExport? ResolveExport(Guid trialId, string sourceRelativePath)
     {
         var serviceDir = ResolveRoot();
         var workingDir = Path.Combine(serviceDir, "Working", trialId.ToString());

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using PlottR0._2.Contracts.Recordings;
 using PlottR0._2.Contracts.Repositories;
 using PlottR0._2.Domain;
 using PlottR0._2.Repository.Persistence;
@@ -53,8 +54,21 @@ public sealed class VoiceRecordingRepository : IVoiceRecordingRepository
     {
         ArgumentNullException.ThrowIfNull(recording);
 
-        _db.VoiceRecordings.Add(recording);
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            _db.VoiceRecordings.Add(recording);
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsClientRecordingIdConflict(ex))
+        {
+            // Translate the EF/Npgsql-specific unique-index failure at the repository boundary
+            // so services can handle the concurrent-insert race without referencing EF Core.
+            // Unclassified DbUpdateExceptions (FK violations, etc.) propagate unchanged.
+            throw new ClientRecordingIdConflictException(
+                $"A voice recording with client recording id '{recording.ClientRecordingId}' already exists.",
+                ex);
+        }
+
         return recording;
     }
 
@@ -72,5 +86,19 @@ public sealed class VoiceRecordingRepository : IVoiceRecordingRepository
 
         _db.VoiceRecordings.Update(recording);
         await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// True when a <see cref="DbUpdateException"/> was caused by the
+    /// <c>IX_VoiceRecordings_ClientRecordingId</c> unique index — a concurrent double-submit
+    /// raced past the idempotency gate and committed first. Npgsql surfaces the underlying
+    /// Postgres <c>23505 unique_violation</c> inside the inner exception message.
+    /// </summary>
+    private static bool IsClientRecordingIdConflict(DbUpdateException ex)
+    {
+        var message = ex.InnerException?.Message;
+        return message is not null
+            && (message.Contains("IX_VoiceRecordings_ClientRecordingId", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase));
     }
 }

@@ -47,12 +47,6 @@ public sealed class ObjectKeysTests
     }
 
     [Fact]
-    public void WorkbookSourcePrefix_EndsWithSlashAndMatchesSourceNamespace()
-    {
-        InvokeString("WorkbookSourcePrefix", TrialId).Should().Be($"Workbooks/{TrialId}/");
-    }
-
-    [Fact]
     public void WorkbookOutputPrefix_EndsWithSlashAndMatchesOutputNamespace()
     {
         InvokeString("WorkbookOutputPrefix", TrialId).Should().Be($"Working/{TrialId}/");

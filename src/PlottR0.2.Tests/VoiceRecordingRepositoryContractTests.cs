@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using PlottR0._2.Contracts.Recordings;
 using PlottR0._2.Contracts.Repositories;
 using PlottR0._2.Domain;
 using PlottR0._2.Repository.Persistence;
@@ -176,7 +177,7 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
     // ── ClientRecordingId idempotency key ───────────────────────────────────
 
     [Fact]
-    public async Task CreateAsync_DuplicateClientRecordingId_ThrowsDbUpdateException()
+    public async Task CreateAsync_DuplicateClientRecordingId_ThrowsClientRecordingIdConflictException()
     {
         // Arrange
         var trialId = await CreateTrialAsync();
@@ -187,11 +188,30 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             await repo.CreateAsync(CreateRecording(trialId, clientId));
         }
 
-        // Act & Assert — a second insert with the same idempotency key must fail on the unique index
+        // Act & Assert — a second insert with the same idempotency key must fail on the unique
+        // index, translated at the repository boundary so services never see EF Core.
         using (var scope = _fixture.CreateScope())
         {
             var repo = scope.ServiceProvider.GetRequiredService<IVoiceRecordingRepository>();
             var act = () => repo.CreateAsync(CreateRecording(trialId, clientId));
+            var conflict = await act.Should().ThrowAsync<ClientRecordingIdConflictException>();
+            conflict.And.InnerException.Should().BeOfType<DbUpdateException>(
+                "the original persistence failure is preserved for diagnostics");
+        }
+    }
+
+    [Fact]
+    public async Task CreateAsync_UnclassifiedDbUpdateException_PropagatesUnchanged()
+    {
+        // Arrange — a random TrialId violates the VoiceRecordings -> Trials foreign key. That
+        // is NOT the ClientRecordingId idempotency conflict, so it must NOT be translated.
+        var recording = CreateRecording(Guid.NewGuid());
+
+        // Act & Assert
+        using (var scope = _fixture.CreateScope())
+        {
+            var repo = scope.ServiceProvider.GetRequiredService<IVoiceRecordingRepository>();
+            var act = () => repo.CreateAsync(recording);
             await act.Should().ThrowAsync<DbUpdateException>();
         }
     }

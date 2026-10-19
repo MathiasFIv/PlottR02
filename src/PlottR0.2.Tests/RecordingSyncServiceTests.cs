@@ -1709,6 +1709,65 @@ public sealed class RecordingSyncServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SyncAsync_ClientRecordingIdConflict_LosingRaceAnsweredAsReplay()
+    {
+        // Arrange — the repository seam translates a concurrent insert into
+        // ClientRecordingIdConflictException. Simulate a double-submit that raced past the
+        // idempotency gate: the first lookup sees no winner, CreateAsync loses the race, and
+        // the lookup inside the catch finds the winner's committed row.
+        var trialId = await CreateTrialAsync();
+        var clientId = Guid.NewGuid().ToString();
+        var winner = new VoiceRecording
+        {
+            Id = Guid.NewGuid(),
+            ClientRecordingId = clientId,
+            TrialId = trialId,
+            BlobPath = Path.Combine("Recordings", trialId.ToString(), $"{clientId}.webm"),
+            MimeType = "audio/webm",
+            Status = VoiceRecordingStatus.Written,
+            ConfirmedPlot = 101,
+            ConfirmedSubsample = 3,
+            ConfirmedValue = 7,
+            ResolvedTraitOrdinal = 1,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        };
+        // Empty queue: any transcription call would throw and fail the test.
+        var fake = new FakeTranscriptionService();
+
+        SyncVoiceRecordingResult result;
+        using (var scope = _fixture.CreateScope())
+        {
+            var realRepo = scope.ServiceProvider.GetRequiredService<IVoiceRecordingRepository>();
+            var service = new RecordingSyncService(
+                new RaceLosingVoiceRecordingRepository(realRepo, winner),
+                scope.ServiceProvider.GetRequiredService<IVoiceBlobStore>(),
+                fake,
+                scope.ServiceProvider.GetRequiredService<ITrialRepository>(),
+                scope.ServiceProvider.GetRequiredService<IRatingRepository>(),
+                scope.ServiceProvider.GetRequiredService<ITrialWorkbookStore>(),
+                scope.ServiceProvider.GetRequiredService<ITrialWriteGate>(),
+                _fixture.CurrentUser,
+                NullLogger<RecordingSyncService>.Instance);
+
+            result = await service.SyncAsync(AudioBytes(), "clip.webm", Command(trialId, clientId));
+        }
+
+        // Assert — the loser is answered as a Replay without transcription or workbook work;
+        // the blob stays because the winner owns the same client key (same blob path).
+        result.Replayed.Should().BeTrue();
+        result.Status.Should().Be(VoiceRecordingStatus.Replay);
+        result.Plot.Should().Be(101);
+        result.Subsample.Should().Be(3);
+        result.Value.Should().Be(7);
+        result.NeedsReview.Should().BeFalse();
+        fake.CallCount.Should().Be(0, "the conflict path must not transcribe");
+        OutputCopies(trialId).Should().BeEmpty("the conflict path must not write a workbook");
+        BlobFiles(trialId).Should().ContainSingle(
+            "the loser's blob stays because the winner committed the same client key");
+    }
+
+    [Fact]
     public async Task SyncAsync_SameClientRecordingId_ReplayEchoesCommittedTargetNotStaleDefaults()
     {
         // Arrange — the FIRST sync commits an explicit spoken target (102,1) while the PWA
@@ -2818,6 +2877,46 @@ await AssertStoredAsync(clientId, row =>
         var cell = wb.Worksheet(RatingWorkbookFactory.SheetName)
             .Cell(RatingWorkbookFactory.DataRowFor(plot, subsample), RatingWorkbookFactory.TraitColumnFor(traitOrdinal));
         return cell.IsEmpty() ? null : (int?)cell.GetDouble();
+    }
+
+    /// <summary>
+    /// Repository double for the concurrent-insert race: the idempotency-gate lookup misses,
+    /// <see cref="CreateAsync"/> loses the race (the repository seam throws the translated
+    /// conflict exception), and the post-conflict lookup returns the winner's committed row.
+    /// All other members delegate to the real repository.
+    /// </summary>
+    private sealed class RaceLosingVoiceRecordingRepository : IVoiceRecordingRepository
+    {
+        private readonly IVoiceRecordingRepository _inner;
+        private readonly VoiceRecording _winner;
+        private int _lookups;
+
+        public RaceLosingVoiceRecordingRepository(IVoiceRecordingRepository inner, VoiceRecording winner)
+        {
+            _inner = inner;
+            _winner = winner;
+        }
+
+        public Task<VoiceRecording> CreateAsync(VoiceRecording recording, CancellationToken ct = default)
+            => throw new ClientRecordingIdConflictException(
+                $"A voice recording with client recording id '{recording.ClientRecordingId}' already exists.");
+
+        public Task<VoiceRecording?> GetByClientRecordingIdAsync(
+            string clientRecordingId, CancellationToken ct = default)
+            => Task.FromResult(_lookups++ == 0 ? null : _winner);
+
+        public Task<VoiceRecording?> GetByIdAsync(Guid id, CancellationToken ct = default)
+            => _inner.GetByIdAsync(id, ct);
+
+        public Task<IReadOnlyList<VoiceRecording>> GetAllAsync(
+            int? skip = null, int? take = null, CancellationToken ct = default)
+            => _inner.GetAllAsync(skip, take, ct);
+
+        public Task<bool> ExistsAsync(Guid id, CancellationToken ct = default)
+            => _inner.ExistsAsync(id, ct);
+
+        public Task UpdateAsync(VoiceRecording recording, CancellationToken ct = default)
+            => _inner.UpdateAsync(recording, ct);
     }
 
     /// <summary>

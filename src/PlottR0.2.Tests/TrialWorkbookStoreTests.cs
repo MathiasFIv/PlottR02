@@ -74,7 +74,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         await Task.CompletedTask;
     }
 
-    private TrialWorkbookStore CreateStore() => new(_tempRoot);
+    private TrialWorkbookStore CreateStore() => new(_tempRoot, null);
 
     [Fact]
     public async Task SaveAsync_ValidXlsx_SavesFileAndReturnsRelativePath()
@@ -210,7 +210,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         _createdFiles.Add((trialId, relativePath));
 
         // Act
-        var resolved = store.ResolveExport(trialId, relativePath);
+        var resolved = await store.ResolveExportAsync(trialId, relativePath);
 
         // Assert — the pristine uploaded source is served as the absolute path
         resolved.Should().NotBeNull();
@@ -241,7 +241,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         TrackDirectFile(trialId, newer);
 
         // Act
-        var resolved = store.ResolveExport(trialId, relativePath);
+        var resolved = await store.ResolveExportAsync(trialId, relativePath);
 
         // Assert — the copy with the greatest _out_ timestamp is served
         resolved.Should().NotBeNull();
@@ -250,7 +250,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public void ResolveExport_MissingDirAndSource_ReturnsNull()
+    public async Task ResolveExport_MissingDirAndSource_ReturnsNull()
     {
         // Arrange — a random trial with no working dir and a source path that never existed.
         var store = CreateStore();
@@ -258,14 +258,14 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         var bogusRelativePath = Path.Combine("Working", trialId.ToString(), "never uploaded.xlsx");
 
         // Act
-        var resolved = store.ResolveExport(trialId, bogusRelativePath);
+        var resolved = await store.ResolveExportAsync(trialId, bogusRelativePath);
 
         // Assert
         resolved.Should().BeNull("neither an output copy nor the source workbook exists");
     }
 
     [Fact]
-    public void ResolveExport_ChainedOutputCopy_UsesLastMarker()
+    public async Task ResolveExport_ChainedOutputCopy_UsesLastMarker()
     {
         // Arrange — a copy created from another output copy carries TWO _out_ markers.
         // The LAST marker must be parsed, so the chained copy beats its own parent.
@@ -280,7 +280,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         TrackDirectFile(trialId, chained);
 
         // Act
-        var resolved = store.ResolveExport(
+        var resolved = await store.ResolveExportAsync(
             trialId, Path.Combine("Working", trialId.ToString(), "chain.xlsx"));
 
         // Assert — the last `_out_` marker is authoritative when names are chained
@@ -306,7 +306,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         TrackDirectFile(trialId, unparseable);
 
         // Act
-        var resolved = store.ResolveExport(trialId, relativePath);
+        var resolved = await store.ResolveExportAsync(trialId, relativePath);
 
         // Assert — the garbage stamp does not match, so the pristine upload is served.
         resolved.Should().NotBeNull();
@@ -330,7 +330,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
             .Should().BeTrue("SaveAsync should create the trial working directory");
 
         // Act
-        var resolved = store.ResolveExport(trialId, relativePath);
+        var resolved = await store.ResolveExportAsync(trialId, relativePath);
 
         // Assert — empty working dir is not an error; the pristine source wins.
         resolved.Should().NotBeNull();
@@ -338,7 +338,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public void ResolveExport_SourceEscapingServiceRoot_ReturnsNull()
+    public async Task ResolveExport_SourceEscapingServiceRoot_ReturnsNull()
     {
         // Arrange — a source relative path that climbs out of the Service/ root via `..`.
         // The anchor file EXISTS outside the root, so a null result can only come from
@@ -352,7 +352,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         var escapingRelativePath = Path.Combine("..", escapeName);
 
         // Act
-        var resolved = store.ResolveExport(trialId, escapingRelativePath);
+        var resolved = await store.ResolveExportAsync(trialId, escapingRelativePath);
 
         // Assert — resolved path escapes the Service/ root and must yield null.
         resolved.Should().BeNull("relative source paths must not escape the Service/ directory");
@@ -369,8 +369,8 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         _createdFiles.Add((trialId, relativePath));
 
         // Act
-        var first = store.ResolveExport(trialId, relativePath);
-        var second = store.ResolveExport(trialId, relativePath);
+        var first = await store.ResolveExportAsync(trialId, relativePath);
+        var second = await store.ResolveExportAsync(trialId, relativePath);
 
         // Assert — {sha256hex(absolutePath)[..8]}-{lastWriteTimeUtc.Ticks:x}-{length}
         first.Should().NotBeNull();
@@ -391,11 +391,11 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
         _createdFiles.Add((trialId, relativePath));
         var absolutePath = Path.Combine(_tempRoot, relativePath);
 
-        var v1 = store.ResolveExport(trialId, relativePath)!.Version;
+        var v1 = (await store.ResolveExportAsync(trialId, relativePath))!.Version;
 
         // Act 1 — touch only the mtime.
         File.SetLastWriteTimeUtc(absolutePath, DateTime.UtcNow.AddMinutes(3));
-        var v2 = store.ResolveExport(trialId, relativePath)!.Version;
+        var v2 = (await store.ResolveExportAsync(trialId, relativePath))!.Version;
 
         // Act 2 — grow the file by one byte, then RESTORE the mtime so ONLY length differs.
         var touchedMtime = File.GetLastWriteTimeUtc(absolutePath);
@@ -404,7 +404,7 @@ public sealed class TrialWorkbookStoreTests : IAsyncLifetime
             fs.WriteByte(0);
         }
         File.SetLastWriteTimeUtc(absolutePath, touchedMtime);
-        var v3 = store.ResolveExport(trialId, relativePath)!.Version;
+        var v3 = (await store.ResolveExportAsync(trialId, relativePath))!.Version;
 
         // Assert — both stat components are part of the token (FileInfo only, no open needed)
         v2.Should().NotBe(v1, "the version embeds lastWriteTimeUtc.Ticks");

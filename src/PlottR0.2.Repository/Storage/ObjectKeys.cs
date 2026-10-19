@@ -22,9 +22,6 @@ internal static class ObjectKeys
     /// <summary>The durable key for a trial's accumulated sync output copy.</summary>
     public static string WorkbookOutputKey(Guid trialId, string fileName) => $"Working/{trialId}/{fileName}";
 
-    /// <summary>The durable key prefix covering every source workbook of a trial.</summary>
-    public static string WorkbookSourcePrefix(Guid trialId) => $"Workbooks/{trialId}/";
-
     /// <summary>The durable key prefix covering every output copy of a trial.</summary>
     public static string WorkbookOutputPrefix(Guid trialId) => $"Working/{trialId}/";
 

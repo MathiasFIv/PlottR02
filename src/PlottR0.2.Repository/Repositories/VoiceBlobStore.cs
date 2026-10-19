@@ -18,21 +18,6 @@ public sealed class VoiceBlobStore : IVoiceBlobStore
     private readonly ILogger<VoiceBlobStore>? _logger;
 
     /// <summary>
-    /// Creates a store that uses the default repo-root <c>Service/</c> directory.
-    /// </summary>
-    public VoiceBlobStore() : this(null) { }
-
-    /// <summary>
-    /// Creates a store rooted at <paramref name="baseDir"/> (used by tests to
-    /// avoid touching the shared workspace).
-    /// </summary>
-    /// <param name="baseDir">
-    /// The root directory under which <c>Recordings/</c> is created.
-    /// Pass <c>null</c> to fall back to <see cref="TrialWorkbookStore.ResolveServiceDirectory"/>.
-    /// </param>
-    public VoiceBlobStore(string? baseDir) : this(baseDir, null) { }
-
-    /// <summary>
     /// Creates a store rooted at <paramref name="baseDir"/> that mirrors its writes
     /// to <paramref name="objectStore"/>.
     /// </summary>

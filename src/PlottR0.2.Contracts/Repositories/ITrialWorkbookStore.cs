@@ -26,23 +26,17 @@ public interface ITrialWorkbookStore
     Task DeleteAsync(string relativePath, CancellationToken ct = default);
 
     /// <summary>
-    /// Resolves the workbook to serve for a trial export/download/sheet read: the newest
-    /// "*_out_*.xlsx" output copy in the trial's working directory if one exists
-    /// (accumulated sync state), otherwise the trial's pristine source workbook — together
-    /// with its file name and an OPAQUE version token computed from <c>FileInfo</c> only
-    /// (never opening the file) INSIDE THE SAME CALL, so the path and its version can
-    /// never skew (no TOCTOU).
-    /// Returns null when the working directory exists but contains no xlsx and the
-    /// source workbook no longer exists on disk, or when the resolved source path
-    /// escapes the Service/ directory.
-    /// </summary>
-    ResolvedWorkbookExport? ResolveExport(Guid trialId, string sourceRelativePath);
-
-    /// <summary>
-    /// Durable counterparts to <see cref="ResolveExport"/>: first rehydrates a cold local
-    /// cache from the durable object store (a warm cache is served with zero network), then
-    /// resolves exactly as <see cref="ResolveExport"/> does. Behaves identically to
-    /// <see cref="ResolveExport"/> when durable storage is disabled.
+    /// Resolves the workbook to serve for a trial export/download/sheet read: first
+    /// rehydrates a cold local cache from the durable object store (a warm cache is
+    /// served with zero network), then resolves the newest "*_out_*.xlsx" output copy
+    /// in the trial's working directory if one exists (accumulated sync state),
+    /// otherwise the trial's pristine source workbook — together with its file name
+    /// and an OPAQUE version token computed from <c>FileInfo</c> only (never opening
+    /// the file) INSIDE THE SAME CALL, so the path and its version can never skew
+    /// (no TOCTOU). Returns null when the working directory exists but contains no
+    /// xlsx and the source workbook no longer exists on disk, or when the resolved
+    /// source path escapes the Service/ directory. Behaves identically to a plain
+    /// resolve when durable storage is disabled.
     /// </summary>
     /// <param name="trialId">The trial whose workbook should be resolved.</param>
     /// <param name="sourceRelativePath">The trial's pristine source workbook relative path, if any.</param>

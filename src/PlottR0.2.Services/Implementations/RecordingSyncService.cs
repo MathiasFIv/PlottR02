@@ -1,4 +1,3 @@
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PlottR0._2.Contracts;
 using PlottR0._2.Contracts.Ratings;
@@ -216,7 +215,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         {
             await _voiceRecordings.CreateAsync(recording, ct);
         }
-        catch (DbUpdateException ex) when (IsClientRecordingIdConflict(ex))
+        catch (ClientRecordingIdConflictException)
         {
             // TOCTOU: a concurrent double-submit raced past the idempotency gate and committed
             // first. Its row owns the same blob path (same client key), so the blob stays and
@@ -786,7 +785,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
         {
             await _voiceRecordings.CreateAsync(recording, ct);
         }
-        catch (DbUpdateException ex) when (IsClientRecordingIdConflict(ex))
+        catch (ClientRecordingIdConflictException)
         {
             // TOCTOU: a concurrent double-submit raced past the idempotency gate and committed
             // first. Its row owns the same blob path (same client key), so the blob stays and
@@ -868,7 +867,7 @@ public sealed class RecordingSyncService : IRecordingSyncService
     /// trait values (null = empty; 0 is a real value per design.md Rule 2).</description></item>
     /// </list>
     /// The region is re-read from the output copy the write just exported — the SAME workbook
-    /// the dashboard sheet endpoint resolves (see <see cref="ITrialWorkbookStore.ResolveExport"/>)
+    /// the dashboard sheet endpoint resolves (see <see cref="ITrialWorkbookStore.ResolveExportAsync"/>)
     /// — never from the write's INPUT, which is stale by definition. The recompute is
     /// best-effort bookkeeping: an empty region is NOT progress (Created stays Created until
     /// a real value lands) and a region-read failure leaves the current status untouched
@@ -1167,18 +1166,4 @@ public sealed class RecordingSyncService : IRecordingSyncService
             ".mp4" or ".m4a" => "audio/mp4",
             _ => "application/octet-stream",
         };
-
-    /// <summary>
-    /// True when a <see cref="DbUpdateException"/> was caused by the
-    /// <c>IX_VoiceRecordings_ClientRecordingId</c> unique index — a concurrent double-submit
-    /// raced past the idempotency gate and committed first. Npgsql surfaces the underlying
-    /// Postgres <c>23505 unique_violation</c> inside the inner exception message.
-    /// </summary>
-    private static bool IsClientRecordingIdConflict(DbUpdateException ex)
-    {
-        var message = ex.InnerException?.Message;
-        return message is not null
-            && (message.Contains("IX_VoiceRecordings_ClientRecordingId", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase));
-    }
 }
