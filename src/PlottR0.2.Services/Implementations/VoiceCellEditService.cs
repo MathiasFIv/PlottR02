@@ -3,16 +3,6 @@ using PlottR0._2.Services.Abstractions;
 
 namespace PlottR0._2.Services.Implementations;
 
-/// <summary>
-/// Concrete <see cref="IVoiceCellEditService"/>: transcribes one uploaded clip, parses ONE
-/// rating number (0..10) out of the transcript and writes it into the explicitly addressed
-/// cell by REUSING <see cref="ITrialService.EditCellAsync"/> — so the per-trial access gate,
-/// the per-trial write serialization, the durable mirror, the audit row and the opaque
-/// version all stay exactly where they already live. No workbook, blob or DB access here.
-/// <para/>
-/// The trial access/existence pre-check runs BEFORE transcription so an unauthorized caller
-/// or unknown trial never reaches the speech-to-text provider.
-/// </summary>
 public class VoiceCellEditService : IVoiceCellEditService
 {
     private readonly ITranscriptionService _transcription;
@@ -24,7 +14,6 @@ public class VoiceCellEditService : IVoiceCellEditService
         _trialService = trialService;
     }
 
-    /// <inheritdoc />
     public async Task<VoiceCellEditResult> TranscribeAndWriteAsync(
         Guid trialId,
         VoiceCellEditRequest request,
@@ -36,8 +25,6 @@ public class VoiceCellEditService : IVoiceCellEditService
         ArgumentNullException.ThrowIfNull(audio);
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
 
-        // Validate the addressed cell BEFORE any lookup or transcription — same messages
-        // and same order as ITrialService.EditCellAsync.
         if (request.Plot <= 0)
             throw new ArgumentException("Plot must be greater than zero.", nameof(request));
         if (request.Subsample <= 0)
@@ -45,17 +32,11 @@ public class VoiceCellEditService : IVoiceCellEditService
         if (request.TraitOrdinal is < 1 or > 9)
             throw new ArgumentException("TraitOrdinal must be within 1..9.", nameof(request));
 
-        // Access + existence pre-check BEFORE spending STT: same existence-check-wins-then-
-        // per-trial-access gates EditCellAsync enforces, exposed for fail-fast.
         await _trialService.EnsureTrialAccessAsync(trialId, ct);
 
         var transcription = await _transcription.TranscribeAsync(audio, fileName, ct);
         var parsed = TranscriptParser.Parse(transcription.Text);
 
-        // Single-cell contract: exactly ONE number must be understood. A glued multi-digit
-        // token that only the ceiling-bounded repair could re-split (Repaired) is NOT a
-        // confident single number — report it as not-understood so the UI asks for a retry
-        // rather than writing an arbitrarily chosen digit.
         if (parsed.FirstValue is not int value || parsed.Repaired)
         {
             return new VoiceCellEditResult(
@@ -76,8 +57,6 @@ public class VoiceCellEditService : IVoiceCellEditService
                 DateTime.UtcNow);
         }
 
-        // Reuse the full single-cell edit path (access gate, write gate, durable mirror,
-        // audit row, version) — the voice flow is a value source, not a second write path.
         var cell = await _trialService.EditCellAsync(
             trialId,
             new EditCellRequest

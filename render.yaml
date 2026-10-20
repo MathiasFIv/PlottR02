@@ -9,7 +9,7 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health
-    autoDeployTrigger: commit
+    autoDeployTrigger: off       # deploy is gated by CI (GitHub Actions deploy job -> deploy hook)
     # NOTE: no `disk:` block — persistent disks are unavailable on the free plan.
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
@@ -65,6 +65,7 @@ services:
     branch: dev
     buildCommand: cd frontend && npm ci && npm run build
     staticPublishPath: frontend/dist
+    autoDeployTrigger: off       # deploy is gated by CI (GitHub Actions deploy job -> deploy hook)
     envVars:
       - key: VITE_API_URL
         value: https://plottr-api.onrender.com

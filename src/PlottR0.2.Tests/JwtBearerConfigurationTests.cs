@@ -9,15 +9,6 @@ using PlottR0._2.Services.Implementations;
 
 namespace PlottR0._2.Tests;
 
-/// <summary>
-/// Pins the JwtBearer claim wiring that makes <c>[Authorize(Roles = ...)]</c> work.
-/// Plan A14 forbids <c>WebApplicationFactory</c>, so instead of an HTTP pipeline this
-/// mints a real token with <see cref="TokenService"/> and validates it with the exact
-/// <see cref="Microsoft.IdentityModel.Tokens.TokenValidationParameters"/> the API uses
-/// (<see cref="JwtBearerConfiguration"/>), then asserts <c>ClaimsPrincipal.IsInRole</c>.
-/// This is what catches the "deny everyone" trap when <c>RoleClaimType</c> is left unset
-/// while inbound claim mapping is off.
-/// </summary>
 public sealed class JwtBearerConfigurationTests
 {
     private static readonly TokenOptions TestOptions = new()
@@ -42,8 +33,6 @@ public sealed class JwtBearerConfigurationTests
 
     private static ClaimsPrincipal Validate(string token)
     {
-        // MapInboundClaims = false mirrors JwtBearerOptions in Program.cs, so the claim
-        // stays the literal "role" that the validation parameters are configured for.
         var handler = new JwtSecurityTokenHandler { MapInboundClaims = false };
         return handler.ValidateToken(
             token,

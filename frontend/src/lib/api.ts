@@ -12,15 +12,8 @@ import type { AudioRecording } from './audioDb';
 import { resolveNextTarget } from './nextTarget';
 import { tokens } from './tokens';
 
-/**
- * API base URL. Defaults to empty string so requests go to the same origin and
- * the Vite dev-server proxy forwards `/api` to the ASP.NET Core backend (see
- * vite.config.ts). Override with VITE_API_URL (e.g. a deployed backend) in a
- * `.env` / `.env.local` file if needed.
- */
 export const API_BASE_URL: string = import.meta.env.VITE_API_URL ?? '';
 
-/** Thrown on non-2xx API responses so callers can branch on the status code. */
 export class ApiError extends Error {
   readonly status: number;
 
@@ -31,13 +24,10 @@ export class ApiError extends Error {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Token refresh — deduped so concurrent 401s share a single refresh call
-// ---------------------------------------------------------------------------
-
 let isRefreshing = false;
 let refreshPromise: Promise<string> | null = null;
 
+/** One refresh-and-retry leg on 401; concurrent 401s share a single refresh. */
 async function refreshAccessToken(): Promise<string> {
   const refreshToken = tokens.getRefreshToken();
   if (!refreshToken) {
@@ -60,10 +50,6 @@ async function refreshAccessToken(): Promise<string> {
   return data.accessToken;
 }
 
-// ---------------------------------------------------------------------------
-// Request helpers
-// ---------------------------------------------------------------------------
-
 function buildHeaders(
   init?: RequestInit,
   withAuth = true,
@@ -82,14 +68,10 @@ function buildHeaders(
 }
 
 /**
- * Core fetch wrapper. When `withAuth` is true and the server responds with 401,
- * a single token-refresh is attempted (deduped across concurrent calls). The
- * original request is then retried with the new access token. If refresh fails
- * an `ApiError(401)` is thrown.
- *
- * When `applyDefaultHeaders` is false (default true), `buildHeaders` is
- * skipped so that the browser can set its own Content-Type — required for
- * multipart/form-data where the boundary must be auto-generated.
+ * Core fetch wrapper: one refresh-and-retry leg on 401 (single-flight across
+ * concurrent calls); a second 401 clears tokens. `applyDefaultHeaders` false
+ * lets the browser set the multipart Content-Type boundary but still attaches
+ * Authorization — a logged-in sync must never start unauthenticated.
  */
 async function requestWithRetry(
   path: string,
@@ -97,12 +79,6 @@ async function requestWithRetry(
   withAuth: boolean,
   applyDefaultHeaders = true,
 ): Promise<Response> {
-  // When `applyDefaultHeaders` is false (multipart), we still attach the
-  // Authorization header whenever a token exists — only Content-Type is
-  // deferred to the browser so it can generate the multipart boundary. A
-  // logged-in sync must never make a deliberately unauthenticated first
-  // attempt: that produced a visible 401 on every recording and burnt a
-  // single-use refresh-token rotation each time.
   let headers: Record<string, string> | undefined;
   if (applyDefaultHeaders) {
     headers = buildHeaders(init, withAuth);
@@ -122,7 +98,6 @@ async function requestWithRetry(
   });
 
   if (response.status === 401 && withAuth && tokens.getAccessToken()) {
-    // Start a refresh if one isn't already in flight
     if (!isRefreshing) {
       isRefreshing = true;
       refreshPromise = refreshAccessToken().finally(() => {
@@ -143,9 +118,6 @@ async function requestWithRetry(
           : { Authorization: `Bearer ${newToken}` },
       });
 
-      // If the retried request is still 401 the session has been revoked
-      // mid-flight — clear tokens so isAuthenticatedAtom flips false and
-      // the caller's throw lands in a logged-out state.
       if (response.status === 401) {
         tokens.clear();
       }
@@ -158,21 +130,9 @@ async function requestWithRetry(
 }
 
 /**
- * Reads a failed response's body into a thrown error message (decision A13).
- *
- * The API returns errors as plain strings (`BadRequest(ex.Message)`), which
- * ASP.NET may hand back either raw or as a JSON string literal (`"…"` including
- * the surrounding quotes). Without this, `jsonRequest` used to discard the body
- * and every failure read only `API request failed (404): path` — the operator
- * learned nothing (e.g. every future sheet error).
- *
- * Format: the recognisable `API request failed ({status}): {path}` prefix,
- * followed by ` — ` and the server's own message whenever a non-empty body is
- * readable. Empty or unreadable bodies fall back to the prefix alone, i.e.
- * exactly the message thrown before this helper existed.
- *
- * Shared by `jsonRequest`, `formRequest` and `downloadWorkbook` so all three
- * fail identically.
+ * Builds the thrown message for a failed response: `API request failed
+ * (status): path` plus the server's plain-string body (JSON-string literal
+ * unwrapped) whenever one is readable.
  */
 export async function readApiErrorMessage(
   response: Response,
@@ -183,18 +143,16 @@ export async function readApiErrorMessage(
   try {
     text = await response.text();
   } catch {
-    // Body not readable — keep the generic message.
     return fallback;
   }
   if (!text.trim()) return fallback;
   try {
     const parsed = JSON.parse(text) as unknown;
     if (typeof parsed === 'string') {
-      // Serialized plain-string error (quotes included) — unwrap it.
       return parsed.trim() ? `${fallback} — ${parsed}` : fallback;
     }
   } catch {
-    // Not JSON (plain text) — use the raw body below.
+    // Not JSON — use the raw body.
   }
   return `${fallback} — ${text}`;
 }
@@ -226,9 +184,9 @@ async function noContentRequest(
 }
 
 /**
- * Multipart form-data request. Skips the default `Content-Type: application/json`
- * header so that the browser auto-generates `multipart/form-data; boundary=...`.
- * Reuses the same auth header + 401-refresh-retry behaviour as `jsonRequest`.
+ * Multipart POST; skips the JSON Content-Type so the browser generates the
+ * form boundary. Shares auth, 401-refresh retry and error-body handling with
+ * `jsonRequest`.
  */
 async function formRequest<T>(
   path: string,
@@ -239,19 +197,13 @@ async function formRequest<T>(
     path,
     { method: 'POST', body },
     withAuth,
-    false, // applyDefaultHeaders — let the browser set Content-Type for FormData
+    false,
   );
   if (!response.ok) {
-    // Same error-body handling as jsonRequest (decision A13): surface the
-    // server's plain-string message, fall back to the generic one.
     throw new ApiError(response.status, await readApiErrorMessage(response, path));
   }
   return (await response.json()) as T;
 }
-
-// ---------------------------------------------------------------------------
-// Voice-to-Excel sync (POST /api/Recordings/sync)
-// ---------------------------------------------------------------------------
 
 /** Result of a "Send now" sync or a correction of one voice recording. */
 export interface SyncRecordingResponse {
@@ -268,17 +220,12 @@ export interface SyncRecordingResponse {
   traitOrdinal: number;
   needsReview: boolean;
   replayed: boolean;
-  /** True when the write target's plot and/or subsample came from the
-   *  `defaultPlot`/`defaultSubsample` fields (values-only utterance with a
-   *  remembered target). The server sends this on every sync/correct response. */
+  /** Write target came from `defaultPlot`/`defaultSubsample`, not spoken fields. */
   usedDefaultTarget: boolean;
-  /** True when the write ran on the transcript alone because the client sent
-   *  no confirmed fields (corrections never set it; only transcript-only syncs). */
+  /** Wrote from the transcript alone — the client sent no confirmed fields. */
   wasTranscriptOnly: boolean;
   submittedAt: string;
   transcript: string;
-  /** Human-readable reason transcription failed (empty/absent when it
-   *  succeeded or was skipped). */
   transcriptionError?: string;
   confidence: number | null;
   writtenCells: {
@@ -296,24 +243,17 @@ export interface SyncRecordingResponse {
     cellAddress: string;
   }[];
   missingSubsampleIndices: number[];
-  /** number of spoken values that could not be written at all (category full / beyond trait 9). > 0 implies status Flagged. */
+  /** Spoken values that could not be written at all; > 0 implies status Flagged. */
   outOfTraitRangeValueCount: number;
 }
 
-/**
- * Body for POST /api/Recordings/{id}/correct — the human-confirmed correction
- * applied to a recording that came back `needs-attention` (or a `failed` one
- * with enough confident data to salvage). Because a plot without subsamples
- * legitimately has subsample === null, every field is nullable: the server
- * treats `null` as "keep the value already confirmed."
- */
+/** Correction body; `null` means "keep the already-confirmed value". */
 export interface CorrectRecordingRequest {
   plot: number | null;
   subsample: number | null;
   value: number | null;
 }
 
-/** Maps a recorded container mime type to a file extension (default webm). */
 function extensionForMimeType(mimeType: string): string {
   const normalized = mimeType.split(';')[0]?.trim().toLowerCase() ?? '';
   if (normalized === 'audio/mp4' || normalized === 'audio/m4a') return 'mp4';
@@ -321,15 +261,7 @@ function extensionForMimeType(mimeType: string): string {
   return 'webm';
 }
 
-// ---------------------------------------------------------------------------
-// Workbook download helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Extracts the file name from a `Content-Disposition` header. Prefers the
- * RFC 5987 `filename*=UTF-8''...` (URL-encoded) form, falls back to the plain
- * `filename="..."` / `filename=...` form, and finally to `fallback`.
- */
+/** Prefers the RFC 5987 `filename*=UTF-8''…` form of Content-Disposition, then plain, then `fallback`. */
 function fileNameFromContentDisposition(
   contentDisposition: string | null,
   fallback: string,
@@ -341,7 +273,7 @@ function fileNameFromContentDisposition(
     try {
       return decodeURIComponent(encoded[1].trim().replace(/^"+|"+$/g, ''));
     } catch {
-      // Malformed URL-encoding — fall through to the plain form below.
+      // Malformed URL-encoding — try the plain form.
     }
   }
 
@@ -354,14 +286,9 @@ function fileNameFromContentDisposition(
   return fallback;
 }
 
-// ---------------------------------------------------------------------------
-// Inline cell edit (POST /api/Trials/{trialId}/cells)
-// ---------------------------------------------------------------------------
-
 /**
  * Body for POST /api/Trials/{trialId}/cells. `traitOrdinal` is the 1-based
- * column ordinal (`valuesIndex + 1`; ordinal 1 → column C, 9 → column K), and
- * `overwrite` is the explicit second attempt after a 409 conflict.
+ * column ordinal (`valuesIndex + 1`; ordinal 1 → column C, 9 → column K).
  */
 export interface EditCellInput {
   plot: number;
@@ -371,14 +298,7 @@ export interface EditCellInput {
   overwrite: boolean;
 }
 
-/**
- * Result of an inline cell write (mirrors the backend `CellEditResult`). The
- * `version` is the NEW opaque workbook version AFTER the write — re-poll the
- * sheet with it (dropping the old one makes the next fetch a full payload).
- * `written === true` means the value landed; otherwise the write was SKIPPED —
- * `skippedReason` is `'cell_already_filled'` (offered as an overwrite) or
- * `'row_not_found'` (the row is gone from the workbook).
- */
+/** `version` is the workbook version AFTER the write — re-poll with it. */
 export interface CellEditResult {
   trialId: string;
   plot: number;
@@ -395,19 +315,6 @@ export interface CellEditResult {
   generatedAt: string;
 }
 
-/**
- * Result of a VOICE cell edit (POST /api/Trials/{trialId}/cells/voice) —
- * mirrors the backend `VoiceCellEditResult` (camelCase). Unlike the keyboard
- * `CellEditResult`, the status is a single discriminating field:
- *
- * - `'written'` — the transcribed value landed (always overwrites when the
- *   client sends `overwrite: true`).
- * - `'not_understood'` — the transcript held no number in 0…10.
- * - `'row_not_found'` — the addressed row is gone from the workbook.
- * - `'cell_already_filled'` — the target held a value and the client sent
- *   `overwrite: false`; `priorValue` carries what is there.
- * - `'unexpected'` — any other non-write (defensive).
- */
 export interface VoiceCellEditResult {
   trialId: string;
   plot: number;
@@ -430,10 +337,6 @@ export interface VoiceCellEditResult {
   transcript: string;
   generatedAt: string;
 }
-
-// ---------------------------------------------------------------------------
-// Public API surface
-// ---------------------------------------------------------------------------
 
 export const api = {
   login: (input: LoginRequest) =>
@@ -465,19 +368,11 @@ export const api = {
   deleteUser: (id: string) =>
     noContentRequest(`/api/Users/${id}`, { method: 'DELETE' }),
 
-  // Trials ---------------------------------------------------------------
-
   listTrials: () => jsonRequest<TrialSummary[]>('/api/Trials'),
 
-  /** Current crew assigned to a trial (frozen contract: `User[]`). */
   listTrialUsers: (trialId: string) =>
     jsonRequest<User[]>(`/api/Trials/${trialId}/users`),
 
-  /**
-   * Replaces the trial's crew assignment with exactly `userIds` (PUT, 204).
-   * Callers are managers (SystemAdmin/Researcher/TrialManager); the backend
-   * answers 400 validation, 403 not-a-manager, 404 trial missing.
-   */
   assignTrialUsers: (trialId: string, userIds: string[]) =>
     noContentRequest(`/api/Trials/${trialId}/users`, {
       method: 'PUT',
@@ -490,18 +385,12 @@ export const api = {
     return formRequest<TrialSummary>('/api/Trials', body);
   },
 
-  /**
-   * Downloads the trial's current workbook (newest accumulated export copy, or
-   * the uploaded original) and saves it via the browser download. Returns the
-   * file name used. Reuses the same auth header + 401 handling as the other calls.
-   */
+  /** Revoking the object URL is deferred a macrotask — a synchronous revoke aborts the download in Safari. */
   downloadWorkbook: async (trialId: string): Promise<string> => {
     const path = `/api/Trials/${trialId}/workbook`;
     const response = await requestWithRetry(path, undefined, true);
 
     if (!response.ok) {
-      // Same error-body handling as jsonRequest (decision A13): surface the
-      // server's plain-string message, fall back to the generic one.
       throw new ApiError(response.status, await readApiErrorMessage(response, path));
     }
 
@@ -519,23 +408,14 @@ export const api = {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    // Defer the revoke to a macrotask: calling it synchronously right after
-    // click() has a documented history of aborting the download in Safari.
     setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 
     return fileName;
   },
 
   /**
-   * Fetches the read-only ratings sheet for a trial (frozen contract — see
-   * `TrialSheet` in types.ts). Pass the last full payload's `version` as
-   * `since` to use the fast path: when the file hasn't moved the server
-   * answers `changed: false` with every payload field present-but-null, so
-   * consumers branch on `changed` / `columns === null`.
-   *
-   * Lives on the `api` object so it inherits the auth header and the deduped
-   * 401-refresh retry. The optional `signal` flows through `requestWithRetry`
-   * (including the 401-retry leg) for per-tick cancellation by the poller.
+   * Pass the last payload's `version` as `since` for the fast path: an
+   * unchanged file answers `changed: false` with every payload field null.
    */
   getTrialSheet: (trialId: string, since: string | undefined, signal?: AbortSignal) =>
     jsonRequest<TrialSheet>(
@@ -544,19 +424,8 @@ export const api = {
     ),
 
   /**
-   * Writes ONE value cell (double-tap-to-edit). Parses the response for BOTH
-   * 200 and 409 and hands the caller the `CellEditResult` to branch on:
-   *
-   * - 200 `written: true`  → the value landed; re-poll the sheet with `version`.
-   * - 200 `skipped: true`  → `'row_not_found'` (row gone) — NOT an error.
-   * - 409 `skipped: true`  → `'cell_already_filled'` and `priorValue` set — the
-   *   caller offers an overwrite and retries with `overwrite: true`.
-   * - 400/403/404          → `ApiError` (validation / not-a-member / no trial).
-   *
-   * 409 is deliberately NOT turned into an `ApiError` here: its body is the
-   * same `CellEditResult` shape, and `ApiError` carries only a status, so the
-   * conflict offer would lose `priorValue`. Uses `requestWithRetry` directly
-   * (not `jsonRequest`, which throws on every non-2xx).
+   * 409 is not an ApiError — its body is the CellEditResult carrying
+   * `priorValue` for the overwrite offer; every other non-2xx throws.
    */
   editCell: async (trialId: string, input: EditCellInput): Promise<CellEditResult> => {
     const path = `/api/Trials/${trialId}/cells`;
@@ -571,14 +440,7 @@ export const api = {
     throw new ApiError(response.status, await readApiErrorMessage(response, path));
   },
 
-  /**
-   * Writes ONE value cell from a recorded audio clip (double-tap-arm → mic →
-   * stop). Multipart — the browser sets Content-Type (boundary) automatically,
-   * exactly as createTrial/syncRecording do. The server transcribes, parses a
-   * number in 0…10, and writes it into the addressed cell; with
-   * `overwrite: true` an already-filled cell is overwritten silently (no 409
-   * contract — every outcome comes back as a 200 `VoiceCellEditResult`).
-   */
+  /** Multipart voice edit; every outcome is a 200 VoiceCellEditResult (no 409 contract). */
   editCellFromVoice: (
     trialId: string,
     input: {
@@ -606,12 +468,10 @@ export const api = {
     );
   },
 
-  // Recordings (V2E — "Send now") ---------------------------------------
-
   /**
-   * Sends one confirmed voice recording to the backend for transcription +
-   * workbook writing. Multipart — the browser sets Content-Type (boundary)
-   * automatically, exactly as createTrial does.
+   * Sends one recording (multipart) for transcription + workbook write.
+   * defaultPlot/defaultSubsample are sent only when both explicit fields are
+   * absent; a snapshotted defaultTarget (key present) beats live resolution.
    */
   syncRecording: (rec: AudioRecording) => {
     const body = new FormData();
@@ -620,16 +480,6 @@ export const api = {
     body.append('plot', String(rec.plot ?? ''));
     body.append('subsample', String(rec.subsample ?? ''));
     body.append('value', String(rec.value ?? ''));
-    // Values-only utterance ("values 4, 2, 6"): the operator is continuing a
-    // run, so ship the default target as the server-side defaults. NEVER sent
-    // when either field is present — explicit spoken values always win, so
-    // the whole defaults branch is gated on both being null.
-    // The row's `defaultTarget` snapshot (taken at first send in autoSync)
-    // wins over live resolution so a retry replays the target the clip was
-    // INTENDED for — the key being PRESENT is what decides: a frozen `null`
-    // stays `null` (a retry must never silently re-target). Only an ABSENT
-    // key (never snapshotted) falls back to the live file-derived next
-    // target (`resolveNextTarget`: last-written pair + the sheet payload).
     const target =
       rec.plot == null && rec.subsample == null
         ? 'defaultTarget' in rec
@@ -648,22 +498,12 @@ export const api = {
     ) {
       body.append('traitOrdinal', String(traitOrdinal));
     }
-    body.append('createdAt', rec.createdAt); // already ISO-8601 (stored via toISOString() at save)
+    body.append('createdAt', rec.createdAt);
     body.append('file', rec.blob, `rec.${extensionForMimeType(rec.mimeType)}`);
     return formRequest<SyncRecordingResponse>('/api/Recordings/sync', body);
   },
 
-  /**
-   * Applies a confirmed correction to a recording that came back
-   * `needs-review` (or was transcript-only). Uses the JSON `correct` endpoint
-   * so the client sends only the confirmed fields — never a transcript.
-   *
-   * Correction is inherently a "confirmed send": the client explicitly chose
-   * plot/subsample/value, so the returned `SyncRecordingResponse` always has
-   * `wasTranscriptOnly === false`. A 409 (already written by another client or
-   * a prior correction) surfaces as `ApiError` with `status 409` — the queue
-   * treats that as "already synced, nothing to correct."
-   */
+  /** Sends only the confirmed fields; a 409 (already written) surfaces as ApiError. */
   correctRecording: (clientRecordingId: string, fields: CorrectRecordingRequest) =>
     jsonRequest<SyncRecordingResponse>(
       `/api/Recordings/${encodeURIComponent(clientRecordingId)}/correct`,

@@ -10,13 +10,6 @@ using PlottR0._2.Tests.Support.WorkbookBuilder;
 
 namespace PlottR0._2.Tests;
 
-/// <summary>
-/// Contract tests for <see cref="IVoiceRecordingRepository"/> against a real PostgreSQL
-/// (via Testcontainers). Verifies the idempotency key (<see cref="VoiceRecording.ClientRecordingId"/>),
-/// the DB default <see cref="VoiceRecordingStatus.Received"/>, and that status/transcript/parse
-/// updates persist. Entities are inserted directly (CreatedBy stays null — the repository-level
-/// contract only guarantees what the repo itself provides).
-/// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
 {
@@ -32,7 +25,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        // Clean up Working/<id>/ directories created by the trial setup (mirrors TrialServiceTests).
         foreach (var trialId in _createdTrialIds)
         {
             try
@@ -44,7 +36,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             }
             catch
             {
-                // Best-effort cleanup.
             }
         }
 
@@ -66,10 +57,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
         };
     }
 
-    /// <summary>
-    /// Creates a Trial row (saving a real workbook via <see cref="ITrialWorkbookStore"/>, mirroring
-    /// TrialServiceTests setup) so the TrialId FK on VoiceRecordings has a valid target.
-    /// </summary>
     private async Task<Guid> CreateTrialAsync()
     {
         var trialId = Guid.NewGuid();
@@ -100,16 +87,12 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
         return trialId;
     }
 
-    // ── Create + GetById ─────────────────────────────────────────────────────
-
     [Fact]
     public async Task CreateAsync_ValidRecording_PersistsWithExpectedValues()
     {
-        // Arrange
         var trialId = await CreateTrialAsync();
         var recording = CreateRecording(trialId);
 
-        // Act
         VoiceRecording created;
         using (var scope = _fixture.CreateScope())
         {
@@ -117,7 +100,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             created = await repo.CreateAsync(recording);
         }
 
-        // Assert
         created.Id.Should().NotBe(Guid.Empty);
         created.ClientRecordingId.Should().Be(recording.ClientRecordingId);
         created.TrialId.Should().Be(trialId);
@@ -132,7 +114,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
     [Fact]
     public async Task GetByIdAsync_ExistingRecording_ReturnsPersistedRow()
     {
-        // Arrange
         var trialId = await CreateTrialAsync();
         var recording = CreateRecording(trialId);
         using (var scope = _fixture.CreateScope())
@@ -141,7 +122,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             await repo.CreateAsync(recording);
         }
 
-        // Act — re-read via a fresh scope/tracking context
         VoiceRecording? fetched;
         using (var scope = _fixture.CreateScope())
         {
@@ -149,7 +129,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             fetched = await repo.GetByIdAsync(recording.Id);
         }
 
-        // Assert
         fetched.Should().NotBeNull();
         fetched!.Id.Should().Be(recording.Id);
         fetched.ClientRecordingId.Should().Be(recording.ClientRecordingId);
@@ -162,7 +141,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
     [Fact]
     public async Task GetByIdAsync_MissingId_ReturnsNull()
     {
-        // Act
         VoiceRecording? fetched;
         using (var scope = _fixture.CreateScope())
         {
@@ -170,16 +148,12 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             fetched = await repo.GetByIdAsync(Guid.NewGuid());
         }
 
-        // Assert
         fetched.Should().BeNull();
     }
-
-    // ── ClientRecordingId idempotency key ───────────────────────────────────
 
     [Fact]
     public async Task CreateAsync_DuplicateClientRecordingId_ThrowsClientRecordingIdConflictException()
     {
-        // Arrange
         var trialId = await CreateTrialAsync();
         var clientId = Guid.NewGuid().ToString();
         using (var scope = _fixture.CreateScope())
@@ -188,8 +162,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             await repo.CreateAsync(CreateRecording(trialId, clientId));
         }
 
-        // Act & Assert — a second insert with the same idempotency key must fail on the unique
-        // index, translated at the repository boundary so services never see EF Core.
         using (var scope = _fixture.CreateScope())
         {
             var repo = scope.ServiceProvider.GetRequiredService<IVoiceRecordingRepository>();
@@ -203,11 +175,8 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
     [Fact]
     public async Task CreateAsync_UnclassifiedDbUpdateException_PropagatesUnchanged()
     {
-        // Arrange — a random TrialId violates the VoiceRecordings -> Trials foreign key. That
-        // is NOT the ClientRecordingId idempotency conflict, so it must NOT be translated.
         var recording = CreateRecording(Guid.NewGuid());
 
-        // Act & Assert
         using (var scope = _fixture.CreateScope())
         {
             var repo = scope.ServiceProvider.GetRequiredService<IVoiceRecordingRepository>();
@@ -219,7 +188,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
     [Fact]
     public async Task GetByClientRecordingIdAsync_Existing_ReturnsRow()
     {
-        // Arrange
         var trialId = await CreateTrialAsync();
         var clientId = Guid.NewGuid().ToString();
         using (var scope = _fixture.CreateScope())
@@ -228,7 +196,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             await repo.CreateAsync(CreateRecording(trialId, clientId));
         }
 
-        // Act
         VoiceRecording? fetched;
         using (var scope = _fixture.CreateScope())
         {
@@ -236,7 +203,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             fetched = await repo.GetByClientRecordingIdAsync(clientId);
         }
 
-        // Assert
         fetched.Should().NotBeNull();
         fetched!.ClientRecordingId.Should().Be(clientId);
     }
@@ -244,7 +210,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
     [Fact]
     public async Task GetByClientRecordingIdAsync_Missing_ReturnsNull()
     {
-        // Act
         VoiceRecording? fetched;
         using (var scope = _fixture.CreateScope())
         {
@@ -252,16 +217,12 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             fetched = await repo.GetByClientRecordingIdAsync("absent-client-id");
         }
 
-        // Assert
         fetched.Should().BeNull();
     }
-
-    // ── UpdateAsync ──────────────────────────────────────────────────────────
 
     [Fact]
     public async Task UpdateAsync_StatusAndParseFields_Persisted()
     {
-        // Arrange
         var trialId = await CreateTrialAsync();
         var recording = CreateRecording(trialId);
         using (var scope = _fixture.CreateScope())
@@ -270,7 +231,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             await repo.CreateAsync(recording);
         }
 
-        // Act — mutate the detached entity and persist via a fresh scope
         using (var scope = _fixture.CreateScope())
         {
             var repo = scope.ServiceProvider.GetRequiredService<IVoiceRecordingRepository>();
@@ -284,7 +244,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
             await repo.UpdateAsync(recording);
         }
 
-        // Assert — re-read via a fresh scope
         VoiceRecording? fetched;
         using (var scope = _fixture.CreateScope())
         {
@@ -304,7 +263,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
     [Fact]
     public async Task UpdateAsync_NullRecording_ThrowsArgumentNull()
     {
-        // Act & Assert
         using (var scope = _fixture.CreateScope())
         {
             var repo = scope.ServiceProvider.GetRequiredService<IVoiceRecordingRepository>();
@@ -316,7 +274,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
     [Fact]
     public async Task UpdateAsync_MissingId_ThrowsDbUpdateConcurrencyException()
     {
-        // Act & Assert — a detached entity whose Id does not exist affects 0 rows
         using (var scope = _fixture.CreateScope())
         {
             var repo = scope.ServiceProvider.GetRequiredService<IVoiceRecordingRepository>();
@@ -326,17 +283,12 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
         }
     }
 
-    // ── Status DB default ────────────────────────────────────────────────────
-
     [Fact]
     public async Task StatusColumn_WhenOmittedFromInsert_DefaultsToReceived()
     {
-        // Arrange
         var trialId = await CreateTrialAsync();
         var recording = CreateRecording(trialId);
 
-        // Act — insert a row that omits Status (and the audit timestamps) so the
-        // DB-side defaults ('Received', NOW()) must apply.
         using (var scope = _fixture.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlottR0DbContext>();
@@ -352,7 +304,6 @@ public sealed class VoiceRecordingRepositoryContractTests : IAsyncLifetime
                 });
         }
 
-        // Assert
         VoiceRecording? fetched;
         using (var scope = _fixture.CreateScope())
         {

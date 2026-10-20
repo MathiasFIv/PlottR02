@@ -10,13 +10,6 @@ using PlottR0._2.Services.Abstractions;
 
 namespace PlottR0._2.Services.Implementations;
 
-/// <summary>
-/// Concrete <see cref="ITrialService"/> that orchestrates trial creation (workbook
-/// upload + DB persistence + audit), trial listing, trial-to-user assignment,
-/// workbook export and the read-only sheet endpoint. File I/O is delegated to
-/// <see cref="ITrialWorkbookStore"/> and <see cref="IRatingRepository"/>; persistence
-/// to <see cref="ITrialRepository"/> and <see cref="IUserRepository"/>.
-/// </summary>
 public class TrialService : ITrialService
 {
     private readonly ITrialRepository _trialRepository;
@@ -48,24 +41,17 @@ public class TrialService : ITrialService
         _writeGate = writeGate;
     }
 
-    /// <inheritdoc />
     public async Task<TrialSummary> CreateTrialAsync(string fileName, Stream content, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         ArgumentNullException.ThrowIfNull(content);
 
-        // Role gate — BEFORE any file or DB write. Only researchers, trial managers
-        // and system administrators may create trials; a null role (legacy/anonymous
-        // actor) is denied identically.
         if (_currentUser.Role is not (UserRole.SystemAdmin or UserRole.Researcher or UserRole.TrialManager))
         {
             throw new ForbiddenAccessException(
                 "Only researchers, trial managers, or system administrators can create trials.");
         }
 
-        // Identity gate — also BEFORE any file or DB write. A privileged role with no user
-        // id (e.g. a stale/malformed token) cannot be attributed: persisting Guid.Empty
-        // would poison CreatedBy and any creator assignment, so fail fast instead.
         if (_currentUser.UserId is not Guid creatorId)
         {
             throw new ForbiddenAccessException(
@@ -74,9 +60,6 @@ public class TrialService : ITrialService
 
         var trialId = Guid.NewGuid();
 
-        // Delegate workbook validation + file persistence to the store.
-        // The store throws InvalidDataException for non-workbooks and ArgumentException
-        // for wrong extensions — those propagate to the controller as BadRequest.
         var relativePath = await _workbookStore.SaveAsync(trialId, fileName, content, ct);
 
         var trial = new Trial
@@ -91,19 +74,9 @@ public class TrialService : ITrialService
             UpdatedAt = DateTime.UtcNow,
         };
 
-        // Computed once and reused for both the persisted auto-assignment and the response
-        // badge: a researcher or trial manager creator IS assigned to their own trial; a
-        // system administrator is not.
         var creatorIsAssigned =
             _currentUser.Role is UserRole.Researcher or UserRole.TrialManager;
 
-        // A researcher or trial manager is implicitly assigned to their own trial; the row
-        // rides along inside CreateAsync's single SaveChangesAsync — no second round-trip.
-        // A system administrator is "above the matrix" (they bypass every per-trial gate via
-        // IsManager), so the row is pointless and is deliberately omitted. Omitting it also
-        // closes a dead-end: an admin-authored trial used to carry an admin assignment that
-        // the crew UI round-tripped back through AssignTrialUsersAsync, which rejects
-        // SystemAdmin targets → an inescapable 400.
         if (creatorIsAssigned)
         {
             trial.Assignments =
@@ -142,39 +115,21 @@ public class TrialService : ITrialService
                 }),
                 ct);
 
-            // Mirror the auto-assignment above in the response: a researcher/trial-manager
-            // creator is assigned to the new trial (badge on), a system-administrator
-            // creator is above the matrix and carries no assignment (badge off). The freshly
-            // created entity's CreatedByUser navigation is not loaded, so the actor's name is
-            // passed explicitly rather than resolved from that (absent) navigation.
             return TrialMapper.ToSummary(created, creatorIsAssigned, _currentUser.Name);
         }
         catch
         {
-            // Best-effort cleanup: remove the workbook file that was already persisted
-            // before the DB insert failed, so no orphaned files are left on disk.
             await _workbookStore.DeleteAsync(relativePath, ct);
             throw;
         }
     }
 
-    /// <inheritdoc />
     public async Task<IReadOnlyList<TrialSummary>> ListTrialsAsync(CancellationToken ct = default)
     {
-        // Managers (system administrators, researchers, trial managers) see every trial.
         if (IsManager(_currentUser.Role))
         {
             var all = await _trialRepository.GetAllAsync(ct: ct);
 
-            // Managers see every trial regardless of assignment, but the per-row badge must
-            // reflect their OWN assignments: load the actor's assigned trial ids and let the
-            // mapper compute membership per row. A missing identity (legacy/malformed token)
-            // means "assigned to nothing", so every row stays false rather than failing the read.
-            //
-            // SystemAdmin is deliberately skipped: the assignment write path rejects
-            // SystemAdmin targets outright (AssignTrialUsersAsync) and trial creation never
-            // writes an admin assignment row, so an admin can never hold one — the query
-            // would always come back empty. Leaving the set null yields all-false for free.
             IReadOnlySet<Guid>? assignedTrialIds = null;
             if (_currentUser.Role is not UserRole.SystemAdmin && _currentUser.UserId is Guid managerId)
                 assignedTrialIds = (await _trialRepository.GetAssignedTrialIdsAsync(managerId, ct)).ToHashSet();
@@ -182,8 +137,6 @@ public class TrialService : ITrialService
             return TrialMapper.ToSummaries(all, assignedTrialIds);
         }
 
-        // Everyone else (a field worker, or a legacy/role-less actor) sees ONLY the trials
-        // they are assigned to. A missing identity is treated as "nothing assigned".
         if (_currentUser.UserId is not Guid userId)
             return [];
 
@@ -191,33 +144,22 @@ public class TrialService : ITrialService
         if (assignedIds.Count == 0)
             return [];
 
-        // The repository exposes no "get many by id" call; trials are a small field set, so
-        // filter the full list in memory while preserving its CreatedAt-descending ordering.
-        // Every row this branch returns is one the actor is assigned to, so pass the same set
-        // as the badge source (the flag is true for all of them, by construction).
         var assignedSet = assignedIds.ToHashSet();
         var trials = await _trialRepository.GetAllAsync(ct: ct);
-        // The Where filter already guarantees membership, so the mapper's per-row membership
-        // re-check can only re-affirm true — it never filters a row back out.
+
         return TrialMapper.ToSummaries(trials.Where(t => assignedSet.Contains(t.Id)), assignedSet);
     }
 
-    /// <inheritdoc />
     public async Task<WorkbookExport> GetWorkbookExportAsync(Guid trialId, CancellationToken ct = default)
     {
         var export = await ResolveExportAsync(trialId, ct);
         return new WorkbookExport(export.FilePath, export.FileName);
     }
 
-    /// <inheritdoc />
     public async Task<TrialSheet> GetSheetAsync(Guid trialId, string? since, CancellationToken ct = default)
     {
-        // Resolve path + version in ONE store call (no path/version TOCTOU).
         var export = await ResolveExportAsync(trialId, ct);
 
-        // Fast path (decision A3): version unchanged ⇒ return the slim unchanged payload
-        // WITHOUT opening the workbook. A malformed/non-matching `since` simply never
-        // equals the version, so a poller can never hard-fail on its own query string.
         if (since is not null && since == export.Version)
         {
             return new TrialSheet(
@@ -225,9 +167,6 @@ public class TrialService : ITrialService
                 FileName: null, GeneratedAt: null, Columns: null, Rows: null, Metadata: null);
         }
 
-        // One region read per changed poll (sync by design — ClosedXML cannot abort
-        // mid-parse; ~10–60 ms, so no Task.Run hop). No ClosedXML/file I/O in this layer:
-        // everything lives behind IRatingRepository.
         ct.ThrowIfCancellationRequested();
         var region = _ratingRepository.ReadSheetRegion(export.FilePath);
         ct.ThrowIfCancellationRequested();
@@ -238,14 +177,16 @@ public class TrialService : ITrialService
             region.Columns, region.Rows, region.Metadata);
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Serializes the whole read-modify-write behind the per-trial write gate, so a concurrent
+    /// edit or sync cannot resolve the same input copy and silently drop the other's write. A
+    /// filled cell without <c>overwrite</c> is refused (reported skipped), not an error.
+    /// </summary>
     public async Task<CellEditResult> EditCellAsync(
         Guid trialId, EditCellRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        // Validate the addressed cell and the new value BEFORE any lookup or write. Value is
-        // nullable on the DTO so a MISSING value is rejected here — never silently written as 0.
         if (request.Plot <= 0)
             throw new ArgumentException("Plot must be greater than zero.", nameof(request));
         if (request.Subsample <= 0)
@@ -255,22 +196,12 @@ public class TrialService : ITrialService
         if (request.Value is not int value || value is < 0 or > 10)
             throw new ArgumentException("Value must be present and within 0..10.", nameof(request));
 
-        // Load the trial first so an unknown id stays a 404 (existence-check-wins, matching
-        // the other trial endpoints), then enforce per-trial access (managers or assigned).
         var trial = await LoadTrialForAccessAsync(trialId, ct);
 
         var outputDirectory = _workbookStore.GetWorkingDirectory(trialId);
 
-        // Serialize the whole read-modify-write below against other writers of THIS trial.
-        // Two edits that resolve the same input copy in parallel would each export a new
-        // _out_ copy from it and the later export would silently drop the earlier write (see
-        // ITrialWriteGate); ordering them makes the second copy chain on the first. Trials
-        // other than this one are unaffected and keep writing in parallel.
         using var writeGate = await _writeGate.AcquireAsync(trialId, ct);
 
-        // The newest accumulated output copy (rehydrated from durable storage on a cold cache)
-        // is the input; the pristine source is the fallback. A null result is surfaced as a
-        // FileNotFoundException so the controller maps it to 404.
         var export = await _workbookStore.ResolveExportAsync(
             trialId, trial.SourceWorkbookPath ?? string.Empty, ct)
             ?? throw new FileNotFoundException($"Workbook for trial '{trialId}' was not found on disk.");
@@ -284,8 +215,6 @@ public class TrialService : ITrialService
             value,
             request.Overwrite);
 
-        // Persist + audit ONLY when a cell actually landed — a refused write (filled cell,
-        // overwrite off) or a missing row is a no-op with nothing to mirror or record.
         if (result.Written)
         {
             await _workbookStore.PersistTrialFilesAsync(trialId, ct);
@@ -310,11 +239,6 @@ public class TrialService : ITrialService
                 ct);
         }
 
-        // Re-resolve so the returned Version/FileName reflect the just-written copy: exporting
-        // a new _out_ file changes the opaque version the client must poll with. On a skip the
-        // resolution is unchanged (no new copy was exported). A null re-resolve (the copy
-        // vanished mid-call) falls back to the pre-write resolution rather than failing a write
-        // that already succeeded.
         var resolved = await _workbookStore.ResolveExportAsync(
             trialId, trial.SourceWorkbookPath ?? string.Empty, ct);
 
@@ -334,20 +258,15 @@ public class TrialService : ITrialService
             DateTime.UtcNow);
     }
 
-    /// <inheritdoc />
     public async Task EnsureTrialAccessAsync(Guid trialId, CancellationToken ct = default)
     {
-        // Same existence-check-wins-then-access gates EditCellAsync runs, extracted so a
-        // caller can fail fast (before e.g. a speech-to-text spend) without duplicating them.
         await LoadTrialForAccessAsync(trialId, ct);
     }
 
-    /// <inheritdoc />
     public async Task AssignTrialUsersAsync(Guid trialId, AssignTrialUsersRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        // Actor gate first — before any lookup or write.
         EnsureCanAssignUsers();
 
         if (!await _trialRepository.ExistsAsync(trialId, ct))
@@ -355,12 +274,9 @@ public class TrialService : ITrialService
 
         var requestedIds = request.UserIds;
 
-        // Duplicate ids are a client error, not a silent de-dupe.
         if (requestedIds.Distinct().Count() != requestedIds.Count)
             throw new ArgumentException("UserIds must be distinct.");
 
-        // Validate every target BEFORE persisting (all-or-nothing). Lookups are
-        // performed in a fixed order; the checks themselves are order-independent.
         var validatedIds = new List<Guid>(requestedIds.Count);
         foreach (var userId in requestedIds)
         {
@@ -383,8 +299,6 @@ public class TrialService : ITrialService
             validatedIds.Add(userId);
         }
 
-        // Replace semantics: the creator's auto-assignment is part of the replaced set,
-        // so it survives only if the caller keeps them in the requested ids.
         await _trialRepository.SetAssignmentsAsync(
             trialId, validatedIds, _currentUser.UserId ?? Guid.Empty, ct);
 
@@ -398,7 +312,6 @@ public class TrialService : ITrialService
             ct);
     }
 
-    /// <inheritdoc />
     public async Task<IReadOnlyList<UserResponse>> ListTrialUsersAsync(Guid trialId, CancellationToken ct = default)
     {
         EnsureCanAssignUsers();
@@ -411,8 +324,6 @@ public class TrialService : ITrialService
         var users = new List<UserResponse>(assignments.Count);
         foreach (var assignment in assignments)
         {
-            // Defensive: skip an assignment whose user has since disappeared rather
-            // than failing the whole read.
             var user = await _userRepository.GetByIdAsync(assignment.UserId, ct);
             if (user is not null)
                 users.Add(UserMapper.ToResponse(user));
@@ -421,12 +332,6 @@ public class TrialService : ITrialService
         return users;
     }
 
-    /// <summary>
-    /// Shared actor gate for both assignment operations: only system administrators,
-    /// researchers and trial managers may view or change a trial's crew. A null role
-    /// (legacy/anonymous actor) is denied identically.
-    /// </summary>
-    /// <exception cref="ForbiddenAccessException">The caller's role may not manage assignments.</exception>
     private void EnsureCanAssignUsers()
     {
         if (_currentUser.Role is not (UserRole.SystemAdmin or UserRole.Researcher or UserRole.TrialManager))
@@ -436,20 +341,9 @@ public class TrialService : ITrialService
         }
     }
 
-    /// <summary>
-    /// True when the actor's role sits above the per-trial assignment matrix: a manager
-    /// sees and may access every trial without an explicit assignment. A null role
-    /// (legacy/anonymous actor) is never a manager.
-    /// </summary>
     private static bool IsManager(UserRole? role)
         => role is UserRole.SystemAdmin or UserRole.Researcher or UserRole.TrialManager;
 
-    /// <summary>
-    /// Ensures the current actor may access <paramref name="trialId"/>: managers always may;
-    /// every other actor must be explicitly assigned to the trial. A missing identity or a
-    /// trial the caller is not assigned to is denied identically.
-    /// </summary>
-    /// <exception cref="ForbiddenAccessException">The actor is not permitted to access the trial.</exception>
     private async Task EnsureCanAccessTrialAsync(Guid trialId, CancellationToken ct)
     {
         if (IsManager(_currentUser.Role))
@@ -463,15 +357,8 @@ public class TrialService : ITrialService
         }
     }
 
-    /// <summary>
-    /// Loads the trial and enforces per-trial access — the ONE place the
-    /// "existence-check-wins, then managers-or-assigned" gate lives, shared by
-    /// <see cref="EditCellAsync"/> and <see cref="EnsureTrialAccessAsync"/>. The existence
-    /// check deliberately runs first so an unknown trial stays a 404 even for a field worker
-    /// (no existence disclosure change).
-    /// </summary>
-    /// <exception cref="KeyNotFoundException">The trial does not exist.</exception>
-    /// <exception cref="ForbiddenAccessException">The actor is not permitted to access the trial.</exception>
+    // Existence is checked before access, so an unknown trial stays a 404 and its id is never
+    // disclosed to a caller who may not read it.
     private async Task<Trial> LoadTrialForAccessAsync(Guid trialId, CancellationToken ct)
     {
         var trial = await _trialRepository.GetByIdAsync(trialId, ct);
@@ -482,14 +369,6 @@ public class TrialService : ITrialService
         return trial;
     }
 
-    /// <summary>
-    /// Loads the trial and resolves its current workbook export (path + file name + opaque
-    /// version) — the ONE place path resolution happens, shared by
-    /// <see cref="GetWorkbookExportAsync"/> and <see cref="GetSheetAsync"/>.
-    /// </summary>
-    /// <exception cref="KeyNotFoundException">The trial does not exist.</exception>
-    /// <exception cref="ForbiddenAccessException">The actor is not permitted to access the trial.</exception>
-    /// <exception cref="FileNotFoundException">No workbook file is left on disk for the trial.</exception>
     private async Task<ResolvedWorkbookExport> ResolveExportAsync(Guid trialId, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -498,9 +377,6 @@ public class TrialService : ITrialService
         if (trial is null)
             throw new KeyNotFoundException($"Trial '{trialId}' was not found.");
 
-        // Access gate — an existing trial still requires the caller to be a manager or to be
-        // explicitly assigned to it. The existence check above deliberately runs first so an
-        // unknown trial stays a 404 even for a field worker (no existence disclosure change).
         await EnsureCanAccessTrialAsync(trial.Id, ct);
 
         ct.ThrowIfCancellationRequested();

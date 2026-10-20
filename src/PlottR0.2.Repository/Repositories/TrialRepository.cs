@@ -5,10 +5,6 @@ using PlottR0._2.Repository.Persistence;
 
 namespace PlottR0._2.Repository.Repositories;
 
-/// <summary>
-/// EF Core implementation of <see cref="ITrialRepository"/> backed by PostgreSQL
-/// via <see cref="PlottR0DbContext"/>.
-/// </summary>
 public sealed class TrialRepository : ITrialRepository
 {
     private readonly PlottR0DbContext _db;
@@ -19,20 +15,16 @@ public sealed class TrialRepository : ITrialRepository
         _db = db;
     }
 
-    /// <inheritdoc />
     public async Task<Trial?> GetByIdAsync(Guid id, CancellationToken ct = default)
     {
         return await _db.Trials.FindAsync([id], ct);
     }
 
-    /// <inheritdoc />
     public async Task<IReadOnlyList<Trial>> GetAllAsync(
         int? skip = null,
         int? take = null,
         CancellationToken ct = default)
     {
-        // LEFT JOIN the creator so a summary's display name resolves in the same query
-        // (null when the creator was deleted — the FK is SetNull — so the nav is absent).
         IQueryable<Trial> query = _db.Trials
             .Include(t => t.CreatedByUser)
             .OrderByDescending(t => t.CreatedAt);
@@ -46,13 +38,11 @@ public sealed class TrialRepository : ITrialRepository
         return await query.ToListAsync(ct);
     }
 
-    /// <inheritdoc />
     public async Task<bool> ExistsAsync(Guid id, CancellationToken ct = default)
     {
         return await _db.Trials.AnyAsync(t => t.Id == id, ct);
     }
 
-    /// <inheritdoc />
     public async Task<Trial> CreateAsync(Trial trial, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(trial);
@@ -62,7 +52,6 @@ public sealed class TrialRepository : ITrialRepository
         return trial;
     }
 
-    /// <inheritdoc />
     public async Task SetAssignmentsAsync(
         Guid trialId,
         IReadOnlyList<Guid> userIds,
@@ -71,8 +60,6 @@ public sealed class TrialRepository : ITrialRepository
     {
         ArgumentNullException.ThrowIfNull(userIds);
 
-        // Replace semantics: clear the trial's current assignment set, then insert
-        // the new one. Both changes commit in a single SaveChangesAsync below.
         var existing = await _db.Assignments
             .Where(a => a.TrialId == trialId)
             .ToListAsync(ct);
@@ -96,7 +83,6 @@ public sealed class TrialRepository : ITrialRepository
         await _db.SaveChangesAsync(ct);
     }
 
-    /// <inheritdoc />
     public async Task<IReadOnlyList<TrialAssignment>> GetAssignmentsAsync(
         Guid trialId,
         CancellationToken ct = default)
@@ -107,7 +93,6 @@ public sealed class TrialRepository : ITrialRepository
             .ToListAsync(ct);
     }
 
-    /// <inheritdoc />
     public async Task<IReadOnlyList<Guid>> GetAssignedTrialIdsAsync(
         Guid userId,
         CancellationToken ct = default)
@@ -118,7 +103,6 @@ public sealed class TrialRepository : ITrialRepository
             .ToListAsync(ct);
     }
 
-    /// <inheritdoc />
     public async Task<bool> IsAssignedAsync(
         Guid trialId,
         Guid userId,
@@ -128,7 +112,6 @@ public sealed class TrialRepository : ITrialRepository
             .AnyAsync(a => a.TrialId == trialId && a.UserId == userId, ct);
     }
 
-    /// <inheritdoc />
     public async Task UpdateStatusAsync(
         Guid trialId,
         string status,
@@ -136,9 +119,6 @@ public sealed class TrialRepository : ITrialRepository
     {
         ArgumentNullException.ThrowIfNull(status);
 
-        // Single round-trip: set ONLY the status column (+ audit timestamp) without loading
-        // the entity — the sync pipeline persists the dashboard badge lifecycle, mirroring
-        // the ExecuteUpdateAsync pattern used by RefreshTokenRepository.
         var updated = await _db.Trials
             .Where(t => t.Id == trialId)
             .ExecuteUpdateAsync(

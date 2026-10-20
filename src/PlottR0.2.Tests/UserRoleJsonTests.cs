@@ -4,12 +4,6 @@ using PlottR0._2.Domain;
 
 namespace PlottR0._2.Tests;
 
-/// <summary>
-/// Locks the JSON wire contract for <see cref="UserRole"/>: PascalCase member-name
-/// strings (never integers), via the converter attribute on the enum type itself.
-/// Covers both the MVC/DTO path and the static <c>JsonSerializer.Serialize</c>
-/// path used by <c>UserService</c>'s audit payloads.
-/// </summary>
 public sealed class UserRoleJsonTests
 {
     [Fact]
@@ -32,8 +26,6 @@ public sealed class UserRoleJsonTests
     [Fact]
     public void Serialize_NullableRolePropertyInAnonymousObject_EmitsString()
     {
-        // This is the exact static-path shape UserService serializes for the audit trail:
-        // JsonSerializer.Serialize(new { email, name, role = entity.Role }).
         UserRole? role = UserRole.SystemAdmin;
 
         var json = JsonSerializer.Serialize(new { email = "a@b.c", name = "A", role });
@@ -63,8 +55,6 @@ public sealed class UserRoleJsonTests
     [Fact]
     public void Deserialize_UnknownRoleString_ThrowsJsonException()
     {
-        // Unknown role names must fail binding rather than silently coerce; in MVC
-        // with [ApiController] this surfaces as HTTP 400.
         var act = () => JsonSerializer.Deserialize<UserRole?>("\"Agronomist\"");
 
         act.Should().Throw<JsonException>();

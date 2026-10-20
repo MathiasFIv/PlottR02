@@ -79,6 +79,12 @@ dev-dist/
 coverage/
 *.lcov
 
+# ── Mutation testing (Stryker.NET generated reports — local-only) ──
+StrykerOutput/
+
+# ── Load tests (k6 summaries + generated fixtures — local/CI-only) ──
+loadtests/results/
+
 # ── Python (STT sidecar & tooling) ────────────────────
 .venv/
 venv/

@@ -10,18 +10,9 @@ using PlottR0._2.Services.Implementations;
 
 namespace PlottR0._2.Tests;
 
-/// <summary>
-/// Unit tests for <see cref="AuthService"/> refresh-token rotation and reuse
-/// detection. Covers the grace-window behaviour that prevents a concurrent
-/// refresh race (PWA + tab sharing an origin) from revoking the whole token
-/// family, while preserving family revocation for genuine replay beyond grace.
-/// No Testcontainers / Postgres — pure in-memory fakes.
-/// </summary>
 public sealed class AuthServiceTests
 {
     private static readonly Guid UserId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-
-    // ------------------------------------------------------------------ fakes
 
     private sealed class FakeUserService : IUserService
     {
@@ -69,11 +60,6 @@ public sealed class AuthServiceTests
         public int RefreshTokenLifetimeDays => 7;
     }
 
-    /// <summary>
-    /// In-memory refresh-token store keyed by the stored SHA-256 hash, with the
-    /// same atomic single-use semantics (RevokeAsync only transitions active rows)
-    /// that the real repository implements in SQL.
-    /// </summary>
     private sealed class FakeRefreshTokenRepository : IRefreshTokenRepository
     {
         private readonly Dictionary<string, RefreshToken> _byHash = new();
@@ -139,8 +125,6 @@ public sealed class AuthServiceTests
         }
     }
 
-    // ------------------------------------------------------------- test setup
-
     private static AuthService CreateService(FakeRefreshTokenRepository repo)
         => new(
             new FakeUserService(),
@@ -151,7 +135,6 @@ public sealed class AuthServiceTests
     private static string Hash(string plain)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(plain)));
 
-    /// <summary>Builds an entity with the given plaintext already hashed for storage.</summary>
     private static RefreshToken Token(string plain, DateTime? revokedAt = null, bool revoked = false)
         => new()
         {
@@ -165,8 +148,6 @@ public sealed class AuthServiceTests
         };
 
     private static RefreshRequest Request(string plain) => new() { RefreshToken = plain };
-
-    // ------------------------------------------------------------------- tests
 
     [Fact]
     public async Task RefreshAsync_ActiveToken_RotatesAndIssuesFreshPair()
@@ -183,7 +164,7 @@ public sealed class AuthServiceTests
         response.RefreshToken.Should().NotBe(plain);
         repo.RevokedIds.Should().ContainSingle();
         repo.FamilyRevocationCount.Should().Be(0);
-        // The successor token is stored and active.
+
         var successor = await repo.GetByHashedTokenAsync(Hash(response.RefreshToken));
         successor.Should().NotBeNull();
         successor!.IsRevoked.Should().BeFalse();
@@ -204,8 +185,6 @@ public sealed class AuthServiceTests
 
         var response = await service.RefreshAsync(Request(reused));
 
-        // Grace path mints a fresh pair, rotates the live successor, and does NOT
-        // revoke the family — this is the fix for the PWA + tab refresh race.
         response.AccessToken.Should().NotBeNullOrEmpty();
         response.RefreshToken.Should().NotBeNullOrEmpty();
         repo.FamilyRevocationCount.Should().Be(0);
@@ -237,7 +216,7 @@ public sealed class AuthServiceTests
         var service = CreateService(repo);
         const string oldReused = "rt-old-replay";
         const string successorPlain = "rt-some-successor";
-        // Replayed long after revocation — a genuine token leak, not a tab race.
+
         repo.Seed(Token(oldReused, revokedAt: DateTime.UtcNow.AddMinutes(-10), revoked: true));
         repo.Seed(Token(successorPlain));
 

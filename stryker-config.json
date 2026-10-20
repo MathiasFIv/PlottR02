@@ -1,0 +1,28 @@
+{
+  "stryker-config": {
+    "solution": "PlottR0.2.slnx",
+    "project": "PlottR0.2.Services.csproj",
+    "test-projects": [
+      "src/PlottR0.2.Tests/PlottR0.2.Tests.csproj"
+    ],
+    "mutate": [
+      "**/*.cs",
+      "!**/obj/**",
+      "!**/bin/**"
+    ],
+    "thresholds": {
+      "high": 60,
+      "low": 40,
+      "break": 40
+    },
+    "reporters": [
+      "html",
+      "json",
+      "progress"
+    ],
+    "coverage-analysis": "perTest",
+    "configuration": "Release",
+    "verbosity": "info",
+    "report-file-name": "mutation-report-services"
+  }
+}

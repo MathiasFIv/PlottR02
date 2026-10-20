@@ -7,17 +7,12 @@ using PlottR0._2.Services.Implementations;
 
 namespace PlottR0._2.Tests;
 
-/// <summary>
-/// Unit tests for <see cref="TokenService"/>. No Testcontainers / Postgres —
-/// only requires <see cref="IOptions{T}"/> and a <see cref="UserResponse"/>.
-/// </summary>
 public sealed class TokenServiceTests
 {
     private static readonly Guid UserId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     private const string UserEmail = "alice@example.com";
     private const string UserName = "Alice";
 
-    /// <summary>The role carried by the fixture user — an enum value, not a string.</summary>
     private const UserRole SampleRole = UserRole.Researcher;
 
     private static TokenService CreateService()
@@ -43,14 +38,11 @@ public sealed class TokenServiceTests
     [Fact]
     public void GenerateAccessToken_WithRole_ProducesCorrectClaims()
     {
-        // Arrange
         var service = CreateService();
         var user = CreateUser();
 
-        // Act
         var token = service.GenerateAccessToken(user);
 
-        // Assert — decode raw payload claims (no inbound mapping)
         var decoded = new JwtSecurityTokenHandler().ReadJwtToken(token);
 
         decoded.Claims.Should().Contain(c => c.Type == "sub" && c.Value == UserId.ToString());
@@ -59,7 +51,6 @@ public sealed class TokenServiceTests
         decoded.Claims.Should().Contain(c => c.Type == "role" && c.Value == SampleRole.ToString());
         decoded.Claims.Should().Contain(c => c.Type == "jti");
 
-        // Legacy mapped names must NOT appear
         decoded.Claims.Should().NotContain(c => c.Type == "nameid");
         decoded.Claims.Should().NotContain(c => c.Type == "unique_name");
         decoded.Claims.Should().NotContain(c =>
@@ -69,14 +60,11 @@ public sealed class TokenServiceTests
     [Fact]
     public void GenerateAccessToken_EnumRole_EmitsMemberNameAsString_NotInteger()
     {
-        // Arrange — the wire contract is the PascalCase member name, never the ordinal.
         var service = CreateService();
         var user = CreateUser(UserRole.FieldWorker);
 
-        // Act
         var token = service.GenerateAccessToken(user);
 
-        // Assert
         var decoded = new JwtSecurityTokenHandler().ReadJwtToken(token);
         decoded.Claims.Should().ContainSingle(c => c.Type == "role")
             .Which.Value.Should().Be("FieldWorker");
@@ -86,14 +74,11 @@ public sealed class TokenServiceTests
     [Fact]
     public void GenerateAccessToken_NullRole_OmitsRoleClaim()
     {
-        // Arrange
         var service = CreateService();
         var user = CreateUser(role: null);
 
-        // Act
         var token = service.GenerateAccessToken(user);
 
-        // Assert
         var decoded = new JwtSecurityTokenHandler().ReadJwtToken(token);
 
         decoded.Claims.Should().Contain(c => c.Type == "sub" && c.Value == UserId.ToString());

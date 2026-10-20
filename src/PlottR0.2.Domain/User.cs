@@ -8,8 +8,5 @@ public class User : AuditableEntity
     public UserRole? Role { get; set; }
     public string PasswordHash { get; set; } = string.Empty;
 
-    /// <summary>
-    /// Trials this user is assigned to work on.
-    /// </summary>
     public List<TrialAssignment> Assignments { get; set; } = [];
 }

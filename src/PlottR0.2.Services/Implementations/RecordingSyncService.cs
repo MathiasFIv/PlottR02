@@ -9,43 +9,6 @@ using PlottR0._2.Services.Abstractions;
 
 namespace PlottR0._2.Services.Implementations;
 
-/// <summary>
-/// Concrete <see cref="IRecordingSyncService"/> that wires the V2E "send now" pipeline
-/// end-to-end (design.md V2E auto-sync, locked plan):
-/// <list type="number">
-///   <item><description>Normalize the confirmed fields (plot/subsample ≤ 0 are treated as
-///   unconfirmed so the transcript becomes authoritative; value keeps 0 as legal).</description></item>
-///   <item><description>Buffer the audio into a rewindable stream.</description></item>
-///   <item><description>Idempotency gate on <see cref="VoiceRecording.ClientRecordingId"/> —
-///   a repeat key short-circuits as a <see cref="VoiceRecordingStatus.Replay"/>.</description></item>
-///   <item><description>Trial gate — unknown trials throw <see cref="KeyNotFoundException"/>.</description></item>
-///   <item><description>Value gate (A) — out-of-range confirmed values are stored but never
-///   transcribed/written.</description></item>
-///   <item><description>Persist the audio blob via <see cref="IVoiceBlobStore"/>.</description></item>
-///   <item><description>Create the <c>VoiceRecording</c> audit row (task contract: the row exists before any scoring).</description></item>
-///   <item><description>Transcribe; a sidecar failure degrades to an empty transcript.</description></item>
-///   <item><description>Parse the transcript via <see cref="TranscriptParser"/>.</description></item>
-///   <item><description>Value gate (B) — when NO legal value can be resolved (confirmed or
-///   parsed), the recording is flagged for review and never written.</description></item>
-///   <item><description>Locked-overwrite policy write of the RESOLVED values into a workbook
-///   copy in CATEGORY-BLOCK APPEND mode: the values land in the row's next free cells inside
-///   the Part Rated category block (row-8 metadata LEAF1/LEAF2/LEAF3) so successive voices
-///   on one plot accumulate leaf by leaf, never overwriting present cells (a correction
-///   later re-runs the same category-block append scan on the stored row instead). The read
-///   source chains: the newest existing <c>*_out_*.xlsx</c> copy in the trial's working
-///   directory is the input for the next sync; falls back to the pristine
-///   <c>SourceWorkbookPath</c> when no copy exists yet.</description></item>
-///   <item><description>Commit decision: <c>Written</c> / <c>SkippedPresent</c> / <c>Flagged</c>.</description></item>
-///   <item><description>Contract update — persist status, parsed fields, transcript, confidence.</description></item>
-///   <item><description>Build and return the <see cref="SyncVoiceRecordingResult"/>.</description></item>
-/// </list>
-/// Corrections (<see cref="CorrectAsync"/>) reuse the stored blob, row and transcript —
-/// no re-upload or re-transcription ever happens on the correction path.
-/// Uses only repository/service contracts. The trial workbook is addressed by an ABSOLUTE
-/// path resolved against the repo-root <c>Service/</c> directory (the same walk
-/// <c>TrialWorkbookStore</c>/<c>ClosedXmlRatingRepository</c> perform), so this layer stays
-/// free of Repository-project references.
-/// </summary>
 public sealed class RecordingSyncService : IRecordingSyncService
 {
     private readonly IVoiceRecordingRepository _voiceRecordings;
@@ -58,62 +21,21 @@ public sealed class RecordingSyncService : IRecordingSyncService
     private readonly ICurrentUser _currentUser;
     private readonly ILogger<RecordingSyncService> _logger;
 
-    /// <summary>Lowest legal rating value (design.md §9).</summary>
     public const int MinRating = 0;
 
-    /// <summary>Highest legal rating value (design.md §9).</summary>
+    // Mirrors TranscriptParser.ValueCeiling (a drift test pins the two together).
     public const int MaxRating = 10;
 
-    /// <summary>
-    /// Complete parses scoring below this confidence require manual review — the write still
-    /// proceeds from the resolved (confirmed ?? parsed) fields.
-    /// </summary>
+    // A parse below this score needs manual review; a repaired (glued-digit) parse is capped at
+    // 0.70, so it always lands in review.
     public const double ReviewConfidenceThreshold = 0.75;
 
-    /// <summary>
-    /// Upper bound on the diagnostic transcription-failure text echoed on
-    /// <see cref="SyncVoiceRecordingResult.TranscriptionError"/>, so an unexpectedly large
-    /// provider error message can never bloat the sync response.
-    /// </summary>
     private const int MaxTranscriptionErrorLength = 300;
 
-    /// <summary>
-    /// Empty subsample set used when no legal subsample can be resolved — the write attempt
-    /// is skipped and the recording is flagged rather than writing to every subsample.
-    /// </summary>
     private static readonly IReadOnlySet<int> EmptySubsampleSet = new HashSet<int>();
 
-    /// <summary>
-    /// A parse that stated nothing, used when <see cref="BuildResult"/> derives default-target
-    /// usage for paths that never ran a parse (replay, value gate A, out-of-range store). Those
-    /// paths have an empty transcript, so resolving them as a parse whose fields are all
-    /// <see langword="null"/> matches how a real empty parse behaves for default resolution.
-    /// </summary>
     private static readonly TranscriptParseResult EmptyParse = new();
 
-    /// <summary>
-    /// Creates a new <see cref="RecordingSyncService"/>.
-    /// </summary>
-    /// <param name="voiceRecordings">Repository of <c>VoiceRecording</c> audit rows.</param>
-    /// <param name="blobStore">File-system blob store for the raw audio.</param>
-    /// <param name="transcriptionService">Speech-to-text sidecar gateway.</param>
-    /// <param name="trials">Trial repository used for the trial gate and workbook path.</param>
-    /// <param name="ratings">Workbook-backed rating repository performing the policy write.</param>
-    /// <param name="trialWorkbooks">
-    /// Workbook store resolving the trial's read source (newest accumulated output copy or the
-    /// pristine source) and exposing the trial's working directory; also rehydrates a cold
-    /// local cache from durable storage and persists written artifacts after a successful sync.
-    /// </param>
-    /// <param name="writeGate">
-    /// Per-trial write serialization held around each workbook critical section below, so a
-    /// sync and a correction (or a manual cell edit) of one trial never resolve the same input
-    /// copy in parallel. See <see cref="ITrialWriteGate"/>.
-    /// </param>
-    /// <param name="currentUser">
-    /// The acting identity, used for the per-trial access gate: a field worker may only sync
-    /// to (or correct) trials they are assigned to.
-    /// </param>
-    /// <param name="logger">Logger for sync diagnostics.</param>
     public RecordingSyncService(
         IVoiceRecordingRepository voiceRecordings,
         IVoiceBlobStore blobStore,
@@ -136,7 +58,11 @@ public sealed class RecordingSyncService : IRecordingSyncService
         _logger = logger;
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Idempotent sync (see <see cref="IRecordingSyncService.SyncAsync"/>). The review terms overlap
+    /// on purpose: the <c>!IsComplete</c> term is a forward guard for a different failure mode, so it
+    /// must not be "cleaned up" merely because the confidence term also fires today.
+    /// </summary>
     public async Task<SyncVoiceRecordingResult> SyncAsync(
         Stream audio,
         string fileName,
@@ -146,68 +72,42 @@ public sealed class RecordingSyncService : IRecordingSyncService
         ArgumentNullException.ThrowIfNull(audio);
         ArgumentNullException.ThrowIfNull(command);
 
-        // Step 0 — Normalize the confirmed fields BEFORE any gate (design.md §3). A null OR
-        // non-positive plot/subsample means "not confirmed" so the transcript becomes
-        // authoritative for that field; value 0 is a legal "no plants" rating and is NEVER
-        // treated as absent. All later decisions use these normalized values (c*), never the
-        // raw command fields, so an all-zeros legacy payload degrades to a transcript-only sync.
         var cPlot = command.Plot is int cp && cp > 0 ? cp : (int?)null;
         var cSubsample = command.Subsample is int cs && cs > 0 ? cs : (int?)null;
         var cValue = command.Value;
 
-        // The RESOLVED trait ordinal for the audit row: an absent form field binds to 0, and a
-        // non-positive value means the client confirmed no anchor, so the row stores the
-        // normalized 1 — the anchor the write actually used (see
-        // VoiceRecording.ResolvedTraitOrdinal). Values above 9 pass normalization unchanged
-        // and are stored verbatim as the flagged row's evidence.
         var cTraitOrdinal = NormalizeTraitOrdinal(command.TraitOrdinal);
 
-        // Step 1 — Buffer: the blob store and the transcription service each consume the
-        // stream, so one rewindable buffer feeds both without re-reading the caller's source.
         using var buffered = new MemoryStream();
         await audio.CopyToAsync(buffered, ct);
 
         var clientId = command.ClientRecordingId.ToString();
 
-        // Step 2 — Idempotency gate: the client recording id is the PWA idempotency key.
-        // A repeat short-circuits BEFORE any blob/workbook work; the existing row is simply
-        // re-marked Replay and the caller gets a Replayed result.
         var existing = await _voiceRecordings.GetByClientRecordingIdAsync(clientId, ct);
         if (existing is not null)
         {
             return await ReplayAsync(existing, command, cPlot, cSubsample, cValue, ct);
         }
 
-        // Step 3 — Trial gate: an unknown trial is a hard client error, not a flaggable sync.
         var trial = await _trials.GetByIdAsync(command.TrialId, ct);
         if (trial is null)
         {
             throw new KeyNotFoundException($"Trial '{command.TrialId}' was not found.");
         }
 
-        // Step 3b — Access gate: managers may sync to any trial; a field worker may only
-        // sync to a trial they are assigned to. Ordered AFTER the existence check so an
-        // unknown trial stays a 404 (matching the pre-increment behaviour) and BEFORE any
-        // blob/row/workbook write. (The replay path is gated by ReplayAsync.)
         await EnsureCanAccessTrialAsync(trial.Id, ct);
 
         var mimeType = MimeTypeFromFileName(fileName);
 
-        // Step 4 — Value gate A: an out-of-range CONFIRMED value is never transcribed or
-        // written, but the recording is STILL stored and an audit row created (Status=Flagged)
-        // so nothing is lost.
         if (cValue is < MinRating or > MaxRating)
         {
             return await StoreOutOfRangeAsync(
                 trial, clientId, mimeType, buffered, command, cPlot, cSubsample, cValue, ct);
         }
 
-        // Step 5 — Blob save: persist the raw audio for audit/re-transcription.
         buffered.Position = 0;
         var blobPath = await _blobStore.SaveAsync(trial.Id, clientId, mimeType, buffered, ct);
 
-        // Step 6 — Audit row: the VoiceRecording row (Received) exists BEFORE any downstream
-        // work and carries the NORMALIZED confirmed fields from the command (contract truth).
         var recording = CreateRecording(
             trial.Id, clientId, blobPath, mimeType, cPlot, cSubsample, cValue, cTraitOrdinal,
             command.CreatedAt, VoiceRecordingStatus.Received);
@@ -217,13 +117,10 @@ public sealed class RecordingSyncService : IRecordingSyncService
         }
         catch (ClientRecordingIdConflictException)
         {
-            // TOCTOU: a concurrent double-submit raced past the idempotency gate and committed
-            // first. Its row owns the same blob path (same client key), so the blob stays and
-            // the loser is answered as a Replay without touching the winner's row.
             var winner = await _voiceRecordings.GetByClientRecordingIdAsync(clientId, ct);
             if (winner is null)
             {
-                throw; // The conflict row vanished — surface the original failure.
+                throw;
             }
 
             _logger.LogInformation(
@@ -234,16 +131,10 @@ public sealed class RecordingSyncService : IRecordingSyncService
         }
         catch (Exception)
         {
-            // The audit row never committed — delete the orphaned blob so the working
-            // directory does not accumulate unreferenced audio, then rethrow.
             await _blobStore.DeleteAsync(blobPath, ct);
             throw;
         }
 
-        // Step 7 — Transcribe. A sidecar failure (downtime/timeout) degrades to an empty
-        // transcript; the sync then proceeds from the resolved fields and the recording is
-        // flagged for review. Only the documented failure signals are caught — programming
-        // errors must surface.
         var transcript = string.Empty;
         var transcriptionFailed = false;
         var transcriptionError = string.Empty;
@@ -255,8 +146,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // A caller-cancelled request must propagate BEFORE the sidecar-outage catch
-            // below swallows TaskCanceledException as a degradation.
             throw;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
@@ -269,12 +158,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 clientId);
         }
 
-        // Step 8 — Parse: format-only by contract — range/existence validation happens
-        // against the workbook in the policy write and the review gate below. The one
-        // exception is the parser's ceiling-bounded glued-digit repair, which re-splits a
-        // value token Whisper glued together ("Values 398" → 3, 9, 8) and caps confidence
-        // at 0.70. The RAW transcript stays the source of truth on the row and the echo,
-        // so the log line below is where the repair becomes visible to ops.
         var parsed = TranscriptParser.Parse(transcript);
 
         if (parsed.Repaired)
@@ -285,15 +168,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 clientId, transcript);
         }
 
-        // Step 9 — Resolution (design.md §3): the confirmed field wins per field; a missing
-        // or non-positive confirmed field falls back to the parsed transcript value, then to
-        // the CLIENT-SENT DEFAULT TARGET (design.md V2E default memory, "plot/subsample
-        // default memory"): a values-only utterance that omitted plot/subsample re-uses the
-        // target the PWA remembers from the previous successful utterance. The subsample
-        // default is guarded — a NEW plot spoken in the transcript (different from the
-        // default plot) never inherits the previous subsample cursor. Values resolve as a
-        // LIST: a confirmed value is a single-cell correction (one entry), while an
-        // unconfirmed value resolves to the transcript's multi-value list ("values 3 6 1").
         var defaultPlot = command.DefaultPlot is int dp && dp > 0 ? dp : (int?)null;
         var defaultSubsample = command.DefaultSubsample is int ds && ds > 0 ? ds : (int?)null;
         var plot = cPlot ?? parsed.Plot ?? defaultPlot;
@@ -306,10 +180,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
 
         IReadOnlyList<int> values = cValue is int cv ? new[] { cv } : parsed.Values;
 
-        // Step 10 — Value gate B: when NO legal value can be resolved (no confirmed value
-        // and the transcript stated none, or ANY resolved value is out of range), the
-        // recording is flagged for review and NEVER written — a rating sheet must not receive
-        // an invalid or guessed value.
         if (values.Count == 0 || values.Any(v => v is < MinRating or > MaxRating))
         {
             recording.Status = VoiceRecordingStatus.Flagged;
@@ -338,10 +208,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 transcriptionError: transcriptionError);
         }
 
-        // Step 10b — TraitOrdinal gate (defense in depth): traitOrdinal spans 1..9; the
-        // voice client may omit it (binds to 0), which the server interprets as 1 — the
-        // append scan then starts at column C and walks the Part Rated category blocks
-        // (row 8). Only an explicit traitOrdinal above 9 is invalid and flagged.
         var traitOrdinal = NormalizeTraitOrdinal(command.TraitOrdinal);
         if (traitOrdinal > 9)
         {
@@ -370,13 +236,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 transcriptionError: transcriptionError);
         }
 
-        // Step 11 — Policy write (design.md §3): the sync offers exactly the RESOLVED
-        // subsample with the resolved VALUES list in CATEGORY-BLOCK APPEND mode
-        // (scanForFreeCells): the values are written into the row's next free cells inside
-        // the Part Rated category block containing them (row-8 metadata: LEAF1/LEAF2/LEAF3),
-        // never overwriting present cells and never spilling across a category boundary. An
-        // unconfirmed-and-unparsed plot or subsample leaves nothing addressable, so the
-        // write attempt is skipped and the outcome is Flagged.
         var subsampleSet = subsample is int s && s > 0
             ? (IReadOnlySet<int>)new HashSet<int> { s }
             : EmptySubsampleSet;
@@ -386,20 +245,10 @@ public sealed class RecordingSyncService : IRecordingSyncService
         {
             try
             {
-                // Serialize this read-modify-write against every other writer of the trial
-                // (a concurrent sync, correction or manual cell edit): without the gate both
-                // sides resolve the same input copy and the later export overwrites the
-                // earlier write. Other trials are unaffected. See ITrialWriteGate.
                 using var writeGate = await _writeGate.AcquireAsync(trial.Id, ct);
 
                 var outputDirectory = _trialWorkbooks.GetWorkingDirectory(trial.Id);
 
-                // Successive syncs chain the read source: the newest output copy (if any) is
-                // the input, so a later recording sees cells written by an earlier one; the
-                // pristine source workbook is the fallback. ResolveExportAsync rehydrates a cold
-                // local cache from durable storage first, so a redeployed instance still sees the
-                // accumulated state. A null result (nothing on disk and nothing durable) is
-                // surfaced as a FileNotFoundException so the catch below flags the recording.
                 var resolvedWorkbook = await _trialWorkbooks.ResolveExportAsync(
                     trial.Id, trial.SourceWorkbookPath ?? string.Empty, ct)
                     ?? throw new FileNotFoundException(
@@ -414,16 +263,10 @@ public sealed class RecordingSyncService : IRecordingSyncService
                     subsampleSet,
                     scanForFreeCells: true);
 
-                // Trial status lifecycle (dashboard badge): a policy write that actually
-                // LANDED (non-null with written cells) advances the trial. The recompute
-                // re-reads the copy this write just exported — the same workbook the sheet
-                // endpoint serves — so the status reflects exactly what the UI shows.
                 if (policy is not null && policy.WrittenCells.Count > 0)
                 {
-                    await RecomputeTrialStatusAsync(trial, outputDirectory, resolvedWorkbook.FilePath, ct);
+                    await RecomputeTrialStatusAsync(trial, policy.OutputPath!, ct);
 
-                    // Mirror the accumulated sync state into durable storage so it survives a
-                    // redeploy — a later sync on a fresh instance must chain on this copy.
                     await _trialWorkbooks.PersistTrialFilesAsync(trial.Id, ct);
                 }
             }
@@ -435,12 +278,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
             }
         }
 
-        // Step 12 — Commit decision (design.md V2E flowchart): write what is free, skip what
-        // is already present, flag what cannot be written.
         var status = SelectStatus(policy);
 
-        // Step 13 — Contract update: persist the terminal status, the parse outcome and the
-        // transcript alongside the confirmed fields already stored on the row.
         recording.Status = status;
         recording.Transcript = transcript;
         recording.ParsedPlot = parsed.Plot;
@@ -450,21 +289,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
         recording.UpdatedAt = DateTime.UtcNow;
         await _voiceRecordings.UpdateAsync(recording, ct);
 
-        // Step 14 — Review gate, logging and result (design.md §3): any transcription
-        // failure, an unresolved target field, per-field disagreement with the confirmed
-        // fields, or a non-Written status requires a human review. The parser's
-        // IsComplete/confidence no longer disables a VOICE-ONLY values utterance outright:
-        // under a client-sent default target (UsedDefaultTarget) such an utterance
-        // deliberately omits plot/subsample, so its low-confidence partial parse is
-        // expected — the write itself is the authority and a Written result needs no review.
-        // When ANY part of the target was spoken, or no defaults applied, the existing
-        // conservative checks stay intact.
-        //
-        // The IsComplete term is deliberately NOT redundant-looking: today the parser scores
-        // every incomplete parse at confidence 0.5, below the threshold, so the confidence
-        // term already forces review. It is kept because it encodes a different failure mode
-        // (a missing field) than the confidence term (a fuzzy parse), and the two would
-        // diverge if the parser's confidence bands changed.
         var (usedDefaultPlot, usedDefaultSubsample) = ResolveDefaultUsage(cPlot, cSubsample, parsed, command);
         var usedDefaultTarget = usedDefaultPlot || usedDefaultSubsample;
         var targetFullyKnown = (cPlot is not null || parsed.Plot is not null || usedDefaultPlot)
@@ -493,7 +317,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
             transcriptionError: transcriptionError);
     }
 
-    /// <inheritdoc />
     public async Task<SyncVoiceRecordingResult> CorrectAsync(
         string clientRecordingId,
         int plot,
@@ -504,8 +327,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
     {
         ArgumentNullException.ThrowIfNull(clientRecordingId);
 
-        // Normalize like the sync path: non-positive plot/subsample means the correction
-        // cannot address a cell; value 0 stays legal.
         var cPlot = plot > 0 ? plot : (int?)null;
         var cSubsample = subsample > 0 ? subsample : (int?)null;
         if (cPlot is null || cSubsample is null)
@@ -517,11 +338,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
 
         var cValue = value;
 
-        // TraitOrdinal normalization (mirrors the sync path): the voice client may omit
-        // traitOrdinal (binds to 0), which the server interprets as 1 — the correction's
-        // append scan then starts at column C and walks the Part Rated category blocks.
-        // Only an explicit traitOrdinal above 9 remains invalid and is flagged below.
-        // The RESOLVED (normalized) value is persisted on both paths.
         traitOrdinal = NormalizeTraitOrdinal(traitOrdinal);
 
         var recording = await _voiceRecordings.GetByClientRecordingIdAsync(clientRecordingId, ct);
@@ -530,21 +346,14 @@ public sealed class RecordingSyncService : IRecordingSyncService
             throw new KeyNotFoundException($"Voice recording '{clientRecordingId}' was not found.");
         }
 
-        // Access gate: correcting a recording is a write against its trial, so a non-manager
-        // must be assigned to that trial (the recording's own trial id is already loaded, so
-        // this costs one indexed membership check). Ordered before any row update.
         await EnsureCanAccessTrialAsync(recording.TrialId ?? Guid.Empty, ct);
 
-        // Terminal rows are immutable: a Written/SkippedPresent outcome can only be revised
-        // by direct workbook editing, not by a correction request.
         if (recording.Status is VoiceRecordingStatus.Written or VoiceRecordingStatus.SkippedPresent)
         {
             throw new InvalidOperationException(
                 $"Voice recording '{clientRecordingId}' is already {recording.Status} and cannot be corrected.");
         }
 
-        // Value gate A (mirrors the sync path): an out-of-range review value is never written.
-        // The row is updated with the reviewer's confirmed fields and flagged for attention.
         if (cValue is < MinRating or > MaxRating)
         {
             recording.ConfirmedPlot = cPlot;
@@ -570,9 +379,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 submittedAt: DateTimeOffset.UtcNow);
         }
 
-        // TraitOrdinal gate (mirrors the sync path): only an explicit traitOrdinal ABOVE 9 is
-        // invalid — it cannot address a cell, so the correction is flagged without writing.
-        // A missing/zero ordinal was already normalized to 1 above.
         if (traitOrdinal > 9)
         {
             recording.ConfirmedPlot = cPlot;
@@ -604,25 +410,15 @@ public sealed class RecordingSyncService : IRecordingSyncService
             throw new KeyNotFoundException($"Trial '{recording.TrialId}' was not found.");
         }
 
-        // Correction re-runs the same category-block append scan the voice sync uses (single
-        // confirmed value → first free cell of the row's Part Rated categories, strict block
-        // rule, skipped occupied cells silently). The stored blob + transcript are reused —
-        // no re-upload, no re-transcription.
         PolicyWritePlotColumnResult? policy = null;
         if (cPlot is int confirmedPlot && cSubsample is int confirmedSubsample)
         {
             try
             {
-                // Same per-trial serialization as the sync path above — a correction racing a
-                // sync (or another correction) on this trial must not resolve the same input.
                 using var writeGate = await _writeGate.AcquireAsync(trial.Id, ct);
 
                 var outputDirectory = _trialWorkbooks.GetWorkingDirectory(trial.Id);
 
-                // Same chained read source as the voice sync: the newest accumulated output copy
-                // (rehydrated from durable storage on a cold cache) is the input; the pristine
-                // source is the fallback. A null result is surfaced as FileNotFoundException so
-                // the catch below flags the recording.
                 var resolvedWorkbook = await _trialWorkbooks.ResolveExportAsync(
                     trial.Id, trial.SourceWorkbookPath ?? string.Empty, ct)
                     ?? throw new FileNotFoundException(
@@ -637,15 +433,10 @@ public sealed class RecordingSyncService : IRecordingSyncService
                     new HashSet<int> { confirmedSubsample },
                     scanForFreeCells: true);
 
-                // Trial status lifecycle (dashboard badge) — same rule as the voice sync: a
-                // correction that actually wrote values advances the trial; the recompute
-                // re-reads the copy this write just exported.
                 if (policy is not null && policy.WrittenCells.Count > 0)
                 {
-                    await RecomputeTrialStatusAsync(trial, outputDirectory, resolvedWorkbook.FilePath, ct);
+                    await RecomputeTrialStatusAsync(trial, policy.OutputPath!, ct);
 
-                    // Mirror the accumulated sync state into durable storage so it survives a
-                    // redeploy — a later sync on a fresh instance must chain on this copy.
                     await _trialWorkbooks.PersistTrialFilesAsync(trial.Id, ct);
                 }
             }
@@ -667,8 +458,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
         recording.UpdatedAt = DateTime.UtcNow;
         await _voiceRecordings.UpdateAsync(recording, ct);
 
-        // The reviewer supplied the full target, so no transcription/parse review signal
-        // applies — only the commit outcome determines review.
         var needsReview = status is VoiceRecordingStatus.Flagged or VoiceRecordingStatus.SkippedPresent;
 
         _logger.LogInformation(
@@ -686,21 +475,9 @@ public sealed class RecordingSyncService : IRecordingSyncService
             submittedAt: DateTimeOffset.UtcNow);
     }
 
-    /// <summary>
-    /// True when the actor's role sits above the per-trial assignment matrix: a manager may
-    /// record against (or correct) any trial without an explicit assignment. A null role
-    /// (legacy/anonymous actor) is never a manager.
-    /// </summary>
     private static bool IsManager(UserRole? role)
         => role is UserRole.SystemAdmin or UserRole.Researcher or UserRole.TrialManager;
 
-    /// <summary>
-    /// Ensures the current actor may touch <paramref name="trialId"/>: managers always may;
-    /// every other actor must be explicitly assigned to the trial. A missing identity or a
-    /// trial the caller is not assigned to is denied identically. Called before any blob,
-    /// row or workbook write so a denied sync leaves no trace.
-    /// </summary>
-    /// <exception cref="ForbiddenAccessException">The actor is not permitted to access the trial.</exception>
     private async Task EnsureCanAccessTrialAsync(Guid trialId, CancellationToken ct)
     {
         if (IsManager(_currentUser.Role))
@@ -715,10 +492,8 @@ public sealed class RecordingSyncService : IRecordingSyncService
     }
 
     /// <summary>
-    /// Answers a repeated sync with <see cref="VoiceRecordingStatus.Replay"/> WITHOUT touching
-    /// the stored row: the first submission's terminal status (e.g. Written) must not be
-    /// clobbered by a retry, so no <see cref="IVoiceRecordingRepository.UpdateAsync"/> is
-    /// performed. No blob, transcription or workbook work happens either.
+    /// Answers a repeat submission without touching the stored row: the loser of an insert race is
+    /// treated as a replay of the winner, so a terminal status already persisted is never clobbered.
     /// </summary>
     private async Task<SyncVoiceRecordingResult> ReplayAsync(
         VoiceRecording existing,
@@ -728,8 +503,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
         int? cValue,
         CancellationToken ct)
     {
-        // Access gate: a replay still exposes the committed outcome for the recording's
-        // trial, so a non-manager must remain assigned to that trial. Managers bypass.
         await EnsureCanAccessTrialAsync(existing.TrialId ?? Guid.Empty, ct);
 
         _logger.LogInformation(
@@ -746,23 +519,12 @@ public sealed class RecordingSyncService : IRecordingSyncService
             policy: null,
             submittedAt: DateTimeOffset.UtcNow,
             replayed: true,
-            // Resolution input = the original commit's parse (rebuilt from the stored row's
-            // parsed fields), so the echo reports the cell that was ACTUALLY written — never
-            // the caller's possibly-stale defaults. The echo (Parsed*/Confidence) stays null
-            // via `parsed: null` above, preserving the replay contract.
+
             parsedForResolution: ReconstructParsed(existing),
-            // Trait anchor = the anchor the COMMIT actually used, recovered from the stored
-            // row, so a replayed trait-4 recording still reports TraitOrdinal 4 even when the
-            // retry omits the field (which would otherwise echo the normalized 1). For rows
-            // predating the column, the persisted value is null and the anchor is 1 (the only
-            // ordinal a pre-migration row could ever have used); the caller's value is never used.
+
             traitOrdinal: existing.ResolvedTraitOrdinal ?? 1);
     }
 
-    /// <summary>
-    /// Stores an out-of-range recording (blob + Flagged audit row) without transcribing
-    /// or writing. The audio is still kept as review evidence.
-    /// </summary>
     private async Task<SyncVoiceRecordingResult> StoreOutOfRangeAsync(
         Trial trial,
         string clientId,
@@ -787,13 +549,10 @@ public sealed class RecordingSyncService : IRecordingSyncService
         }
         catch (ClientRecordingIdConflictException)
         {
-            // TOCTOU: a concurrent double-submit raced past the idempotency gate and committed
-            // first. Its row owns the same blob path (same client key), so the blob stays and
-            // the loser is answered as a Replay without touching the winner's row.
             var winner = await _voiceRecordings.GetByClientRecordingIdAsync(clientId, ct);
             if (winner is null)
             {
-                throw; // The conflict row vanished — surface the original failure.
+                throw;
             }
 
             _logger.LogInformation(
@@ -804,8 +563,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
         }
         catch (Exception)
         {
-            // The audit row never committed — delete the orphaned blob so the working
-            // directory does not accumulate unreferenced audio, then rethrow.
             await _blobStore.DeleteAsync(blobPath, ct);
             throw;
         }
@@ -825,12 +582,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
             submittedAt: DateTimeOffset.UtcNow);
     }
 
-    /// <summary>
-    /// Applies the commit flowchart: write what was free, skip what was already present,
-    /// flag anything that could not be written (missing workbook, unknown plot, a subsample
-    /// with no workbook row, or values dropped past trait 9 / past the current Part Rated
-    /// category block).
-    /// </summary>
     private static string SelectStatus(PolicyWritePlotColumnResult? policy)
     {
         if (policy is null || !policy.PlotExists || policy.MissingSubsampleIndices.Count > 0)
@@ -840,9 +591,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
 
         if (policy.OutOfTraitRangeValueCount > 0)
         {
-            // A spoken rating was lost (no column beyond trait 9 in fixed-column mode, or no
-            // free cell left in the current Part Rated category block in append mode): flag
-            // even when other cells were written — the human review must see the dropped values.
             return VoiceRecordingStatus.Flagged;
         }
 
@@ -856,36 +604,20 @@ public sealed class RecordingSyncService : IRecordingSyncService
             : VoiceRecordingStatus.Flagged;
     }
 
-    /// <summary>
-    /// Recomputes the trial's status after a SUCCESSFUL workbook write (one that actually
-    /// wrote values — this is only invoked when <c>policy.WrittenCells.Count &gt; 0</c>) and
-    /// persists the forward-only lifecycle transition (design.md §3, dashboard badge):
-    /// <list type="bullet">
-    /// <item><description><see cref="TrialStatus.Created"/> → <see cref="TrialStatus.InProgress"/> while the rating
-    /// region is only partially plotted (some key rows still carry empty cells);</description></item>
-    /// <item><description>→ <see cref="TrialStatus.Completed"/> as soon as EVERY key row carries ALL nine
-    /// trait values (null = empty; 0 is a real value per design.md Rule 2).</description></item>
-    /// </list>
-    /// The region is re-read from the output copy the write just exported — the SAME workbook
-    /// the dashboard sheet endpoint resolves (see <see cref="ITrialWorkbookStore.ResolveExportAsync"/>)
-    /// — never from the write's INPUT, which is stale by definition. The recompute is
-    /// best-effort bookkeeping: an empty region is NOT progress (Created stays Created until
-    /// a real value lands) and a region-read failure leaves the current status untouched
-    /// rather than failing an otherwise successful sync. An already-Completed trial never
-    /// regresses, even if the region is no longer fully plotted.
-    /// </summary>
     private async Task RecomputeTrialStatusAsync(
         Trial trial,
-        string outputDirectory,
-        string workbookPath,
+        string writtenPath,
         CancellationToken ct)
     {
-        var writtenPath = ResolveJustWrittenOutputCopy(outputDirectory, workbookPath);
+        if (string.IsNullOrWhiteSpace(writtenPath))
+        {
+            return;
+        }
 
         SheetRegion? region;
         try
         {
-            region = writtenPath is null ? null : _ratings.ReadSheetRegion(writtenPath);
+            region = _ratings.ReadSheetRegion(writtenPath);
         }
         catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
         {
@@ -895,7 +627,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
             return;
         }
 
-        // Fully plotted = a non-empty region whose EVERY key row carries all trait values.
         var regionUsable = region is not null && region.Columns.Count > 0 && region.Rows.Count > 0;
         var fullyPlotted = regionUsable
             && region!.Rows.All(row =>
@@ -908,7 +639,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
                 ? TrialStatus.InProgress
                 : trial.Status;
 
-        // Forward-only: persist ONLY a real transition (never a regression, never a no-op).
         if (newStatus != trial.Status)
         {
             trial.Status = newStatus;
@@ -919,35 +649,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
         }
     }
 
-    /// <summary>
-    /// Resolves the absolute path of the output copy the JUST-FINISHED policy write produced:
-    /// the only <c>*.xlsx</c> in <paramref name="outputDirectory"/> whose name is the current
-    /// input file's base name plus <c>"_out_"</c>. Successive syncs chain (each output becomes
-    /// the next input), so the current input's base name embeds every previous copy's stamp
-    /// and the pattern matches at most ONE file — THIS write's copy. Same-second timestamp
-    /// ties cannot select a neighbouring copy, unlike the newest-copy ranking the workbook
-    /// store performs, which ranks by the second-granularity
-    /// file-name stamp. Returns <see langword="null"/> when no output copy exists (nothing was
-    /// written).
-    /// </summary>
-    private static string? ResolveJustWrittenOutputCopy(string outputDirectory, string workbookPath)
-    {
-        if (!Directory.Exists(outputDirectory))
-        {
-            return null;
-        }
-
-        var prefix = $"{Path.GetFileNameWithoutExtension(workbookPath)}_out_";
-        return Directory.GetFiles(outputDirectory, "*.xlsx")
-            .FirstOrDefault(file => Path.GetFileName(file).StartsWith(prefix, StringComparison.Ordinal));
-    }
-
-    /// <summary>
-    /// True when the parsed transcript disagrees with a CONFIRMED command field — checked
-    /// PER FIELD, so a partial parse still flags a disagreement on the fields it did state
-    /// (design.md §3). The write still uses the confirmed fields (contract truth); a
-    /// disagreement only flags review.
-    /// </summary>
     private static bool MismatchesConfirmed(
         TranscriptParseResult parsed,
         int? cPlot,
@@ -957,15 +658,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
         || (cSubsample is int cs && parsed.Subsample is int ps && cs != ps)
         || (cValue is int cv && parsed.FirstValue is int pv && cv != pv);
 
-    /// <summary>
-    /// Reports whether the resolved target fell back to a CLIENT-SENT DEFAULT
-    /// (<see cref="SyncVoiceRecordingCommand.DefaultPlot"/>/<see cref="SyncVoiceRecordingCommand.DefaultSubsample"/>)
-    /// because the confirmed fields AND the transcript both omitted the field. An explicit
-    /// NEW plot in the transcript never inherits the previous subsample cursor, so the
-    /// subsample default applies only when the transcript stated no plot or stated the same
-    /// plot as the default — the same guard Step 9's resolution uses, so the review gate and
-    /// the result echo can never disagree about what the write actually used.
-    /// </summary>
     private static (bool usedDefaultPlot, bool usedDefaultSubsample) ResolveDefaultUsage(
         int? cPlot, int? cSubsample, TranscriptParseResult parsed, SyncVoiceRecordingCommand command)
     {
@@ -978,41 +670,9 @@ public sealed class RecordingSyncService : IRecordingSyncService
         return (usedDefaultPlot, usedDefaultSubsample);
     }
 
-    /// <summary>Normalizes a client-confirmed trait ordinal. Absent, 0 and negative all mean
-    /// "unspecified" and map to 1 (the first Part Rated column); values above 9 are returned
-    /// as-is so the caller's existing &gt; 9 flag gate still sees them.</summary>
     private static int NormalizeTraitOrdinal(int? confirmed)
         => confirmed is int v && v > 1 ? v : 1;
 
-    /// <summary>
-    /// Assembles the result DTO, honouring a <see langword="null"/> parse and a
-    /// <see langword="null"/> policy write. The resolved Plot/Subsample/Value (confirmed ??
-    /// resolution parse ?? client default — the same resolution the sync path applied in
-    /// Step 9, so the echo always reflects what the write attempted) travel on the wire, and
-    /// <see cref="SyncVoiceRecordingResult.WasTranscriptOnly"/> reports whether NO confirmed
-    /// field was supplied. <see cref="SyncVoiceRecordingResult.UsedDefaultTarget"/> reports
-    /// whether a client-sent default filled part of the target. The parsed transcript fields
-    /// travel even when transcription failed (nulls with confidence 0) or a partial parse ran
-    /// (some nulls). <see cref="SyncVoiceRecordingResult.PlotExists"/> reports whether the
-    /// workbook confirmed the plot — always <see langword="false"/> on replay, under a value
-    /// gate, or when no policy write ran.
-    /// <para>
-    /// The ECHO and the RESOLUTION intentionally take separate inputs: <paramref name="parsed"/>
-    /// feeds the echoed Parsed*/Value/Confidence (kept <see langword="null"/> on replay by
-    /// contract), while <paramref name="parsedForResolution"/> — defaulting to
-    /// <paramref name="parsed"/>, then to an empty parse on null — feeds Plot/Subsample/
-    /// UsedDefaultTarget. A replay passes the stored row's reconstructed parse so its echo
-    /// reflects the committed write instead of the caller's possibly-stale defaults.
-    /// </para>
-    /// <para>
-    /// <see cref="SyncVoiceRecordingResult.TraitOrdinal"/> echoes the anchor the outcome was
-    /// committed under: <paramref name="traitOrdinal"/> — the resolved/persisted anchor,
-    /// passed by the write path and by a replay (recovered from the stored row) — when the
-    /// caller supplied one, else the command's, always through
-    /// <see cref="NormalizeTraitOrdinal"/>. Every path therefore reports a NORMALIZED
-    /// ordinal (1..9, or the explicit out-of-range value that got flagged) and never 0.
-    /// </para>
-    /// </summary>
     private static SyncVoiceRecordingResult BuildResult(
         SyncVoiceRecordingCommand command,
         int? cPlot,
@@ -1029,11 +689,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
         TranscriptParseResult? parsedForResolution = null,
         string transcriptionError = "")
     {
-        // Same default-target rule as Step 9: a client-sent default fills a field the
-        // confirmed value AND the transcript both omitted (with the subsample guard against
-        // a NEW spoken plot). Callers that ran no parse and pass no `parsedForResolution`
-        // (replay, out-of-range store) fall back to the empty parse — "nothing omitted",
-        // which is exactly the empty-transcript truth on those paths.
         var resolutionParsed = parsedForResolution ?? parsed ?? EmptyParse;
         var defaultPlot = command.DefaultPlot is int dp && dp > 0 ? dp : (int?)null;
         var defaultSubsample = command.DefaultSubsample is int ds && ds > 0 ? ds : (int?)null;
@@ -1077,25 +732,12 @@ public sealed class RecordingSyncService : IRecordingSyncService
         };
     }
 
-    /// <summary>
-    /// Renders a bounded, single-line description of a transcription failure for the sync
-    /// result, so the cause (e.g. an HTTP 403 from the provider) is diagnosable without the
-    /// server log. Carriage returns/newlines are collapsed to spaces and the text is capped
-    /// at <see cref="MaxTranscriptionErrorLength"/> characters.
-    /// </summary>
-    /// <param name="ex">The caught sidecar/provider failure.</param>
-    /// <returns>A trimmed, single-line, length-bounded message.</returns>
     private static string DescribeTranscriptionFailure(Exception ex)
     {
         var message = (ex.Message ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
-        return message.Length > MaxTranscriptionErrorLength ? message[..MaxTranscriptionErrorLength] + "…" : message;
+        return message.Length > MaxTranscriptionErrorLength ? message[..MaxTranscriptionErrorLength] + "â€¦" : message;
     }
 
-    /// <summary>
-    /// Builds the command-shaped input the correction result derives its metadata from. The
-    /// confirmed target fields are deliberately left null — BuildResult resolves them from
-    /// the normalized c* parameters; only the id, the trial and the forwarded trait ride here.
-    /// </summary>
     private static SyncVoiceRecordingCommand BuildCorrectionCommand(
         string clientRecordingId,
         VoiceRecording recording,
@@ -1107,10 +749,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
             TraitOrdinal = traitOrdinal,
         };
 
-    /// <summary>
-    /// Rebuilds the parse outcome of the stored transcript so a correction result carries the
-    /// same parsed-field shape as a sync result (confidence 0 when the row never stored one).
-    /// </summary>
     private static TranscriptParseResult ReconstructParsed(VoiceRecording recording)
         => new()
         {
@@ -1120,13 +758,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
             Confidence = recording.Confidence ?? 0,
         };
 
-    /// <summary>
-    /// Creates the audit row, persisting the NORMALIZED confirmed fields (plot/subsample
-    /// already nulled when non-positive) so the row never stores a target the sync refused
-    /// to consider confirmed. <paramref name="resolvedTraitOrdinal"/> carries the RESOLVED
-    /// ordinal — the anchor the write actually used — see
-    /// <see cref="VoiceRecording.ResolvedTraitOrdinal"/>.
-    /// </summary>
     private static VoiceRecording CreateRecording(
         Guid trialId,
         string clientId,
@@ -1154,10 +785,6 @@ public sealed class RecordingSyncService : IRecordingSyncService
             UpdatedAt = DateTime.UtcNow,
         };
 
-    /// <summary>
-    /// Maps the uploaded file name to the MIME type the blob store derives its extension from
-    /// (webm/wav/mp4 supported by the sidecar; anything else is stored as an opaque binary).
-    /// </summary>
     private static string MimeTypeFromFileName(string fileName)
         => Path.GetExtension(fileName).ToLowerInvariant() switch
         {

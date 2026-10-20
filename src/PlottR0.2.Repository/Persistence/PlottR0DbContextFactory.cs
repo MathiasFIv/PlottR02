@@ -3,10 +3,6 @@ using Microsoft.EntityFrameworkCore.Design;
 
 namespace PlottR0._2.Repository.Persistence;
 
-/// <summary>
-/// Design-time factory so <c>dotnet ef migrations add</c> / <c>dotnet ef database update</c>
-/// can construct the context without running the web application.
-/// </summary>
 public class PlottR0DbContextFactory : IDesignTimeDbContextFactory<PlottR0DbContext>
 {
     public PlottR0DbContext CreateDbContext(string[] args)

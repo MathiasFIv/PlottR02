@@ -3,18 +3,6 @@ using PlottR0._2.Repository.Repositories;
 
 namespace PlottR0._2.Tests;
 
-/// <summary>
-/// Unit tests for the internal <c>ObjectKeys</c> key-builder
-/// (<c>PlottR0._2.Repository.Storage.ObjectKeys</c>).
-/// <para>
-/// The type is <c>internal</c> to the Repository assembly and the project declares no
-/// <c>InternalsVisibleTo</c> for the test project, so it is reached through reflection.
-/// This keeps production code (and its project files) untouched while still asserting
-/// the exact key shapes. The store-level tests independently assert the same key
-/// strings end-to-end through the public stores, so this coverage is never the only
-/// guard against a mapping regression.
-/// </para>
-/// </summary>
 public sealed class ObjectKeysTests
 {
     private const BindingFlags StaticPublic = BindingFlags.Public | BindingFlags.Static;

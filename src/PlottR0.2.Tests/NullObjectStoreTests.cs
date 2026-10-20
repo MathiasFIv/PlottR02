@@ -2,12 +2,6 @@ using PlottR0._2.Repository.Storage;
 
 namespace PlottR0._2.Tests;
 
-/// <summary>
-/// Unit tests for <see cref="NullObjectStore"/> — the no-op durable store used when
-/// object storage is disabled. Every write is discarded, nothing exists, listings are
-/// empty, and reads fail with <see cref="FileNotFoundException"/> so a disabled backend
-/// behaves like a missing durable object.
-/// </summary>
 public sealed class NullObjectStoreTests
 {
     private static readonly NullObjectStore Store = NullObjectStore.Instance;

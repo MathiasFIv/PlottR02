@@ -9,13 +9,6 @@ using PlottR0._2.Repository.Configuration;
 
 namespace PlottR0._2.Repository.Storage;
 
-/// <summary>
-/// S3-compatible implementation of <see cref="IObjectStore"/> backed by a single
-/// <see cref="AmazonS3Client"/>. Works with any S3-compatible provider (Neon Object
-/// Storage, Cloudflare R2, Tigris, Backblaze B2, …) by driving the endpoint, region,
-/// credentials and path-style addressing from <see cref="ObjectStorageOptions"/>.
-/// Dispose the instance to release the underlying HTTP client.
-/// </summary>
 public sealed class S3ObjectStore : IObjectStore, IDisposable
 {
     private readonly ObjectStorageOptions _options;
@@ -23,11 +16,6 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
     private readonly AmazonS3Client _client;
     private bool _disposed;
 
-    /// <summary>
-    /// Creates the store from bound <see cref="ObjectStorageOptions"/>.
-    /// </summary>
-    /// <param name="options">The bound object-storage settings.</param>
-    /// <param name="logger">Logger for object-storage diagnostics.</param>
     public S3ObjectStore(IOptions<ObjectStorageOptions> options, ILogger<S3ObjectStore> logger)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -48,7 +36,6 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
         _client = new AmazonS3Client(credentials, config);
     }
 
-    /// <inheritdoc />
     public async Task PutAsync(string key, Stream content, string? contentType, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
@@ -69,7 +56,6 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
         _logger.LogDebug("Uploaded object '{Key}' to bucket '{Bucket}'.", key, _options.Bucket);
     }
 
-    /// <inheritdoc />
     public async Task<bool> ExistsAsync(string key, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
@@ -85,7 +71,6 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
         }
     }
 
-    /// <inheritdoc />
     public async Task GetToFileAsync(string key, string destinationPath, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
@@ -95,8 +80,6 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
         if (!string.IsNullOrEmpty(parent))
             Directory.CreateDirectory(parent);
 
-        // Download to a sibling temp file first so a partial transfer never leaves a
-        // truncated workbook at the destination path.
         var tempPath = $"{destinationPath}.{Guid.NewGuid():N}.tmp";
         try
         {
@@ -129,13 +112,11 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
                 }
                 catch
                 {
-                    // Best-effort temp-file cleanup.
                 }
             }
         }
     }
 
-    /// <inheritdoc />
     public async Task<IReadOnlyList<string>> ListKeysAsync(string prefix, CancellationToken ct = default)
     {
         var keys = new List<string>();
@@ -168,7 +149,6 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
         return keys;
     }
 
-    /// <inheritdoc />
     public async Task DeleteAsync(string key, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
@@ -177,7 +157,6 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
         _logger.LogDebug("Deleted object '{Key}' from bucket '{Bucket}'.", key, _options.Bucket);
     }
 
-    /// <inheritdoc />
     public void Dispose()
     {
         if (_disposed)
@@ -187,7 +166,6 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
         _client.Dispose();
     }
 
-    /// <summary>True when the S3 error represents a missing object (404 / NoSuchKey / NotFound).</summary>
     private static bool IsNotFound(AmazonS3Exception ex)
         => ex.StatusCode == HttpStatusCode.NotFound
         || string.Equals(ex.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase)

@@ -3,15 +3,6 @@ using PlottR0._2.Repository.Storage;
 
 namespace PlottR0._2.Tests.Support;
 
-/// <summary>
-/// Test-local, in-memory <see cref="IObjectStore"/> used to exercise the durable
-/// write-through/rehydration behaviour of the file-system stores without S3 or Docker.
-/// It records the exact keys written and the per-operation call counts so tests can
-/// assert both the data that was written and whether the object store was touched at all
-/// (the warm-cache fast path). An injectable failure mode (<see cref="FailOnPut"/>)
-/// simulates an upload failure so write-through rollback can be asserted.
-/// Not thread-safe by intent — each test owns its own instance.
-/// </summary>
 public sealed class InMemoryObjectStore : IObjectStore
 {
     private readonly object _gate = new();
@@ -22,44 +13,31 @@ public sealed class InMemoryObjectStore : IObjectStore
     private readonly List<string> _getToFileKeys = [];
     private readonly List<string> _listKeysPrefixes = [];
 
-    /// <summary>When <see langword="true"/>, every <see cref="PutAsync"/> call throws <see cref="PutException"/>.</summary>
     public bool FailOnPut { get; set; }
 
-    /// <summary>The exception thrown by <see cref="PutAsync"/> when <see cref="FailOnPut"/> is set.</summary>
     public Exception PutException { get; set; } =
         new InvalidOperationException("Simulated object-store upload failure.");
 
-    /// <summary>Number of <see cref="PutAsync"/> attempts (including failed ones).</summary>
     public int PutCalls { get; private set; }
 
-    /// <summary>Number of <see cref="ExistsAsync"/> calls.</summary>
     public int ExistsCalls { get; private set; }
 
-    /// <summary>Number of <see cref="GetToFileAsync"/> calls.</summary>
     public int GetToFileCalls { get; private set; }
 
-    /// <summary>Number of <see cref="ListKeysAsync"/> calls.</summary>
     public int ListKeysCalls { get; private set; }
 
-    /// <summary>Number of <see cref="DeleteAsync"/> calls.</summary>
     public int DeleteCalls { get; private set; }
 
-    /// <summary>The keys passed to <see cref="PutAsync"/>, in call order (including failed attempts).</summary>
     public IReadOnlyList<string> PutKeys { get { lock (_gate) return _putKeys.ToArray(); } }
 
-    /// <summary>The keys passed to <see cref="DeleteAsync"/>, in call order.</summary>
     public IReadOnlyList<string> DeleteKeys { get { lock (_gate) return _deleteKeys.ToArray(); } }
 
-    /// <summary>The keys passed to <see cref="GetToFileAsync"/>, in call order.</summary>
     public IReadOnlyList<string> GetToFileKeys { get { lock (_gate) return _getToFileKeys.ToArray(); } }
 
-    /// <summary>The prefixes passed to <see cref="ListKeysAsync"/>, in call order.</summary>
     public IReadOnlyList<string> ListKeysPrefixes { get { lock (_gate) return _listKeysPrefixes.ToArray(); } }
 
-    /// <summary>A snapshot of every key currently stored.</summary>
     public IReadOnlyCollection<string> Keys { get { lock (_gate) return _objects.Keys.ToArray(); } }
 
-    /// <summary>Stores <paramref name="bytes"/> under <paramref name="key"/> without recording a call.</summary>
     public void Seed(string key, byte[] bytes)
     {
         lock (_gate)
@@ -68,10 +46,8 @@ public sealed class InMemoryObjectStore : IObjectStore
         }
     }
 
-    /// <summary>Stores the UTF-8 encoding of <paramref name="text"/> under <paramref name="key"/>.</summary>
     public void Seed(string key, string text) => Seed(key, Encoding.UTF8.GetBytes(text));
 
-    /// <summary>True when an object exists at <paramref name="key"/>.</summary>
     public bool Contains(string key)
     {
         lock (_gate)
@@ -80,7 +56,6 @@ public sealed class InMemoryObjectStore : IObjectStore
         }
     }
 
-    /// <summary>Returns the bytes stored at <paramref name="key"/> (throws when absent).</summary>
     public byte[] GetBytes(string key)
     {
         lock (_gate)
@@ -89,7 +64,6 @@ public sealed class InMemoryObjectStore : IObjectStore
         }
     }
 
-    /// <summary>Returns the content type recorded for <paramref name="key"/>, or <c>null</c>.</summary>
     public string? GetContentType(string key)
     {
         lock (_gate)
@@ -98,7 +72,6 @@ public sealed class InMemoryObjectStore : IObjectStore
         }
     }
 
-    /// <summary>Zeroes the call counters and clears the recorded key/prefix lists.</summary>
     public void ResetCounters()
     {
         lock (_gate)
@@ -115,7 +88,6 @@ public sealed class InMemoryObjectStore : IObjectStore
         }
     }
 
-    /// <inheritdoc />
     public async Task PutAsync(string key, Stream content, string? contentType, CancellationToken ct = default)
     {
         if (FailOnPut)
@@ -126,7 +98,6 @@ public sealed class InMemoryObjectStore : IObjectStore
                 _putKeys.Add(key);
             }
 
-            // Yield so the failure surfaces from the awaited task, like a real network store.
             await Task.Yield();
             throw PutException;
         }
@@ -144,7 +115,6 @@ public sealed class InMemoryObjectStore : IObjectStore
         }
     }
 
-    /// <inheritdoc />
     public Task<bool> ExistsAsync(string key, CancellationToken ct = default)
     {
         lock (_gate)
@@ -154,7 +124,6 @@ public sealed class InMemoryObjectStore : IObjectStore
         }
     }
 
-    /// <inheritdoc />
     public async Task GetToFileAsync(string key, string destinationPath, CancellationToken ct = default)
     {
         byte[] bytes;
@@ -175,7 +144,6 @@ public sealed class InMemoryObjectStore : IObjectStore
         await File.WriteAllBytesAsync(destinationPath, bytes, ct);
     }
 
-    /// <inheritdoc />
     public Task<IReadOnlyList<string>> ListKeysAsync(string prefix, CancellationToken ct = default)
     {
         lock (_gate)
@@ -192,7 +160,6 @@ public sealed class InMemoryObjectStore : IObjectStore
         }
     }
 
-    /// <inheritdoc />
     public Task DeleteAsync(string key, CancellationToken ct = default)
     {
         lock (_gate)

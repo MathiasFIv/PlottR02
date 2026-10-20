@@ -6,10 +6,6 @@ using PlottR0._2.Repository.Persistence;
 
 namespace PlottR0._2.Repository.Repositories;
 
-/// <summary>
-/// EF Core implementation of <see cref="IVoiceRecordingRepository"/> backed by PostgreSQL
-/// via <see cref="PlottR0DbContext"/>.
-/// </summary>
 public sealed class VoiceRecordingRepository : IVoiceRecordingRepository
 {
     private readonly PlottR0DbContext _db;
@@ -20,13 +16,11 @@ public sealed class VoiceRecordingRepository : IVoiceRecordingRepository
         _db = db;
     }
 
-    /// <inheritdoc />
     public async Task<VoiceRecording?> GetByIdAsync(Guid id, CancellationToken ct = default)
     {
         return await _db.VoiceRecordings.FindAsync([id], ct);
     }
 
-    /// <inheritdoc />
     public async Task<IReadOnlyList<VoiceRecording>> GetAllAsync(
         int? skip = null,
         int? take = null,
@@ -43,13 +37,11 @@ public sealed class VoiceRecordingRepository : IVoiceRecordingRepository
         return await query.ToListAsync(ct);
     }
 
-    /// <inheritdoc />
     public async Task<bool> ExistsAsync(Guid id, CancellationToken ct = default)
     {
         return await _db.VoiceRecordings.AnyAsync(v => v.Id == id, ct);
     }
 
-    /// <inheritdoc />
     public async Task<VoiceRecording> CreateAsync(VoiceRecording recording, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(recording);
@@ -61,9 +53,6 @@ public sealed class VoiceRecordingRepository : IVoiceRecordingRepository
         }
         catch (DbUpdateException ex) when (IsClientRecordingIdConflict(ex))
         {
-            // Translate the EF/Npgsql-specific unique-index failure at the repository boundary
-            // so services can handle the concurrent-insert race without referencing EF Core.
-            // Unclassified DbUpdateExceptions (FK violations, etc.) propagate unchanged.
             throw new ClientRecordingIdConflictException(
                 $"A voice recording with client recording id '{recording.ClientRecordingId}' already exists.",
                 ex);
@@ -72,14 +61,12 @@ public sealed class VoiceRecordingRepository : IVoiceRecordingRepository
         return recording;
     }
 
-    /// <inheritdoc />
     public async Task<VoiceRecording?> GetByClientRecordingIdAsync(string clientRecordingId, CancellationToken ct = default)
     {
         return await _db.VoiceRecordings
             .FirstOrDefaultAsync(v => v.ClientRecordingId == clientRecordingId, ct);
     }
 
-    /// <inheritdoc />
     public async Task UpdateAsync(VoiceRecording recording, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(recording);
@@ -88,12 +75,8 @@ public sealed class VoiceRecordingRepository : IVoiceRecordingRepository
         await _db.SaveChangesAsync(ct);
     }
 
-    /// <summary>
-    /// True when a <see cref="DbUpdateException"/> was caused by the
-    /// <c>IX_VoiceRecordings_ClientRecordingId</c> unique index — a concurrent double-submit
-    /// raced past the idempotency gate and committed first. Npgsql surfaces the underlying
-    /// Postgres <c>23505 unique_violation</c> inside the inner exception message.
-    /// </summary>
+    // The unique index on ClientRecordingId is the PWA idempotency key; the Postgres violation is
+    // translated here so services can handle a concurrent insert without referencing EF Core.
     private static bool IsClientRecordingIdConflict(DbUpdateException ex)
     {
         var message = ex.InnerException?.Message;

@@ -19,7 +19,6 @@ public class PlottR0DbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // ── Shared audit columns for every AuditableEntity ──────────────────
         ConfigureAuditableEntity<User>(modelBuilder);
         ConfigureAuditableEntity<Trial>(modelBuilder);
         ConfigureAuditableEntity<VoiceRecording>(modelBuilder);
@@ -35,10 +34,7 @@ public class PlottR0DbContext : DbContext
                 .HasMaxLength(320);
             entity.HasIndex(u => u.Email)
                 .IsUnique();
-            // Role is a nullable enum persisted AS A STRING so the existing
-            // character varying column is only narrowed (100 → 20) instead of
-            // being dropped/recreated — RefreshToken.UserId and Trial.CreatedBy
-            // reference the Users table and must keep their FKs intact.
+
             entity.Property(u => u.Role)
                 .HasConversion<string>()
                 .HasMaxLength(20);
@@ -63,8 +59,6 @@ public class PlottR0DbContext : DbContext
             entity.Property(t => t.SourceWorkbookPath)
                 .HasMaxLength(500);
 
-            // Ownership FK (design.md #13): CreatedBy → User, SetNull on delete
-            // so orphaned trials remain accessible.
             entity.HasOne(t => t.CreatedByUser)
                 .WithMany()
                 .HasForeignKey(t => t.CreatedBy)
@@ -102,7 +96,6 @@ public class PlottR0DbContext : DbContext
             entity.HasIndex(rt => new { rt.UserId, rt.IsRevoked });
         });
 
-        // ── AuditLog (append-only) ──────────────────────────────────────────
         modelBuilder.Entity<AuditLog>(entity =>
         {
             entity.HasKey(a => a.Id);
@@ -128,23 +121,16 @@ public class PlottR0DbContext : DbContext
             entity.HasIndex(a => new { a.EntityType, a.EntityId });
         });
 
-        // ── VoiceRecording (Voice-to-Excel) ─────────────────────────────────
         modelBuilder.Entity<VoiceRecording>(entity =>
         {
             entity.HasKey(v => v.Id);
 
-            // ClientRecordingId is the PWA-emitted idempotency key
-            // (crypto.randomUUID); unique so a duplicate upload replays the
-            // existing row instead of creating a duplicate.
             entity.Property(v => v.ClientRecordingId)
                 .IsRequired()
                 .HasMaxLength(100);
             entity.HasIndex(v => v.ClientRecordingId)
                 .IsUnique();
 
-            // TrialId FK → Trial. SetNull on delete so recordings survive a
-            // trial deletion (audit evidence is preserved). Nullable for the
-            // same reason — recordings may be orphaned intentionally.
             entity.HasOne<Trial>()
                 .WithMany()
                 .HasForeignKey(v => v.TrialId)
@@ -163,14 +149,10 @@ public class PlottR0DbContext : DbContext
                 .HasDefaultValue(VoiceRecordingStatus.Received);
         });
 
-        // ── TrialAssignment (Trial ↔ User, many-to-many via join entity) ─────
         modelBuilder.Entity<TrialAssignment>(entity =>
         {
             entity.HasKey(a => a.Id);
 
-            // Both FKs are required — an assignment cannot exist without its
-            // trial and user — and both cascade so deleting either end cleans up
-            // the join rows.
             entity.Property(a => a.TrialId)
                 .IsRequired();
             entity.Property(a => a.UserId)
@@ -180,7 +162,6 @@ public class PlottR0DbContext : DbContext
             entity.Property(a => a.AssignedAt)
                 .IsRequired();
 
-            // A user may be assigned to a given trial at most once.
             entity.HasIndex(a => new { a.TrialId, a.UserId })
                 .IsUnique();
 
@@ -196,10 +177,6 @@ public class PlottR0DbContext : DbContext
         });
     }
 
-    /// <summary>
-    /// Configures the four inherited <see cref="AuditableEntity"/> columns for a
-    /// given entity type. Called once per audited entity in <see cref="OnModelCreating"/>.
-    /// </summary>
     private static void ConfigureAuditableEntity<TEntity>(ModelBuilder modelBuilder)
         where TEntity : class
     {
@@ -212,8 +189,6 @@ public class PlottR0DbContext : DbContext
             entity.Property(nameof(AuditableEntity.UpdatedAt))
                 .IsRequired()
                 .HasDefaultValueSql("NOW()");
-
-            // CreatedBy / UpdatedBy are nullable Guid — no extra constraints.
         });
     }
 }

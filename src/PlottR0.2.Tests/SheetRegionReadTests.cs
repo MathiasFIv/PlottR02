@@ -5,12 +5,6 @@ using Factory = PlottR0._2.Tests.Support.WorkbookBuilder.RatingWorkbookFactory;
 
 namespace PlottR0._2.Tests;
 
-/// <summary>
-/// Pure file-I/O tests for <see cref="ClosedXmlRatingRepository.ReadSheetRegion"/> — the
-/// region reader behind <c>GET /api/Trials/{trialId}/sheet</c>. Builds throwaway workbooks
-/// with <see cref="Support.WorkbookBuilder.RatingWorkbookFactory"/> in a per-test temp dir;
-/// no Postgres (plain xUnit class, deliberately outside the Postgres collection).
-/// </summary>
 public sealed class SheetRegionReadTests : IDisposable
 {
     private readonly string _tempDir;
@@ -30,7 +24,6 @@ public sealed class SheetRegionReadTests : IDisposable
         }
         catch
         {
-            // Best-effort cleanup.
         }
     }
 
@@ -42,14 +35,10 @@ public sealed class SheetRegionReadTests : IDisposable
     [Fact]
     public void ReadSheetRegion_KeyedRows_ReturnsKeyPresentRowsInWorkbookOrder()
     {
-        // Arrange — the default factory emits 16 keyed rows (plots 101..104 × 4 subsamples),
-        // rows 22..37; no spare/empty rows exist to confuse the scan.
         var path = Support.WorkbookBuilder.RatingWorkbookFactory.Create(Workbook("keys.xlsx"));
 
-        // Act
         var region = CreateRepository().ReadSheetRegion(path);
 
-        // Assert — key-present rows only, workbook order, row numbers kept (decision A4)
         region.Rows.Should().HaveCount(16, "4 plots × 4 subsamples are all key-present");
         region.Rows.Select(r => r.Row)
             .Should().BeInAscendingOrder("rows must come back in workbook order");
@@ -67,18 +56,14 @@ public sealed class SheetRegionReadTests : IDisposable
     [Fact]
     public void ReadSheetRegion_PestCodes_MapsRowThreeAndFallsBackWhenOmitted()
     {
-        // Arrange — one workbook WITH row 3 (pest codes opted in) and one WITHOUT (the
-        // default factory), proving the null-pest fallback both paths can rot.
         var withPests = Support.WorkbookBuilder.RatingWorkbookFactory.Create(
             Workbook("pests.xlsx"), writePestCodes: true);
         var withoutPests = Support.WorkbookBuilder.RatingWorkbookFactory.Create(
             Workbook("no pests.xlsx"));
 
-        // Act
         var columnsWith = CreateRepository().ReadSheetRegion(withPests).Columns;
         var columnsWithout = CreateRepository().ReadSheetRegion(withoutPests).Columns;
 
-        // Assert — row 3 maps per column: SEPTTR/ERYSGR/PUCCST repeated per LEAF block
         columnsWith.Select(c => c.PestCode).Should().Equal(
             "SEPTTR", "ERYSGR", "PUCCST",
             "SEPTTR", "ERYSGR", "PUCCST",
@@ -88,7 +73,6 @@ public sealed class SheetRegionReadTests : IDisposable
             "SEPTTR × LEAF2", "ERYSGR × LEAF2", "PUCCST × LEAF2",
             "SEPTTR × LEAF3", "ERYSGR × LEAF3", "PUCCST × LEAF3");
 
-        // Assert — factory without row 3 ⇒ pest null everywhere, part still drives the label
         columnsWithout.Should().AllSatisfy(c => c.PestCode.Should().BeNull());
         columnsWithout.Select(c => c.Label)
             .Should().Equal("LEAF1", "LEAF1", "LEAF1", "LEAF2", "LEAF2", "LEAF2", "LEAF3", "LEAF3", "LEAF3");
@@ -97,22 +81,18 @@ public sealed class SheetRegionReadTests : IDisposable
     [Fact]
     public void ReadSheetRegion_RowEight_MapsPartRatedBlocksOrNullWhenOmitted()
     {
-        // Arrange — row 8 present (default) vs absent (CreateWithoutPartRated)
         var withParts = Support.WorkbookBuilder.RatingWorkbookFactory.Create(Workbook("parts.xlsx"));
         var withoutParts = Support.WorkbookBuilder.RatingWorkbookFactory.CreateWithoutPartRated(
             Workbook("no parts.xlsx"));
 
-        // Act
         var columnsWith = CreateRepository().ReadSheetRegion(withParts).Columns;
         var columnsWithout = CreateRepository().ReadSheetRegion(withoutParts).Columns;
 
-        // Assert — C:E LEAF1, F:H LEAF2, I:K LEAF3 (empty cells inherit to the left)
         columnsWith.Select(c => c.PartRated).Should().Equal(
             "LEAF1", "LEAF1", "LEAF1",
             "LEAF2", "LEAF2", "LEAF2",
             "LEAF3", "LEAF3", "LEAF3");
 
-        // Assert — no row 8 and no row 3 ⇒ both halves null, label degrades to the column letter
         columnsWithout.Should().AllSatisfy(c => c.PartRated.Should().BeNull());
         columnsWithout.Select(c => c.Label)
             .Should().Equal("C", "D", "E", "F", "G", "H", "I", "J", "K");
@@ -121,7 +101,6 @@ public sealed class SheetRegionReadTests : IDisposable
     [Fact]
     public void ReadSheetRegion_Values_ZeroIsRealAndEmptyAndTextAreNull()
     {
-        // Arrange — 0 and 7 pre-filled, plus a non-numeric text cell injected directly.
         var path = Support.WorkbookBuilder.RatingWorkbookFactory.Create(
             Workbook("values.xlsx"),
             prefilledCells: new Dictionary<(int plot, int subsample, int traitOrdinal), int>
@@ -138,11 +117,9 @@ public sealed class SheetRegionReadTests : IDisposable
             wb.Save();
         }
 
-        // Act
         var region = CreateRepository().ReadSheetRegion(path);
         var row22 = region.Rows.Single(r => r.Row == 22);
 
-        // Assert — ReadIntSafe semantics: int → value, 0 preserved, empty → null, text → null
         row22.Values.Should().HaveCount(9);
         row22.Values[0].Should().Be(0, "0 is a real rating value (empty ≠ 0 — Rule 2)");
         row22.Values[1].Should().Be(7);
@@ -153,7 +130,6 @@ public sealed class SheetRegionReadTests : IDisposable
     [Fact]
     public void ReadSheetRegion_ValuesAreIndexAlignedWithColumns()
     {
-        // Arrange — one value at the LAST trait ordinal (9 → column K) pins the far end.
         var path = Factory.Create(
             Workbook("invariant.xlsx"),
             prefilledCells: new Dictionary<(int plot, int subsample, int traitOrdinal), int>
@@ -162,10 +138,8 @@ public sealed class SheetRegionReadTests : IDisposable
             },
             writePestCodes: true);
 
-        // Act
         var region = CreateRepository().ReadSheetRegion(path);
 
-        // Assert — index = ordinal − 1 and column = TraitColumn(t) = t + 2, both directions
         region.Columns.Should().HaveCount(9);
         for (var i = 0; i < region.Columns.Count; i++)
         {
@@ -187,13 +161,10 @@ public sealed class SheetRegionReadTests : IDisposable
     [Fact]
     public void ReadSheetRegion_RowNumbers_MatchWorkbookRows()
     {
-        // Arrange
         var path = Factory.Create(Workbook("row numbers.xlsx"));
 
-        // Act
         var region = CreateRepository().ReadSheetRegion(path);
 
-        // Assert — the row number keeps the Excel cross-reference (C22 ↔ row 22)
         foreach (var row in region.Rows)
         {
             row.Row.Should().Be(Factory.DataRowFor(row.Plot, row.Subsample),
@@ -204,7 +175,6 @@ public sealed class SheetRegionReadTests : IDisposable
     [Fact]
     public void ReadSheetRegion_MissingSheet_ThrowsInvalidDataException()
     {
-        // Arrange — a valid workbook that is not ARM-shaped (no "Subsample Plot Data")
         var path = Workbook("wrong sheet.xlsx");
         using (var wb = new XLWorkbook())
         {
@@ -212,7 +182,6 @@ public sealed class SheetRegionReadTests : IDisposable
             wb.SaveAs(path);
         }
 
-        // Act & Assert — maps to 400 with this exact body (plan §3, frozen)
         var act = () => CreateRepository().ReadSheetRegion(path);
         act.Should().Throw<InvalidDataException>()
             .WithMessage("Sheet 'Subsample Plot Data' was not found in workbook 'wrong sheet.xlsx'.");
@@ -221,12 +190,9 @@ public sealed class SheetRegionReadTests : IDisposable
     [Fact]
     public void ReadSheetRegion_Metadata_ReadsFirstNonEmptyCellScanningCToK()
     {
-        // Arrange — the factory's metadata rows all start at C (like the real template)…
         var path = Support.WorkbookBuilder.RatingWorkbookFactory.Create(
             Workbook("metadata.xlsx"), writeArmMetadata: true);
 
-        // …plus a hand-built workbook where C..E are EMPTY and the value sits later,
-        // so the first-non-empty scan itself is under test rather than "C always wins".
         var latePath = Workbook("late metadata.xlsx");
         using (var wb = new XLWorkbook())
         {
@@ -236,11 +202,9 @@ public sealed class SheetRegionReadTests : IDisposable
             wb.SaveAs(latePath);
         }
 
-        // Act
         var metadata = CreateRepository().ReadSheetRegion(path).Metadata;
         var lateMetadata = CreateRepository().ReadSheetRegion(latePath).Metadata;
 
-        // Assert — display-only strings, verbatim (16Jun2026 is not ISO; that is fine)
         metadata.Should().NotBeNull();
         metadata!.Crop.Should().Be("Winter wheat");
         metadata.RatingDate.Should().Be("16Jun2026");
@@ -249,7 +213,6 @@ public sealed class SheetRegionReadTests : IDisposable
         metadata.SampleSize.Should().Be("4");
         metadata.SubsampleCount.Should().Be("4");
 
-        // Assert — scan skips empty C..K cells to the first non-empty one; absent rows → null
         lateMetadata.Should().NotBeNull();
         lateMetadata!.Crop.Should().Be("Only at F", "C..E are empty; F is the first non-empty cell");
         lateMetadata.RatingDate.Should().Be("Only at K");

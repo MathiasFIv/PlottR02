@@ -4,19 +4,12 @@ using PlottR0._2.Domain;
 
 namespace PlottR0._2.Api;
 
-/// <summary>
-/// Reads the current user's identity from the JWT claims in HttpContext.
-/// Scoped — one instance per HTTP request. Decouples Services from ASP.NET.
-/// </summary>
 public sealed class CurrentUser : ICurrentUser
 {
     private readonly IHttpContextAccessor _accessor;
 
-    /// <summary>Creates a new <see cref="CurrentUser"/>.</summary>
-    /// <param name="accessor">The HTTP context accessor used to read the current principal.</param>
     public CurrentUser(IHttpContextAccessor accessor) => _accessor = accessor;
 
-    /// <inheritdoc />
     public Guid? UserId
     {
         get
@@ -26,20 +19,14 @@ public sealed class CurrentUser : ICurrentUser
         }
     }
 
-    /// <inheritdoc />
     public string? Email => _accessor.HttpContext?.User.FindFirstValue("email");
 
-    /// <inheritdoc />
     public string? Name => _accessor.HttpContext?.User.FindFirstValue("name");
 
-    /// <inheritdoc />
     public UserRole? Role
     {
         get
         {
-            // Mirrors JwtBearerConfiguration.RoleClaimName ("role") — the literal
-            // claim name TokenService emits and validation expects. Role-less and
-            // unauthenticated actors both surface as null.
             var raw = _accessor.HttpContext?.User.FindFirstValue(JwtBearerConfiguration.RoleClaimName);
             return raw is not null && Enum.TryParse<UserRole>(raw, ignoreCase: true, out var role) ? role : null;
         }

@@ -12,30 +12,8 @@ using PlottR0._2.Repository.Storage;
 
 namespace PlottR0._2.Repository;
 
-/// <summary>
-/// Extension methods for <see cref="IServiceCollection"/> that wire up the
-/// persistence layer (EF Core + PostgreSQL), the file-system stores with an optional
-/// durable object store, and repository implementations.
-/// </summary>
 public static class ServiceCollectionExtensions
 {
-    /// <summary>
-    /// Registers <see cref="PlottR0DbContext"/> with Npgsql and all repository
-    /// implementations as scoped services.
-    /// </summary>
-    /// <param name="services">The service collection to configure.</param>
-    /// <param name="connectionString">The PostgreSQL connection string.</param>
-    /// <param name="enableDetailedErrors">
-    /// When <c>true</c>, EF Core includes detailed database errors in exception messages.
-    /// Recommended for Development only.
-    /// </param>
-    /// <param name="configuration">
-    /// Optional configuration root used to bind <see cref="StorageOptions"/> and
-    /// <see cref="ObjectStorageOptions"/>. When omitted (e.g. the parameterless call),
-    /// the settings resolve to their defaults — the legacy repo-root <c>Service/</c> cache
-    /// and durable storage disabled.
-    /// </param>
-    /// <returns>The supplied <paramref name="services"/> for fluent chaining.</returns>
     public static IServiceCollection ConfigurePersistence(
         this IServiceCollection services,
         string connectionString,
@@ -53,18 +31,12 @@ public static class ServiceCollectionExtensions
                 options.EnableDetailedErrors();
         });
 
-        // Bind the storage settings. With no configuration supplied, bind an empty root so the
-        // options resolve to their defaults (legacy Service/ walk, durable storage disabled).
         var config = configuration ?? new ConfigurationBuilder().Build();
         services.AddOptions<StorageOptions>()
             .Bind(config.GetSection(StorageOptions.SectionName));
         services.AddOptions<ObjectStorageOptions>()
             .Bind(config.GetSection(ObjectStorageOptions.SectionName));
 
-        // The configured cache root: a blank value or the "Service" sentinel means "walk to the
-        // repo-root Service/ directory" (null → the store's ResolveServiceDirectory fallback), so
-        // tests and local development keep resolving the shared workspace unchanged. Any other
-        // value is used verbatim.
         var configuredRoot = config.GetSection(StorageOptions.SectionName).GetValue<string>(nameof(StorageOptions.Root));
         var explicitRoot = string.IsNullOrWhiteSpace(configuredRoot)
             || string.Equals(configuredRoot, "Service", StringComparison.Ordinal)

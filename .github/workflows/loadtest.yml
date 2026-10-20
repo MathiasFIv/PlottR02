@@ -1,0 +1,194 @@
+name: Load Test
+
+# SELF-CONTAINED: no secrets, no external services. A postgres:16-alpine service
+# container provides the database, the API is built and started inside the runner,
+# and k6 runs locally (no Grafana Cloud).
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Which scenario(s) to run'
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - steady
+          - both
+  schedule:
+    # Weekly, Monday 03:00 UTC — runs only the STEADY scenario.
+    - cron: '0 3 * * 1'
+
+concurrency:
+  group: loadtest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  loadtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: plottr02
+          POSTGRES_PASSWORD: plottr02
+          POSTGRES_DB: plottr02
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U plottr02 -d plottr02"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+          --health-start-period 5s
+
+    env:
+      # Connection string consumed by Program.cs (GetConnectionString("PlottR02")).
+      ConnectionStrings__PlottR02: 'Host=localhost;Port=5432;Database=plottr02;Username=plottr02;Password=plottr02'
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://localhost:5000
+      # Bootstrap the first SystemAdmin anonymously (UserService coerces the
+      # first no-role account to SystemAdmin when this is true).
+      Auth__AllowAnonymousSignup: 'true'
+      # Non-production signing key; only needs to satisfy the >=32 char minimum.
+      Jwt__SecretKey: 'ci-only-insecure-load-test-secret-key-32-bytes-min'
+      Jwt__Issuer: PlottR02
+      Jwt__Audience: PlottR02-Frontend
+      # File-only storage: no object storage, so the run is fully self-contained.
+      ObjectStorage__Enabled: 'false'
+      ObjectStorage__Provider: 'None'
+      # Never contact real transcription services.
+      CloudflareAi__AccountId: ''
+      CloudflareAi__ApiToken: ''
+      BASE_URL: http://localhost:5000
+      # k6 runs from the repo root; fixtures/trial.xlsx is produced below.
+      FIXTURE_PATH: fixtures/trial.xlsx
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore src/PlottR0.2.Api/PlottR0.2.Api.csproj
+
+      - name: Build API
+        run: dotnet build src/PlottR0.2.Api/PlottR0.2.Api.csproj --configuration Release --no-restore
+
+      - name: Provide load-test fixture workbook
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p fixtures
+          # .xlsx files are gitignored, so a clean CI checkout has NO archived
+          # fixtures under scripts/fixtures/. Generate the workbook deterministically
+          # (openpyxl is not preinstalled on the runner, so use an isolated venv).
+          if [ -n "${FIXTURE_SRC:-}" ] && [ -f "${FIXTURE_SRC}" ]; then
+            cp "${FIXTURE_SRC}" fixtures/trial.xlsx
+          else
+            python3 -m venv "${RUNNER_TEMP}/fixture-venv"
+            "${RUNNER_TEMP}/fixture-venv/bin/python" -m pip install --quiet --upgrade pip openpyxl
+            "${RUNNER_TEMP}/fixture-venv/bin/python" loadtests/tools/make-fixture.py fixtures/trial.xlsx
+          fi
+          ls -l fixtures
+
+      - name: Start API in background
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p api-logs
+          # --no-launch-profile: launchSettings.json pins :5095, which would
+          # override ASPNETCORE_URLS and break the :5000 health check below.
+          nohup dotnet run \
+            --project src/PlottR0.2.Api/PlottR0.2.Api.csproj \
+            --configuration Release \
+            --no-build \
+            --no-launch-profile \
+            > api-logs/api.log 2>&1 &
+          echo "API_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /health
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:5000/health > /dev/null 2>&1; then
+              echo "API healthy after ${i} attempt(s)."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::API did not become healthy within 120s"
+          echo "----- api.log -----"
+          cat api-logs/api.log || true
+          exit 1
+
+      - name: Install k6 (pinned)
+        # Install the official release binary directly so the version is fully
+        # deterministic and independent of any third-party action's pinning.
+        shell: bash
+        run: |
+          set -euo pipefail
+          K6_VERSION=1.8.2
+          curl -fsSL "https://github.com/grafana/k6/releases/download/v${K6_VERSION}/k6-v${K6_VERSION}-linux-amd64.tar.gz" \
+            | tar -xz
+          sudo install -m 0755 "k6-v${K6_VERSION}-linux-amd64/k6" /usr/local/bin/k6
+          k6 version
+
+      - name: Determine scenarios to run
+        id: pick
+        shell: bash
+        env:
+          INPUT_SCENARIO: ${{ github.event.inputs.scenario }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "schedule" ] || [ -z "$INPUT_SCENARIO" ]; then
+            echo "scenarios=steady" >> "$GITHUB_OUTPUT"
+          elif [ "$INPUT_SCENARIO" = "both" ]; then
+            echo "scenarios=smoke steady" >> "$GITHUB_OUTPUT"
+          else
+            echo "scenarios=$INPUT_SCENARIO" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run smoke scenario
+        if: contains(steps.pick.outputs.scenarios, 'smoke')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p loadtests/results
+          # A failed threshold makes k6 exit non-zero, which fails this step (the gate).
+          k6 run --summary-export=loadtests/results/smoke-summary.json loadtests/scenarios/smoke.js
+
+      - name: Run steady scenario
+        if: contains(steps.pick.outputs.scenarios, 'steady')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p loadtests/results
+          k6 run --summary-export=loadtests/results/steady-summary.json loadtests/scenarios/steady.js
+
+      - name: Upload k6 summary artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-summaries
+          path: loadtests/results/*.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: API logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-logs
+          path: api-logs/api.log
+          if-no-files-found: ignore
+          retention-days: 7

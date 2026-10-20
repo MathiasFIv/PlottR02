@@ -10,45 +10,20 @@ using PlottR0._2.Services.Configuration;
 
 namespace PlottR0._2.Services.Implementations;
 
-/// <summary>
-/// Concrete <see cref="ITokenService"/> that signs short-lived access tokens
-/// (HMAC-SHA256 JWTs) from <see cref="TokenOptions"/> and mints opaque refresh
-/// tokens using <see cref="RandomNumberGenerator"/>. The signing secret and
-/// token lifetimes come from configuration; no external secrets are hard-coded.
-/// </summary>
 public class TokenService : ITokenService
 {
-    /// <summary>
-    /// Entropy of a refresh token in bytes (64 bytes = 512 bits).
-    /// </summary>
     private const int RefreshTokenByteLength = 64;
 
-    /// <summary>
-    /// Minimum accepted signing-secret length, in characters (bytes of UTF-8),
-    /// for the HMAC-SHA256 signing key. HMAC-SHA256 requires at least 256 bits
-    /// (32 bytes) of key material; shorter keys silently weaken the signature.
-    /// </summary>
+    // HMAC-SHA256 needs a 256-bit key, so the constructor rejects a shorter or placeholder secret.
     private const int MinSecretKeyLength = 32;
 
     private readonly TokenOptions _options;
 
-    /// <summary>
-    /// Creates a new <see cref="TokenService"/>.
-    /// </summary>
-    /// <param name="options">The bound token settings.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="options"/> is <c>null</c>.</exception>
-    /// <exception cref="InvalidOperationException">The configured signing secret is shorter
-    /// than <see cref="MinSecretKeyLength"/> characters (i.e. weaker than 256 bits of
-    /// HMAC-SHA256 key material). This guards against a deployment silently running with a
-    /// weak or placeholder secret.</exception>
     public TokenService(IOptions<TokenOptions> options)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
 
-        // Fail fast: reject a weak signing key before any token is minted. The value
-        // itself is left untouched (only a trimmed copy is measured), so a secret that
-        // accidentally carries surrounding whitespace is not silently re-encoded.
         if (_options.SecretKey?.Trim().Length < MinSecretKeyLength)
         {
             throw new InvalidOperationException(
@@ -58,7 +33,6 @@ public class TokenService : ITokenService
         }
     }
 
-    /// <inheritdoc />
     public string GenerateAccessToken(UserResponse user)
     {
         ArgumentNullException.ThrowIfNull(user);
@@ -80,24 +54,14 @@ public class TokenService : ITokenService
         return handler.WriteToken(token);
     }
 
-    /// <inheritdoc />
     public string GenerateRefreshToken()
     {
         var bytes = RandomNumberGenerator.GetBytes(RefreshTokenByteLength);
         return Base64UrlEncoder.Encode(bytes);
     }
 
-    /// <inheritdoc />
     public int RefreshTokenLifetimeDays => _options.RefreshTokenExpirationDays;
 
-    /// <summary>
-    /// Builds the claim set the access token carries. Uses the short JWT
-    /// claim names (<c>sub</c>, <c>email</c>, <c>name</c>, <c>role</c>)
-    /// so the token payload is directly readable by callers that use
-    /// <c>MapInboundClaims = false</c>.
-    /// </summary>
-    /// <param name="user">The authenticated user profile.</param>
-    /// <returns>The populated claim list.</returns>
     private static List<Claim> BuildClaims(UserResponse user)
     {
         var claims = new List<Claim>
@@ -108,7 +72,6 @@ public class TokenService : ITokenService
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
         };
 
-        // Role is optional — only emit the claim when the user has one assigned.
         if (user.Role is not null)
         {
             claims.Add(new Claim("role", user.Role.Value.ToString()));

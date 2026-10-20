@@ -87,3 +87,23 @@ jobs:
       - name: Build
         run: npm run build
         working-directory: frontend
+
+  deploy:
+    name: Deploy to Render
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check deploy hooks are configured
+        env:
+          API_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_API }}
+          WEB_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_WEB }}
+        run: |
+          [ -n "$API_HOOK" ] || { echo "::error::RENDER_DEPLOY_HOOK_API secret is not set"; exit 1; }
+          [ -n "$WEB_HOOK" ] || { echo "::error::RENDER_DEPLOY_HOOK_WEB secret is not set"; exit 1; }
+
+      - name: Deploy API
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_API }}"
+
+      - name: Deploy Web
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_WEB }}"

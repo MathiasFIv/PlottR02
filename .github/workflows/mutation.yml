@@ -1,0 +1,65 @@
+name: Mutation Testing
+
+# Deliberately NOT wired to push/pull_request: the full-suite mutation run is slow
+# (Testcontainers Postgres + per-mutant test runs) and is not a PR gate.
+# It runs only on manual dispatch or the nightly schedule.
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly at 04:00 UTC
+    - cron: "0 4 * * *"
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  stryker:
+    name: Stryker (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: services
+            config: stryker-config.json
+          - name: repository
+            config: stryker-config.Repository.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore .NET tools
+        run: dotnet tool restore
+
+      - name: Restore solution
+        run: dotnet restore PlottR0.2.slnx
+
+      # Testcontainers requires a Docker daemon; ubuntu-latest provides one.
+      - name: Run Stryker (${{ matrix.name }})
+        run: dotnet stryker --config-file ${{ matrix.config }} --skip-version-check
+
+      - name: Upload Stryker report (${{ matrix.name }})
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: stryker-report-${{ matrix.name }}
+          path: StrykerOutput/**/reports/**
+          if-no-files-found: warn
+          retention-days: 14

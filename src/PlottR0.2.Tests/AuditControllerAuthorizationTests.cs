@@ -7,15 +7,6 @@ using PlottR0._2.Domain;
 
 namespace PlottR0._2.Tests;
 
-/// <summary>
-/// Authorization contract for <see cref="AuditController"/>. Plan A14 forbids
-/// <c>WebApplicationFactory</c>, so — as with <c>UsersControllerAuthorizationTests</c> —
-/// the declared <see cref="AuthorizeAttribute"/> metadata is the observable contract. The
-/// role gate is additionally evaluated against a real <see cref="ClaimsPrincipal"/> (with
-/// the same literal <c>"role"</c> claim type the JWT handler uses) to pin permit/deny for
-/// managers, a field worker and a role-less actor — the audit log carries trial metadata
-/// for trials a non-manager may not otherwise see.
-/// </summary>
 public sealed class AuditControllerAuthorizationTests
 {
     private static AuthorizeAttribute ControllerAuthorize()
@@ -40,7 +31,6 @@ public sealed class AuditControllerAuthorizationTests
     [Fact]
     public void Controller_CarriesTheManagerRoleGate()
     {
-        // The single read-only action inherits the controller-level role gate.
         typeof(AuditController)
             .GetMethod(nameof(AuditController.GetRecent))!
             .GetCustomAttribute<AuthorizeAttribute>()
@@ -57,8 +47,6 @@ public sealed class AuditControllerAuthorizationTests
     [InlineData(null, false)]
     public void RoleGate_PermitsManagersOnly(UserRole? role, bool permitted)
     {
-        // Mirror the RolesAuthorizationRequirement: permitted when the caller holds any
-        // one of the declared roles. A null/permitted=false pair exercises the role-less actor.
         var declaredRoles = ControllerAuthorize().Roles!.Split(',');
         var principal = PrincipalFor(role);
 

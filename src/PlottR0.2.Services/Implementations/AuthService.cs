@@ -9,25 +9,12 @@ using PlottR0._2.Services.Abstractions;
 
 namespace PlottR0._2.Services.Implementations;
 
-/// <summary>
-/// Concrete <see cref="IAuthService"/>. Talks only to the user service, token
-/// service and the refresh-token repository contract — never to EF or concrete
-/// persistence classes. Handles credential login, token-pair issuance and
-/// refresh-token rotation with single-use semantics.
-/// </summary>
 public class AuthService : IAuthService
 {
-    /// <summary>
-    /// How long a just-consumed (rotated/revoked) refresh token may be replayed and
-    /// still be treated as a benign concurrent refresh. Two browser contexts sharing
-    /// an origin (a PWA and a tab) both read the SAME single-use refresh token and
-    /// both refresh when the access token expires; the first rotation revokes it, and
-    /// the second legitimately re-presents a token that was consumed moments ago.
-    /// Without this window that second presentation trips reuse detection and nukes
-    /// the entire token family, logging the user out until re-login. Replay beyond
-    /// this window — or without a live successor — genuinely indicates a leaked token
-    /// and still revokes the family.
-    /// </summary>
+    // Two browser contexts (a PWA and an open tab) can race a refresh, so the loser presents a
+    // token the winner just rotated away. Within this window, with a live successor present, that
+    // is the benign race: rotate the successor and mint a fresh pair, preserving the family.
+    // Outside it, or with no successor, it is real reuse — the whole family is revoked.
     private static readonly TimeSpan ReuseGracePeriod = TimeSpan.FromSeconds(30);
 
     private readonly IUserService _userService;
@@ -35,13 +22,6 @@ public class AuthService : IAuthService
     private readonly IRefreshTokenRepository _refreshTokenRepository;
     private readonly ILogger<AuthService> _logger;
 
-    /// <summary>
-    /// Creates a new <see cref="AuthService"/>.
-    /// </summary>
-    /// <param name="userService">The user service contract for credential validation and profile reads.</param>
-    /// <param name="tokenService">The token service contract for access/refresh token issuance.</param>
-    /// <param name="refreshTokenRepository">The refresh-token repository contract for persistence.</param>
-    /// <param name="logger">The logger for security-relevant events (reuse detection, grace handling).</param>
     public AuthService(
         IUserService userService,
         ITokenService tokenService,
@@ -54,7 +34,6 @@ public class AuthService : IAuthService
         _logger = logger;
     }
 
-    /// <inheritdoc />
     public async Task<LoginResponse> LoginAsync(LoginRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -74,7 +53,6 @@ public class AuthService : IAuthService
         };
     }
 
-    /// <inheritdoc />
     public async Task<RefreshResponse> RefreshAsync(RefreshRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -90,19 +68,6 @@ public class AuthService : IAuthService
             throw new UnauthorizedAccessException("Invalid refresh token.");
         }
 
-        // Reuse detection. A token that is already revoked should never be presented
-        // again — if it was, the plaintext was reused, which means it (or a family
-        // member) leaked. Revoke the user's ENTIRE token family, including any
-        // freshly-minted successor the attacker may hold, then deny the refresh.
-        //
-        // EXCEPTION — grace-window tolerance: two browser contexts (a PWA and a tab)
-        // sharing one origin can both read the SAME single-use refresh token and both
-        // refresh when the access token expires; the first rotation revokes it, and the
-        // second legitimately re-presents a token that was consumed moments ago. Reuse of
-        // a token revoked within ReuseGracePeriod while a live successor exists is treated
-        // as this benign race: the successor is rotated and a fresh pair minted, WITHOUT
-        // revoking the family. Reuse beyond the grace window, or with no live successor,
-        // remains a theft signal and revokes the family.
         if (stored.IsRevoked)
         {
             if (stored.RevokedAt is DateTime revokedAt
@@ -150,10 +115,6 @@ public class AuthService : IAuthService
             throw new UnauthorizedAccessException("Invalid refresh token.");
         }
 
-        // Rotation: the presented token is single-use. Atomically transition it from
-        // active -> revoked ONLY if it is still active. If the affected count is 0 the
-        // token was already revoked by a concurrent rotation (a replay race), so refuse
-        // to mint a successor.
         var revoked = await _refreshTokenRepository.RevokeAsync(stored.Id, ct);
         if (revoked == 0)
         {
@@ -178,18 +139,9 @@ public class AuthService : IAuthService
         };
     }
 
-    /// <inheritdoc />
     public async Task LogoutAsync(Guid userId, CancellationToken ct = default)
         => await _refreshTokenRepository.RevokeAllForUserAsync(userId, ct);
 
-    /// <summary>
-    /// Builds a persisted <see cref="RefreshToken"/> record for the given user.
-    /// Only the SHA-256 hash of the plaintext token is ever stored — the client
-    /// keeps the plaintext, the database keeps the hash.
-    /// </summary>
-    /// <param name="userId">The token owner.</param>
-    /// <param name="plainToken">The plaintext refresh token issued to the client.</param>
-    /// <returns>A ready-to-persist <see cref="RefreshToken"/> entity.</returns>
     private RefreshToken CreateRefreshTokenEntity(Guid userId, string plainToken)
         => new()
         {
@@ -201,11 +153,6 @@ public class AuthService : IAuthService
             IsRevoked = false,
         };
 
-    /// <summary>
-    /// Deterministically hashes a plaintext refresh token for storage and lookup.
-    /// </summary>
-    /// <param name="token">The plaintext refresh token.</param>
-    /// <returns>The uppercase hex SHA-256 digest.</returns>
     private static string HashToken(string token)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
 }

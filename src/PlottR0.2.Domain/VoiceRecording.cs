@@ -1,9 +1,5 @@
 namespace PlottR0._2.Domain;
 
-/// <summary>
-/// Represents a voice recording uploaded from the PWA and its processing results.
-/// <see cref="ClientRecordingId"/> is the PWA-emitted idempotency key (crypto.randomUUID).
-/// </summary>
 public class VoiceRecording : AuditableEntity
 {
     public Guid Id { get; set; }
@@ -15,10 +11,6 @@ public class VoiceRecording : AuditableEntity
     public int? ConfirmedSubsample { get; set; }
     public int? ConfirmedValue { get; set; }
 
-    /// <summary>
-    /// The trait ordinal this recording's write actually used; 1 when the client did not specify one;
-    /// a value above 9 means the sync was flagged without writing. Nullable only for rows predating this column.
-    /// </summary>
     public int? ResolvedTraitOrdinal { get; set; }
 
     public string? Transcript { get; set; }
