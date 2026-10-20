@@ -5,6 +5,18 @@ name: Mutation Testing
 # It runs only on manual dispatch or the nightly schedule.
 on:
   workflow_dispatch:
+  push:
+    # dev, not main (see loadtest.yml): push runs use the file in the pushed
+    # commit, so this works before mutation.yml lands on main. Path-filtered
+    # because a full mutation run costs up to ~2h of runner time — drop the
+    # paths block to run it on every push instead.
+    branches: [dev]
+    paths:
+      - "src/PlottR0.2.Services/**"
+      - "src/PlottR0.2.Repository/**"
+      - "src/PlottR0.2.Tests/**"
+      - "stryker-config*.json"
+      - ".github/workflows/mutation.yml"
   schedule:
     # Nightly at 04:00 UTC
     - cron: "0 4 * * *"

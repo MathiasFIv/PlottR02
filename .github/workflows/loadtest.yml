@@ -16,6 +16,11 @@ on:
           - smoke
           - steady
           - both
+  push:
+    # dev, not main: GitHub only registers *scheduled* and *dispatched* runs from
+    # the default branch, but a push run uses the workflow file in the pushed
+    # commit — so this works before loadtest.yml lands on main.
+    branches: [dev]
   schedule:
     # Weekly, Monday 03:00 UTC — runs only the STEADY scenario.
     - cron: '0 3 * * 1'
