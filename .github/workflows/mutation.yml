@@ -1,8 +1,9 @@
 name: Mutation Testing
 
-# Deliberately NOT wired to push/pull_request: the full-suite mutation run is slow
+# Deliberately NOT wired to pull_request: the full-suite mutation run is slow
 # (Testcontainers Postgres + per-mutant test runs) and is not a PR gate.
-# It runs only on manual dispatch or the nightly schedule.
+# Push runs are path-filtered to the projects under mutation; otherwise it runs
+# on manual dispatch or the nightly schedule.
 on:
   workflow_dispatch:
   push:
